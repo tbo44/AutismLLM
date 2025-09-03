@@ -122,7 +122,7 @@ async def chat(request: ChatRequest):
         )
         
         if has_images and model == "llama-3.1-8b-instant":
-            model = "llama-3.2-11b-vision-preview"  # Switch to vision model
+            model = "meta-llama/llama-4-scout-17b-16e-instruct"  # Switch to latest vision model
         
         # Prepare messages
         messages = [msg.dict() for msg in request.messages]
