@@ -7,28 +7,6 @@ channel = "stable-25_05"
 packages = ["libxcrypt"]
 
 [workflows]
-runButton = "Project"
-
-[[workflows.workflow]]
-name = "Project"
-mode = "parallel"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "LLM Server"
-
-[[workflows.workflow]]
-name = "LLM Server"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "OPENAI_API_KEY=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 OPENAI_BASE_URL=https://api.groq.com/openai/v1 MODEL_NAME=llama-3.1-8b-instant uvicorn server:app --host 0.0.0.0 --port 5000"
-waitForPort = 5000
-
-[workflows.workflow.metadata]
-outputType = "webview"
 
 [[ports]]
 localPort = 5000
