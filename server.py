@@ -1,5 +1,6 @@
 import os
 import base64
+import io
 from typing import List, Optional, Union, Dict, Any
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,6 +8,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import openai
+try:
+    import PyPDF2
+except ImportError:
+    PyPDF2 = None
 
 # Load environment variables
 load_dotenv()
@@ -57,6 +62,21 @@ class ChatResponse(BaseModel):
 async def health_check():
     return {"ok": True, "service": "FalconCanvas API"}
 
+def extract_pdf_text(content: bytes) -> str:
+    """Extract text from PDF content"""
+    if PyPDF2 is None:
+        return "[PDF text extraction not available]"
+    
+    try:
+        pdf_file = io.BytesIO(content)
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text() + "\n"
+        return text.strip() or "[PDF contains no extractable text]"
+    except Exception as e:
+        return f"[Error extracting PDF text: {str(e)}]"
+
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     try:
@@ -66,15 +86,23 @@ async def upload_file(file: UploadFile = File(...)):
         # Convert to base64
         base64_content = base64.b64encode(content).decode('utf-8')
         
-        # Determine if it's an image
+        # Determine file type
         is_image = file.content_type and file.content_type.startswith('image/')
+        is_pdf = file.content_type == 'application/pdf' or (file.filename and file.filename.endswith('.pdf'))
+        
+        # Extract text for PDFs
+        extracted_text = None
+        if is_pdf:
+            extracted_text = extract_pdf_text(content)
         
         return {
             "filename": file.filename,
             "content_type": file.content_type,
             "size": len(content),
             "base64_content": base64_content,
-            "is_image": is_image
+            "is_image": is_image,
+            "is_pdf": is_pdf,
+            "extracted_text": extracted_text
         }
         
     except Exception as e:

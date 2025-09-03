@@ -69,6 +69,12 @@ class ChatApp {
             const img = document.createElement('img');
             img.src = `data:${fileData.content_type};base64,${fileData.base64_content}`;
             filePreview.appendChild(img);
+        } else if (fileData.is_pdf) {
+            const pdfIcon = document.createElement('div');
+            pdfIcon.textContent = '📄';
+            pdfIcon.style.fontSize = '24px';
+            pdfIcon.style.marginRight = '8px';
+            filePreview.appendChild(pdfIcon);
         }
         
         const fileName = document.createElement('span');
@@ -118,7 +124,7 @@ class ChatApp {
                 });
             }
             
-            // Add images
+            // Add images and documents
             for (const file of this.uploadedFiles) {
                 if (file.is_image) {
                     messageContent.push({
@@ -126,6 +132,11 @@ class ChatApp {
                         image_url: {
                             url: `data:${file.content_type};base64,${file.base64_content}`
                         }
+                    });
+                } else if (file.is_pdf && file.extracted_text) {
+                    messageContent.push({
+                        type: "text",
+                        text: `[Content from ${file.filename}]:\n${file.extracted_text}`
                     });
                 }
             }
@@ -209,7 +220,7 @@ class ChatApp {
                     });
                 }
                 
-                // Add images
+                // Add images and documents
                 for (const file of files) {
                     if (file.is_image) {
                         multimodalContent.push({
@@ -217,6 +228,11 @@ class ChatApp {
                             image_url: {
                                 url: `data:${file.content_type};base64,${file.base64_content}`
                             }
+                        });
+                    } else if (file.is_pdf && file.extracted_text) {
+                        multimodalContent.push({
+                            type: "text",
+                            text: `[Content from ${file.filename}]:\n${file.extracted_text}`
                         });
                     }
                 }
