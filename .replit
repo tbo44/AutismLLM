@@ -24,7 +24,7 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "OPENAI_API_KEY=sk-dummy-key-for-testing-12345 uvicorn server:app --host 0.0.0.0 --port 5000"
+args = "OPENAI_API_KEY=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 OPENAI_BASE_URL=https://api.groq.com/openai/v1 MODEL_NAME=llama-3.1-8b-instant uvicorn server:app --host 0.0.0.0 --port 5000"
 waitForPort = 5000
 
 [workflows.workflow.metadata]
