@@ -1,6 +1,7 @@
 import os
-from typing import List, Optional
-from fastapi import FastAPI, HTTPException
+import base64
+from typing import List, Optional, Union, Dict, Any
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -41,7 +42,7 @@ client = openai.OpenAI(
 
 class Message(BaseModel):
     role: str
-    content: str
+    content: Union[str, List[Dict[str, Any]]]
 
 class ChatRequest(BaseModel):
     messages: List[Message]
@@ -54,13 +55,46 @@ class ChatResponse(BaseModel):
 
 @app.get("/")
 async def health_check():
-    return {"ok": True, "service": "My Personal LLM API"}
+    return {"ok": True, "service": "FalconCanvas API"}
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    try:
+        # Read file content
+        content = await file.read()
+        
+        # Convert to base64
+        base64_content = base64.b64encode(content).decode('utf-8')
+        
+        # Determine if it's an image
+        is_image = file.content_type and file.content_type.startswith('image/')
+        
+        return {
+            "filename": file.filename,
+            "content_type": file.content_type,
+            "size": len(content),
+            "base64_content": base64_content,
+            "is_image": is_image
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     try:
         # Use provided model or default
         model = request.model or MODEL_NAME
+        
+        # If we have image content, use a vision model
+        has_images = any(
+            isinstance(msg.content, list) and 
+            any(item.get('type') == 'image_url' for item in msg.content if isinstance(item, dict))
+            for msg in request.messages
+        )
+        
+        if has_images and model == "llama-3.1-8b-instant":
+            model = "llama-3.2-11b-vision-preview"  # Switch to vision model
         
         # Prepare messages
         messages = [msg.dict() for msg in request.messages]
