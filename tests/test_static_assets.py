@@ -30,4 +30,4 @@ def test_static_html_from_root():
     assert resp.headers["content-type"] == "text/html; charset=utf-8"
     # Check HTML contains expected elements
     assert "Maya - UK Autism Facts Assistant" in resp.text
-    assert "disclaimer-banner" in resp.text
+    assert "LOW-STIMULATION MODE" in resp.text

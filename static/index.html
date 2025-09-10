@@ -10,115 +10,39 @@
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-    <div class="container">
-        <!-- Header Bar -->
-        <header class="header-bar">
-            <div class="header-left">
-                <div class="maya-logo">
-                    <div class="maya-avatar">M</div>
-                    <h1>Maya</h1>
-                </div>
-            </div>
-            <div class="header-center">
-                <div class="privacy-banner">🔒 Your chat is private & secure</div>
-                <div class="mode-chips">
-                    <span id="currentModeChip" class="mode-chip active">Colorful</span>
-                </div>
-            </div>
-            <div class="header-right">
-                <button id="settingsButton" class="icon-button" aria-label="Settings">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"></circle>
-                        <path d="M12 1v6M12 17v6M4.22 4.22l4.24 4.24M15.54 15.54l4.24 4.24M1 12h6M17 12h6M4.22 19.78l4.24-4.24M15.54 8.46l4.24-4.24"></path>
-                    </svg>
-                </button>
-                <label class="toggle-switch" title="Carer mode - more technical detail">
-                    <input type="checkbox" id="carerModeToggle">
-                    <span class="toggle-slider"></span>
-                    <span class="toggle-label">Carer mode</span>
-                </label>
-            </div>
-        </header>
-
-        <!-- Disclaimer Banner -->
-        <div class="disclaimer-banner">
-            ⚠️ Information only — not a diagnosis or treatment plan. For medical concerns contact your GP or NHS 111; emergencies: call 999. For legal advice, contact a qualified professional.
+    <div class="app-container">
+        <!-- Simple Header -->
+        <div class="header">
+            <div class="app-title">MAYA</div>
+            <button id="lowStimToggle" class="mode-toggle active">
+                LOW-STIMULATION MODE
+            </button>
         </div>
         
-        <!-- Chat Container -->
-        <div class="chat-container">
-            <div id="messages" class="messages"></div>
-            
-            <!-- Quick Actions -->
-            <div class="quick-actions" id="quickActions" style="display: none;">
-                <button class="quick-action-btn" data-action="step-by-step">📋 Explain step-by-step</button>
-                <button class="quick-action-btn" data-action="shorter">⚡ Give shorter answer</button>
-                <button class="quick-action-btn" data-action="sources">📚 Show sources</button>
-            </div>
-            
-            <!-- Message Composer -->
-            <div class="input-container">
-                <div class="compose-area">
-                    <input type="text" id="messageInput" placeholder="Message Maya..." autofocus aria-label="Type your message">
-                    <button id="sendButton" aria-label="Send message">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <line x1="22" y1="2" x2="11" y2="13"></line>
-                            <polygon points="22,2 15,22 11,13 2,9 22,2"></polygon>
-                        </svg>
-                    </button>
-                </div>
-            </div>
+        <!-- Chat Messages -->
+        <div class="chat-area" id="chatArea">
+            <!-- Messages will be inserted here -->
         </div>
-    </div>
-
-    <!-- Settings Modal -->
-    <div id="settingsModal" class="modal" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2 id="settingsTitle">Settings</h2>
-                <button id="closeSettings" class="icon-button" aria-label="Close settings">
+        
+        <!-- Suggested Actions -->
+        <div class="suggestions" id="suggestions">
+            <button class="suggestion-btn" data-action="tell-joke">Tell me a joke</button>
+            <button class="suggestion-btn" data-action="support-services">What support is available?</button>
+            <button class="suggestion-btn" data-action="benefits">Help with benefits</button>
+        </div>
+        
+        <!-- Message Input -->
+        <div class="input-area">
+            <div class="input-container">
+                <input type="text" id="messageInput" placeholder="Message" autocomplete="off">
+                <button id="sendButton" type="button" aria-label="Send message">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <line x1="18" y1="6" x2="6" y2="18"></line>
-                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                        <path d="M22 2L11 13"/>
+                        <path d="M22 2L15 22L11 13L2 9L22 2Z"/>
                     </svg>
                 </button>
             </div>
-            <div class="settings-content">
-                <div class="setting-group">
-                    <h3>Appearance</h3>
-                    <label class="setting-item">
-                        <span>Low-stimulation mode</span>
-                        <input type="checkbox" id="lowStimToggle">
-                    </label>
-                    <label class="setting-item">
-                        <span>High-contrast mode</span>
-                        <input type="checkbox" id="highContrastToggle">
-                    </label>
-                    <label class="setting-item">
-                        <span>Reduce motion</span>
-                        <input type="checkbox" id="reduceMotionToggle">
-                    </label>
-                    <label class="setting-item">
-                        <span>Show emojis</span>
-                        <input type="checkbox" id="showEmojisToggle" checked>
-                    </label>
-                </div>
-                <div class="setting-group">
-                    <h3>Text Size</h3>
-                    <div class="radio-group">
-                        <label><input type="radio" name="textSize" value="small"> Small</label>
-                        <label><input type="radio" name="textSize" value="medium" checked> Medium</label>
-                        <label><input type="radio" name="textSize" value="large"> Large</label>
-                    </div>
-                </div>
-            </div>
         </div>
-    </div>
-
-    <!-- Success Toast -->
-    <div id="successToast" class="toast" style="display: none;">
-        <span class="toast-icon">✓</span>
-        <span class="toast-message"></span>
     </div>
     
     <script src="/static/script.js"></script>
