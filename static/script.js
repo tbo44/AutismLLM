@@ -1,4 +1,4 @@
-class CompassApp {
+class MayaApp {
     constructor() {
         this.messages = [];
         this.initializeElements();
@@ -25,7 +25,7 @@ class CompassApp {
     addWelcomeMessage() {
         const welcomeMessage = {
             role: 'assistant',
-            content: `Hello! I'm Compass, your UK autism facts assistant. I can help with:
+            content: `Hello! I'm Maya, your UK autism facts assistant. I can help with:
 
 • General information about autism in the UK
 • Support services and charities
@@ -117,5 +117,5 @@ Please ask me any questions about autism support in the UK.`,
 
 // Initialize the app when the DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    new CompassApp();
+    new MayaApp();
 });

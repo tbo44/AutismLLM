@@ -16,10 +16,10 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Compass Server"
+args = "Maya Server"
 
 [[workflows.workflow]]
-name = "Compass Server"
+name = "Maya Server"
 author = "agent"
 
 [[workflows.workflow.tasks]]
@@ -35,7 +35,7 @@ localPort = 5000
 externalPort = 80
 
 [[ports]]
-localPort = 37289
+localPort = 36821
 externalPort = 3000
 
 [deployment]

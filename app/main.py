@@ -6,7 +6,7 @@ from rag import answerer
 import pytz
 from datetime import datetime
 
-app = FastAPI(title="Compass Autism Facts Assistant", version="0.1.0")
+app = FastAPI(title="Maya Autism Facts Assistant", version="0.1.0")
 
 # Enable CORS
 app.add_middleware(

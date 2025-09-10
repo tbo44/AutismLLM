@@ -1,6 +1,6 @@
 # Overview
 
-This is Compass, a UK-focused autism facts assistant built with FastAPI and vanilla JavaScript. The application provides a web-based chat interface for autistic people and carers to get information about UK autism support, services, benefits, and education. The system includes robust safety guardrails to prevent inappropriate medical, legal, or crisis advice.
+This is Maya, a UK-focused autism facts assistant built with FastAPI and vanilla JavaScript. The application provides a web-based chat interface for autistic people and carers to get information about UK autism support, services, benefits, and education. The system includes robust safety guardrails to prevent inappropriate medical, legal, or crisis advice.
 
 # Recent Changes
 
@@ -31,7 +31,7 @@ Jurisdiction: United Kingdom (emphasis on England and Hounslow)
 ## Frontend Architecture
 - **Technology Stack**: Vanilla HTML, CSS, and JavaScript for simplicity
 - **UI Design**: Dark theme with prominent safety disclaimer banner
-- **Chat Interface**: CompassApp class managing real-time conversations
+- **Chat Interface**: MayaApp class managing real-time conversations
 - **Responsive Design**: Mobile-friendly with accessible styling
 
 ## Safety & Compliance System

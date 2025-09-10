@@ -20,7 +20,7 @@ def test_static_js_loads():
     content_type = resp.headers["content-type"]
     assert "javascript" in content_type
     # Check it contains expected JS
-    assert "CompassApp" in resp.text
+    assert "MayaApp" in resp.text
     assert "sendMessage" in resp.text
 
 def test_static_html_from_root():
@@ -29,5 +29,5 @@ def test_static_html_from_root():
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "text/html; charset=utf-8"
     # Check HTML contains expected elements
-    assert "Compass - UK Autism Facts Assistant" in resp.text
+    assert "Maya - UK Autism Facts Assistant" in resp.text
     assert "disclaimer-banner" in resp.text
