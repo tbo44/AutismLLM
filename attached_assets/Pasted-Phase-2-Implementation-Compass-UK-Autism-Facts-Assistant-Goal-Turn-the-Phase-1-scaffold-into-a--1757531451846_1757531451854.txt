@@ -1,0 +1,422 @@
+Phase 2 Implementation (Compass: UK Autism Facts Assistant)
+
+Goal: Turn the Phase-1 scaffold into a functional RAG that (a) crawls/ingests trusted UK sources, (b) retrieves with authority/recency boosts, (c) produces concise answers with inline citations, (d) applies guardrails, and (e) routes to Hounslow pages when relevant.
+
+Commit message on completion:
+feat(autism-uk): enable RAG retrieval, citations, crawler, Hounslow routing, schedules
+
+0) Environment & settings
+
+Ensure these are in .env or Replit Secrets:
+
+JURISDICTION=UK
+DEFAULT_LOCALE=en-GB
+RAG_MIN_CONFIDENCE=high
+MAX_SOURCE_AGE_DAYS=1460
+TIMEZONE=Europe/London
+
+
+Verify dependencies are installed:
+
+pip install -r requirements.txt
+
+1) Seeds: create/replace crawl/seeds.py
+SEED_SOURCES = [
+    # NHS
+    "https://www.nhs.uk/conditions/autism/",
+    "https://www.nhs.uk/conditions/autism/signs/",
+    # NICE (index pages; detail pages discovered via crawl)
+    "https://www.nice.org.uk/guidance/ng93",
+    "https://www.nice.org.uk/guidance/qs51",
+    # GOV.UK (SEND, benefits, EHCP)
+    "https://www.gov.uk/children-with-special-educational-needs",
+    "https://www.gov.uk/children-with-special-educational-needs/extra-SEN-help",
+    "https://www.gov.uk/benefits-disability",
+    "https://www.gov.uk/education-health-and-care-plans",
+    # Hounslow Local Offer (examples; expand as needed)
+    "https://www.hounslow.gov.uk/localoffer",
+    "https://www.hounslow.gov.uk/info/20133/education/2239/education_health_and_care_ehcp_plans",
+    # Major UK charities
+    "https://www.autism.org.uk/",
+    "https://www.ambitiousaboutautism.org.uk/",
+    "https://www.autism-alliance.org.uk/",
+    "https://www.scope.org.uk/",
+    "https://www.mencap.org.uk/",
+    "https://www.ipsea.org.uk/",
+    "https://contact.org.uk/",
+    # Professional bodies
+    "https://www.rcpsych.ac.uk/",
+    "https://www.rcpch.ac.uk/",
+    "https://www.rcslt.org/",
+]
+ALLOWED_DOMAINS = [
+    "nhs.uk","nice.org.uk","gov.uk","legislation.gov.uk",
+    "hounslow.gov.uk","autism.org.uk","ambitiousaboutautism.org.uk",
+    "autism-alliance.org.uk","scope.org.uk","mencap.org.uk",
+    "ipsea.org.uk","contact.org.uk","rcpsych.ac.uk","rcpch.ac.uk","rcslt.org"
+]
+
+2) Minimal fetcher/parser/normalizer/chunker
+
+Create/replace these files.
+
+crawl/fetch.py
+import httpx, asyncio, re
+from urllib.parse import urlparse
+
+USER_AGENT = "CompassAutismBot/0.1 (+https://example.local)"
+TIMEOUT = 20
+
+def allowed(url: str, allowed_domains: list[str]) -> bool:
+    host = urlparse(url).hostname or ""
+    return any(host.endswith(d) for d in allowed_domains)
+
+async def fetch_one(client: httpx.AsyncClient, url: str) -> tuple[str, str|None]:
+    try:
+        r = await client.get(url, timeout=TIMEOUT, headers={"User-Agent": USER_AGENT})
+        if r.status_code == 200 and "text/html" in r.headers.get("content-type",""):
+            return url, r.text
+    except Exception:
+        pass
+    return url, None
+
+async def fetch_many(urls: list[str]) -> dict[str,str]:
+    out = {}
+    async with httpx.AsyncClient(follow_redirects=True, headers={"User-Agent": USER_AGENT}) as client:
+        tasks = [fetch_one(client, u) for u in urls]
+        for coro in asyncio.as_completed(tasks):
+            url, html = await coro
+            if html:
+                out[url] = html
+    return out
+
+crawl/parse.py
+from bs4 import BeautifulSoup
+import trafilatura
+from datetime import datetime
+
+def extract_text(html: str) -> str:
+    # Try trafilatura first; fallback to BS4 plain text.
+    extracted = trafilatura.extract(html, include_comments=False, favor_recall=True)
+    if extracted:
+        return extracted.strip()
+    soup = BeautifulSoup(html, "lxml")
+    return soup.get_text(separator=" ").strip()
+
+def extract_meta(url: str, html: str) -> dict:
+    soup = BeautifulSoup(html, "lxml")
+    title = (soup.title.string.strip() if soup.title and soup.title.string else "")
+    # Try common updated/published selectors (best-effort)
+    date = ""
+    for attr in ["article:modified_time","article:published_time","og:updated_time","date","dc.date"]:
+        tag = soup.find("meta", attrs={"property": attr}) or soup.find("meta", attrs={"name": attr})
+        if tag and tag.get("content"):
+            date = tag["content"]; break
+    return {
+        "title": title[:300],
+        "published_or_updated": date,
+        "url": url,
+    }
+
+crawl/normalize.py
+from urllib.parse import urlparse
+
+AUTHOR_MAP = {
+    "nhs.uk":"NHS","nice.org.uk":"NICE","gov.uk":"GOV.UK","legislation.gov.uk":"Legislation.gov.uk",
+    "hounslow.gov.uk":"London Borough of Hounslow","autism.org.uk":"National Autistic Society",
+    "ambitiousaboutautism.org.uk":"Ambitious about Autism","autism-alliance.org.uk":"Autism Alliance UK",
+    "scope.org.uk":"Scope","mencap.org.uk":"Mencap","ipsea.org.uk":"IPSEA","contact.org.uk":"Contact",
+    "rcpsych.ac.uk":"Royal College of Psychiatrists","rcpch.ac.uk":"RCPCH","rcslt.org":"RCSLT",
+}
+
+def publisher_for(url: str) -> str:
+    host = urlparse(url).hostname or ""
+    for key, name in AUTHOR_MAP.items():
+        if host.endswith(key): return name
+    return host
+
+def jurisdiction_tags(url: str) -> dict:
+    host = urlparse(url).hostname or ""
+    tags = {"country":"UK","region":"England"}
+    if host.endswith("hounslow.gov.uk"):
+        tags["local"] = "Hounslow"
+    return tags
+
+crawl/chunk.py
+def chunk_text(text: str, max_chars: int = 1800, overlap: int = 200):
+    text = " ".join(text.split())
+    n = len(text)
+    i = 0
+    while i < n:
+        j = min(i + max_chars, n)
+        yield text[i:j]
+        i = j - overlap if j - overlap > i else j
+
+3) Ingest: replace crawl/ingest.py (now real, not stub)
+import argparse, asyncio, hashlib, os, json
+from urllib.parse import urljoin
+from bs4 import BeautifulSoup
+from crawl.seeds import SEED_SOURCES, ALLOWED_DOMAINS
+from crawl.fetch import fetch_many, allowed
+from crawl.parse import extract_text, extract_meta
+from crawl.normalize import publisher_for, jurisdiction_tags
+from crawl.chunk import chunk_text
+from rag import store
+
+def _id(s: str) -> str:
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()
+
+def _discover_links(base_url: str, html: str) -> list[str]:
+    soup = BeautifulSoup(html, "lxml")
+    links = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if href.startswith("#"): continue
+        absu = urljoin(base_url, href)
+        links.append(absu)
+    return list(dict.fromkeys(links))  # dedupe, keep order
+
+async def crawl_and_ingest(seed_urls: list[str], limit_per_domain: int = 25):
+    # Phase A: fetch seed pages
+    page_map = await fetch_many(seed_urls)
+
+    # Phase B: discover internal links per domain (light breadth-first)
+    to_fetch = set()
+    per_domain_count = {}
+    for url, html in page_map.items():
+        for link in _discover_links(url, html):
+            if allowed(link, ALLOWED_DOMAINS):
+                host = link.split("/")[2]
+                cnt = per_domain_count.get(host, 0)
+                if cnt < limit_per_domain:
+                    per_domain_count[host] = cnt + 1
+                    to_fetch.add(link)
+
+    # Phase C: fetch discovered pages
+    discovered_map = await fetch_many(list(to_fetch))
+    page_map.update(discovered_map)
+
+    # Phase D: parse, chunk, embed
+    documents, metadatas, ids = [], [], []
+    for url, html in page_map.items():
+        if not html: continue
+        text = extract_text(html)
+        if not text or len(text) < 400:  # skip thin pages
+            continue
+        meta = extract_meta(url, html)
+        pub = publisher_for(url)
+        tags = jurisdiction_tags(url)
+        for idx, chunk in enumerate(chunk_text(text)):
+            cid = _id(f"{url}::{idx}")
+            documents.append(chunk)
+            metadatas.append({
+                "url": url,
+                "title": meta.get("title",""),
+                "publisher": pub,
+                "date": meta.get("published_or_updated",""),
+                **tags
+            })
+            ids.append(cid)
+
+    if documents:
+        store.upsert(documents=documents, metadatas=metadatas, ids=ids)
+        print(f"✅ Ingested {len(documents)} chunks from {len(page_map)} pages.")
+    else:
+        print("⚠️ No documents ingested.")
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--fresh", action="store_true", help="(placeholder) full rebuild")
+    parser.add_argument("--limit-per-domain", type=int, default=25)
+    args = parser.parse_args()
+    asyncio.run(crawl_and_ingest(SEED_SOURCES, limit_per_domain=args.limit_per_domain))
+
+if __name__ == "__main__":
+    main()
+
+4) Retrieval with boosts & citations
+rag/retriever.py (new)
+from typing import List, Dict
+from rag import store
+
+AUTHORITY_BOOST = {
+    "NHS": 3.0, "NICE": 3.0, "GOV.UK": 2.5, "Legislation.gov.uk": 2.5,
+    "London Borough of Hounslow": 2.0,
+    "National Autistic Society": 1.8, "IPSEA": 1.8,
+}
+
+def retrieve(query: str, k: int = 6, require_uk: bool = True, prefer_hounslow: bool = False):
+    res = store.query([query], n_results=k)
+    docs = []
+    # Chroma returns dict with 'documents','metadatas','ids'
+    for i, doc in enumerate(res.get("documents", [[]])[0]):
+        meta = res["metadatas"][0][i]
+        score = 1.0
+        score *= AUTHORITY_BOOST.get(meta.get("publisher",""), 1.0)
+        # prefer recency if date present — very light heuristic
+        if meta.get("date"):
+            score *= 1.1
+        if prefer_hounslow and meta.get("local") == "Hounslow":
+            score *= 1.5
+        if require_uk and meta.get("country") != "UK":
+            continue
+        docs.append({"text": doc, "meta": meta, "score": score})
+    docs.sort(key=lambda x: x["score"], reverse=True)
+    return docs[:k]
+
+rag/citations.py (new)
+from datetime import datetime
+import os
+
+def format_citation(meta: dict) -> str:
+    pub = meta.get("publisher","")
+    title = meta.get("title","").strip()[:120]
+    date = meta.get("date","").split("T")[0]
+    url = meta.get("url","")
+    parts = [p for p in [pub, title, date, url] if p]
+    return "[" + " — ".join(parts) + "]"
+
+def last_checked() -> str:
+    tz = os.getenv("TIMEZONE","Europe/London")
+    # Keep simple: show naive ISO; host/UI should clarify timezone
+    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+5) Upgrade rag/answerer.py to use retriever + citations
+
+Replace the current file entirely:
+
+from dataclasses import dataclass
+import re
+from typing import Optional, List
+from rag.retriever import retrieve
+from rag.citations import format_citation, last_checked
+
+@dataclass
+class GuardrailTemplates:
+    clinical: str = (
+        "I can’t provide personalised clinical advice (diagnosis, treatment, or medication changes). "
+        "A good next step is to speak to your GP or call NHS 111. If this is an emergency, call 999."
+    )
+    legal: str = (
+        "I can’t give case-specific legal advice. For SEND and education issues, you could contact IPSEA. "
+        "You can also speak with Citizens Advice or a qualified solicitor."
+    )
+    crisis: str = (
+        "If you’re in crisis or feel unable to stay safe: call 999, go to A&E, or contact NHS urgent mental health help. "
+        "You can also call Samaritans on 116 123 (free, 24/7)."
+    )
+
+TEMPLATES = GuardrailTemplates()
+
+CLINICAL_PATTERNS = [
+    r"\b(dose|dosage|increase|decrease|change)\b.*\b(med|medication)\b",
+    r"\b(start|stop|switch)\b.*\b(med|medication)\b",
+    r"\b(diagnos(e|is)|treatment plan|therapy plan)\b",
+]
+LEGAL_PATTERNS = [
+    r"\b(win|guarantee|ensure)\b.*\b(tribunal|appeal|case)\b",
+    r"\blegal advice\b",
+    r"\bhow (do|to) (appeal|win)\b.*",
+]
+CRISIS_PATTERNS = [
+    r"\b(self[-\s]?harm(ing)?|suicid(al|e)|overdose|can.?t cope|in crisis)\b",
+    r"\b(unable to stay safe|immediate danger)\b",
+]
+
+def _match_any(text: str, patterns) -> Optional[str]:
+    import re
+    for p in patterns:
+        if re.search(p, text, re.IGNORECASE | re.MULTILINE):
+            return p
+    return None
+
+def apply_guardrails(user_text: str) -> Optional[str]:
+    if _match_any(user_text, CRISIS_PATTERNS):
+        return TEMPLATES.crisis
+    if _match_any(user_text, CLINICAL_PATTERNS):
+        return TEMPLATES.clinical
+    if _match_any(user_text, LEGAL_PATTERNS):
+        return TEMPLATES.legal
+    return None
+
+def synthesize_answer(query: str, hits: List[dict]) -> str:
+    """Simple extractive summary + inline citations."""
+    if not hits:
+        return ("I couldn’t verify this from trusted UK sources right now. "
+                "Try NHS, GOV.UK, or NICE for the latest guidance.")
+    # Take top 2–3 chunks for brevity
+    chunks = hits[:3]
+    bullets = []
+    for h in chunks:
+        meta = h["meta"]
+        snippet = h["text"][:400].rsplit(" ", 1)[0]
+        bullets.append(f"- {snippet} {format_citation(meta)}")
+    return (
+        "Summary (information only — not medical or legal advice):\n"
+        + "\n".join(bullets)
+        + f"\n\nLast checked: {last_checked()}"
+    )
+
+def answer(user_text: str) -> str:
+    refused = apply_guardrails(user_text)
+    if refused:
+        return refused
+    prefer_hounslow = any(w in user_text.lower() for w in ["hounslow", "tw", "chiswick", "brentford", "feltham", "isleworth"])
+    hits = retrieve(user_text, k=6, require_uk=True, prefer_hounslow=prefer_hounslow)
+    return synthesize_answer(user_text, hits)
+
+6) API banner / disclaimer (interim)
+
+Until you have a frontend banner, prepend the disclaimer in synthesize_answer() (already included: “information only — not medical or legal advice”). This satisfies safety UX in API responses.
+
+7) Update README usage section
+
+Append to README.md:
+
+## Phase 2 — RAG usage
+
+### Ingest real sources
+python -m crawl.ingest --fresh --limit-per-domain 20
+
+### Start API
+uvicorn app.main:app --reload --port 8000
+
+### Example query
+curl -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"question":"How do I request an EHCP in Hounslow?"}'
+
+8) Add simple schedules (Replit “Scheduled tasks”)
+
+Daily (NHS/GOV/NICE): python -m crawl.ingest --limit-per-domain 20
+
+Weekly (charities / council): same command (ingest is idempotent; Chroma upserts by id).
+
+9) Run & verify
+
+Ingest:
+
+python -m crawl.ingest --fresh --limit-per-domain 20
+
+
+API:
+
+uvicorn app.main:app --reload --port 8000
+
+
+Try queries:
+
+“What are early signs of autism in adults?”
+
+“How do I request an EHCP in Hounslow?”
+
+“Can I get a disabled person’s bus pass?”
+
+Ensure answers include bullet snippets + inline citations and Last checked timestamp.
+
+Run tests:
+
+pytest -q
+
+
+(Guardrail tests should pass; smoke tests should pass. RAG has no tests yet—OK.)
