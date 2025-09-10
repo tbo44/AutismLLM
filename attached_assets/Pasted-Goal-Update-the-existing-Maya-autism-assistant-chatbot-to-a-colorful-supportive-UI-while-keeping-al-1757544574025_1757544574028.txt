@@ -1,0 +1,120 @@
+Goal
+Update the existing Maya autism-assistant chatbot to a colorful, supportive UI while keeping all current features, APIs, data flow, security, and guardrails intact. This is a front-end/UI-only refresh unless a tiny backend tweak is strictly required for accessibility settings persistence.
+
+Do NOT break or remove: message handling, RAG/citation rendering, safety filters/guardrails, rate limiting, error handling, privacy copy, analytics/logging, environment variables, routes, auth/session, Hounslow/UK routing, or data schemas.
+
+Tech assumptions
+
+Keep current framework (React + Vite/Next) and styling approach. If Tailwind exists, use it; otherwise add a lightweight utility layer (no CSS frameworks that bloat bundle).
+
+Reuse current component names/props wherever possible to avoid regressions.
+
+Maintain responsive layout and SSR/ISR settings if present.
+
+Design to implement: “Colorful Supportive” mode (default)
+
+Palette: soft pastels with high readability (e.g., blue #D7EAFE, mint #DDF7E3, soft yellow #FFF6C8, lavender #EDE7FF). Use neutral ink for body text.
+
+Typography: large, legible sans (Atkinson Hyperlegible preferred; fallback: system UI). Base 18–20 px, comfortable line-height, clear focus states.
+
+Chat layout: rounded message bubbles, gentle shadows, generous spacing.
+
+Avatar: friendly circular Maya avatar visible in assistant messages.
+
+Quick actions: pill buttons under the input (e.g., “Explain step-by-step”, “Give shorter answer”, “Show sources”).
+
+Detail controls: per-response “Detail level” toggle (Short / Standard / More detail) + “Outline first” collapsible preview for long answers.
+
+Progress cues: when a task spans steps, show a subtle “Step X of Y” chip.
+
+Privacy reassurance: non-intrusive banner text near header: “Your chat is private & secure.” (must not affect existing privacy logic).
+
+Positive reinforcement: small inline success toasts (non-audio) for completed actions.
+
+Gentle alerts: no flashing; reduced-motion friendly; use subtle color shifts and iconography.
+
+Accessibility & neuroinclusion settings (new Settings panel + persistent)
+
+Low-stimulation mode (toggle): desaturate to near-neutral, remove avatars/illustrations, reduce shadows, minimize animation.
+
+High-contrast mode (toggle).
+
+Reduce motion (toggle): respect prefers-reduced-motion; disable non-essential transitions.
+
+Text size control: Small / Medium / Large (applies app-wide).
+
+Emoji/visual toggle: show/hide emojis and decorative icons.
+
+Keyboard-only navigation: tab order, visible focus rings; all controls reachable.
+
+TTS (if already present keep it; otherwise optional): play/pause/stop, adjustable speed; no auto-play.
+
+Persist all settings per user (localStorage or existing user prefs store).
+
+Header bar (new)
+
+Left: Maya logo + name.
+
+Center (optional): current mode chips (Colorful / Low-stimulation).
+
+Right: Settings cog (opens modal/panel), “Carer mode” toggle (see below).
+
+Carer mode toggle
+
+When ON: default to more technical detail, show service links first, but keep all guardrails and disclaimers. This is a presentation preference only; do not alter underlying safety policies or content filters.
+
+Message composer
+
+Larger input, clear placeholder (“Message…”), send button with icon, and optional shortcuts row (Step-by-step / TL;DR / Show sources).
+
+Preserve all existing slash commands or tool triggers if any.
+
+Citations & guardrails (must remain exactly functional)
+
+Keep current citation blocks, source chips, and safety disclaimers.
+
+Error/safety messages must retain wording and logic; only restyle them to match the new theme.
+
+State management
+
+Add a lightweight usePreferences() hook or extend existing store for: { themeMode: 'colorful'|'lowStim', highContrast: boolean, reduceMotion: boolean, textSize: 'sm'|'md'|'lg', showEmojis: boolean, carerMode: boolean }. Persist to localStorage (or existing persistence). Hydrate on app load.
+
+Performance
+
+Keep bundle size in check; tree-shake icons; no large libraries.
+
+No blocking fonts; use font-display: swap.
+
+Testing & QA tasks
+
+Keyboard-only flows for all core actions.
+
+Screen reader labels on buttons, toggles, quick actions, and citations.
+
+Contrast check (AA minimum; AAA for body text where feasible).
+
+Verify all toggles persist across reloads.
+
+Verify RAG answers still render with citations; red-team safety prompts to confirm guardrails unchanged.
+
+Deliverables
+
+Updated UI components and styles implementing the “Colorful Supportive” design as default, plus the Settings panel and toggles above.
+
+Non-breaking migration: no API/contract changes.
+
+Minimal screenshots (or Storybook stories) for: default chat, long answer with Outline, citations visible, Settings panel, Low-stimulation mode, High-contrast mode.
+
+Short README section: new settings, how they persist, and how to revert to prior theme.
+
+Acceptance criteria
+
+All existing features & guardrails work exactly as before (message flow, safety, citations, routing).
+
+New colorful theme is the default; Low-stimulation and High-contrast are one-click toggles.
+
+Keyboard-only and screen-reader use are fully supported.
+
+No visual regressions on mobile/tablet/desktop breakpoints.
+
+No new warnings/errors in console; CI tests pass if present.
