@@ -61,33 +61,78 @@ def apply_guardrails(user_text: str) -> Optional[str]:
 
 def answer(user_text: str) -> str:
     """
-    Main answer function for Compass - UK Autism Facts Assistant
+    Main answer function for Maya - UK Autism Facts Assistant
+    Now with full RAG system integration
     """
-    # Check guardrails first
+    try:
+        from .rag_system import get_rag_system
+        
+        # Get the RAG system instance
+        rag_system = get_rag_system()
+        
+        # Initialize if needed
+        if not rag_system.initialized:
+            init_result = rag_system.initialize()
+            
+            # If knowledge base is empty, provide helpful response
+            if init_result.get("needs_population", False):
+                return _provide_bootstrap_response(user_text)
+        
+        # Use the full RAG system to answer
+        return rag_system.answer_question(user_text)
+        
+    except Exception as e:
+        # Fallback to basic guardrails if RAG system fails
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"RAG system error: {str(e)}")
+        
+        # Check guardrails as fallback
+        refused = apply_guardrails(user_text)
+        if refused:
+            return refused
+            
+        return _provide_fallback_response(user_text)
+
+def _provide_bootstrap_response(user_text: str) -> str:
+    """Response when knowledge base is empty"""
     refused = apply_guardrails(user_text)
     if refused:
         return refused
-    
-    # For now, return a basic response indicating this is a stub
-    # In the future, this will include RAG retrieval and LLM synthesis
-    response = """I'm Maya, a UK autism facts assistant. I can help with:
+        
+    return f"""I'm Maya, your UK autism facts assistant! I'm currently building my knowledge base from trusted sources like the NHS, National Autistic Society, and government guidance.
 
-• General information about autism in the UK
-• Support services and charities 
-• Government benefits and rights
-• Education and EHCP processes
-• Local services in Hounslow
+For your question: {user_text}
 
-However, I cannot provide medical diagnoses, treatment plans, medication advice, or individual legal advice.
+Please check these trusted sources while I get up to speed:
+• **NHS**: nhs.uk/conditions/autism/
+• **National Autistic Society**: autism.org.uk  
+• **Gov.UK SEND guidance**: gov.uk/special-educational-needs-support-council
+• **IPSEA**: ipsea.org.uk (for education advice)
 
-[This is currently a basic version - RAG system with citations will be added when ML dependencies are available]
+If you're in Hounslow:
+• **Hounslow Council SEND**: hounslow.gov.uk
 
-For your question: """ + user_text + """
+**Important:** This information is for guidance only. For personalised advice:
+• **Medical questions:** Contact your GP or call NHS 111
+• **Legal/SEND issues:** Contact IPSEA, Citizens Advice, or a qualified solicitor  
+• **Crisis support:** Call 999, contact Samaritans (116 123), or go to A&E"""
 
-I'd recommend checking these trusted UK sources:
-- NHS: nhs.uk/conditions/autism/
-- National Autistic Society: autism.org.uk
-- For benefits: gov.uk (search for autism or disability benefits)
-- For education: gov.uk SEND guidance"""
+def _provide_fallback_response(user_text: str) -> str:
+    """Fallback response when RAG system is unavailable"""
+    return f"""I'm experiencing some technical difficulties right now, but I can still help with basic information.
 
-    return response
+For your question: {user_text}
+
+Please try these trusted UK autism sources:
+• **NHS**: nhs.uk/conditions/autism/
+• **National Autistic Society**: autism.org.uk
+• **Gov.UK**: gov.uk (search for autism or SEND guidance)
+• **IPSEA**: ipsea.org.uk (for education and legal advice)
+
+For urgent support, contact NHS 111 or your GP.
+
+**Important:** For personalised advice:
+• **Medical questions:** Contact your GP or call NHS 111
+• **Legal/SEND issues:** Contact IPSEA, Citizens Advice, or a qualified solicitor  
+• **Crisis support:** Call 999, contact Samaritans (116 123), or go to A&E"""

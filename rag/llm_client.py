@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 class UKAutismLLMClient:
     def __init__(self):
         self.client = None
-        self.model = "gpt-5"  # the newest OpenAI model is "gpt-5" which was released August 7, 2025. do not change this unless explicitly requested by the user
+        # Use configurable model with stable default
+        self.model = os.environ.get("OPENAI_MODEL", "gpt-4o")
         self._initialize_client()
     
     def _initialize_client(self):

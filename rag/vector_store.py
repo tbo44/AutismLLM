@@ -42,14 +42,31 @@ class UKAutismVectorStore:
         # Using a model optimized for semantic search
         self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
         
-        # Get or create collection
+        # Create ChromaDB embedding function class
+        class SentenceTransformerEmbeddingFunction:
+            def __init__(self, model):
+                self.model = model
+                
+            def __call__(self, input):
+                # Handle both single text and list of texts
+                if isinstance(input, str):
+                    input = [input]
+                return self.model.encode(input).tolist()
+        
+        embedding_function = SentenceTransformerEmbeddingFunction(self.embedder)
+        
+        # Get or create collection with embedding function
         try:
-            self.collection = self.client.get_collection(name=self.collection_name)
+            self.collection = self.client.get_collection(
+                name=self.collection_name,
+                embedding_function=embedding_function
+            )
             logger.info(f"Loaded existing collection: {self.collection_name}")
-        except ValueError:
+        except Exception:
             # Collection doesn't exist, create it
             self.collection = self.client.create_collection(
                 name=self.collection_name,
+                embedding_function=embedding_function,
                 metadata={"description": "UK Autism Facts Knowledge Base"}
             )
             logger.info(f"Created new collection: {self.collection_name}")
