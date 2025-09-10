@@ -70,7 +70,7 @@ def answer(user_text: str) -> str:
     
     # For now, return a basic response indicating this is a stub
     # In the future, this will include RAG retrieval and LLM synthesis
-    response = """I'm Compass, a UK autism facts assistant. I can help with:
+    response = """I'm Maya, a UK autism facts assistant. I can help with:
 
 • General information about autism in the UK
 • Support services and charities 
