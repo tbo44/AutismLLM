@@ -30,7 +30,9 @@ class Answer(BaseModel):
 
 @app.get("/")
 async def root():
-    return {"message": "Compass - UK Autism Facts Assistant", "status": "ok"}
+    """Serve the main chat interface"""
+    from fastapi.responses import FileResponse
+    return FileResponse('static/index.html')
 
 @app.get("/health")
 async def health():

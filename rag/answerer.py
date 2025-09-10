@@ -26,6 +26,8 @@ CLINICAL_PATTERNS = [
     r"\b(start|stop|switch)\b.*\b(med|medication)\b",
     r"\b(diagnos(e|is)|treatment plan|therapy plan)\b",
     r"\bshould I (take|give|increase|decrease)\b.*\b(med|medication|drug|pill)\b",
+    r"\bwhat (med|medication|drug|treatment)\b.*\b(give|should|take)\b",
+    r"\b(give|prescribe)\b.*\b(med|medication|drug|pill)\b",
 ]
 
 LEGAL_PATTERNS = [

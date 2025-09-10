@@ -16,27 +16,27 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Development Server"
+args = "Compass Server"
 
 [[workflows.workflow]]
-name = "Development Server"
+name = "Compass Server"
 author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "OPENAI_BASE_URL=https://api.groq.com/openai/v1 MODEL_NAME=llama-3.1-8b-instant uvicorn server:app --host 0.0.0.0 --port 8000 --reload"
-waitForPort = 8000
+args = "cd /home/runner/workspace && uvicorn app.main:app --host 0.0.0.0 --port 5000 --reload"
+waitForPort = 5000
 
 [workflows.workflow.metadata]
-outputType = "console"
+outputType = "webview"
 
 [[ports]]
 localPort = 5000
 externalPort = 80
 
 [[ports]]
-localPort = 8000
-externalPort = 8000
+localPort = 45225
+externalPort = 3000
 
 [deployment]
 deploymentTarget = "cloudrun"

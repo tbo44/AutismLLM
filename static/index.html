@@ -1,41 +1,29 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en-GB">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FalconCanvas</title>
-    <link rel="stylesheet" href="styles.css">
+    <title>Compass - UK Autism Facts Assistant</title>
+    <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>FalconCanvas</h1>
-            <div class="controls">
-                <div class="control-group">
-                    <label for="model">Model:</label>
-                    <input type="text" id="model" placeholder="llama-3.1-8b-instant">
-                </div>
-                <div class="control-group">
-                    <label for="temperature">Temperature:</label>
-                    <input type="number" id="temperature" min="0" max="2" step="0.1" value="0.7">
-                </div>
+            <h1>Compass - UK Autism Facts Assistant</h1>
+            <div class="disclaimer-banner">
+                ⚠️ Information only — not a diagnosis or treatment plan. For medical concerns contact your GP or NHS 111; emergencies: call 999. For legal advice, contact a qualified professional.
             </div>
         </header>
         
         <div class="chat-container">
             <div id="messages" class="messages"></div>
             <div class="input-container">
-                <div class="file-upload-area">
-                    <input type="file" id="fileInput" accept="image/*,text/*,.pdf,.doc,.docx" style="display: none;">
-                    <button id="attachButton" title="Attach file or image">📎</button>
-                    <div id="uploadedFiles" class="uploaded-files"></div>
-                </div>
-                <input type="text" id="messageInput" placeholder="Type your message here..." autofocus>
+                <input type="text" id="messageInput" placeholder="Ask about UK autism support, benefits, education, or local services..." autofocus>
                 <button id="sendButton">Send</button>
             </div>
         </div>
     </div>
     
-    <script src="script.js"></script>
+    <script src="/static/script.js"></script>
 </body>
 </html>
