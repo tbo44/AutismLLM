@@ -1,48 +1,89 @@
 # Overview
 
-This is a personal LLM (Large Language Model) chat application built with FastAPI and vanilla JavaScript. The application provides a web-based interface for interacting with OpenAI's language models, featuring a modern dark-themed UI and configurable model parameters. Users can engage in conversations with AI assistants through a clean, responsive chat interface.
+This is Compass, a UK-focused autism facts assistant built with FastAPI and vanilla JavaScript. The application provides a web-based chat interface for autistic people and carers to get information about UK autism support, services, benefits, and education. The system includes robust safety guardrails to prevent inappropriate medical, legal, or crisis advice.
+
+# Recent Changes
+
+**January 2025**: Transformed from personal LLM app to specialized UK autism assistant
+- Implemented comprehensive safety guardrails for clinical/legal/crisis questions
+- Added UK-specific autism information system
+- Created specialized chat interface with disclaimer banner
+- Built complete test suite with 15 passing tests
+- Configured for Europe/London timezone and en-GB locale
 
 # User Preferences
 
-Preferred communication style: Simple, everyday language.
+Preferred communication style: Simple, everyday language
+Target audience: UK autistic people and carers
+Jurisdiction: United Kingdom (emphasis on England and Hounslow)
 
-# System Architecture
+# Project Architecture
 
 ## Backend Architecture
-- **Framework**: FastAPI with Python, chosen for its modern async capabilities and automatic API documentation
-- **API Design**: RESTful endpoints with Pydantic models for request/response validation
-- **Configuration**: Environment variable-based configuration using python-dotenv for flexibility across environments
-- **CORS Policy**: Permissive CORS configuration allowing all origins for development/personal use
+- **Framework**: FastAPI with Python 3.11, providing robust API endpoints
+- **Core Endpoints**: 
+  - `/` - Serves main chat interface
+  - `/health` - Health check endpoint
+  - `/chat` - Main conversation endpoint with safety guardrails
+- **Safety System**: Regex-based guardrail patterns detecting clinical, legal, and crisis content
+- **Configuration**: Environment variable-based with UK timezone and locale settings
 
 ## Frontend Architecture
-- **Technology Stack**: Vanilla HTML, CSS, and JavaScript without frameworks to minimize complexity
-- **UI Design**: Dark theme with modern CSS using system fonts and flexbox layouts
-- **Client Architecture**: Class-based JavaScript architecture with ChatApp class managing state and interactions
-- **Responsive Design**: Mobile-first approach with flexible layouts
+- **Technology Stack**: Vanilla HTML, CSS, and JavaScript for simplicity
+- **UI Design**: Dark theme with prominent safety disclaimer banner
+- **Chat Interface**: CompassApp class managing real-time conversations
+- **Responsive Design**: Mobile-friendly with accessible styling
 
-## Chat System Design
-- **Message Management**: In-memory message history maintained on the frontend
-- **Real-time Interaction**: Synchronous API calls with visual feedback (thinking indicators)
-- **User Experience**: Auto-focus input, keyboard shortcuts (Enter to send), and disabled states during processing
+## Safety & Compliance System
+- **Guardrails**: Automatic detection and refusal of inappropriate content
+- **Categories**: Clinical (diagnosis/medication), Legal (case-specific advice), Crisis (self-harm/suicide)
+- **Refusal Templates**: Professional redirects to appropriate UK services (NHS 111, IPSEA, etc.)
+- **Disclaimer**: Persistent banner emphasizing information-only nature
 
-## Configuration Management
-- **Model Selection**: Runtime configurable model selection through environment variables with UI override
-- **Temperature Control**: Adjustable creativity/randomness parameter (0-2 range) with UI controls
-- **System Prompts**: Configurable system behavior through environment variables
+## Testing Architecture
+- **Test Coverage**: 15 comprehensive tests covering endpoints, guardrails, and static assets
+- **Policy Tests**: Parametrized tests ensuring safety guardrails work correctly
+- **Smoke Tests**: Basic functionality verification for all endpoints
+- **Static Asset Tests**: Verification that CSS, JavaScript, and HTML load correctly
 
 # External Dependencies
 
-## AI Service Integration
-- **OpenAI API**: Primary language model provider with configurable base URL for potential alternative providers
-- **Authentication**: API key-based authentication stored in environment variables
-- **Models**: Defaults to gpt-4o-mini with support for other OpenAI-compatible models
-
-## Development Dependencies
+## Core Dependencies
 - **FastAPI**: Web framework for building the API backend
 - **Uvicorn**: ASGI server for running the FastAPI application
-- **Pydantic**: Data validation and settings management
-- **python-dotenv**: Environment variable management from .env files
+- **Pydantic**: Data validation and API response modeling
+- **pytz**: Timezone handling for Europe/London timestamps
 
-## Static File Serving
-- **Static Assets**: CSS, JavaScript, and HTML files served directly by FastAPI
-- **No CDN Dependencies**: All frontend assets are self-hosted for offline capability
+## Development & Testing
+- **pytest**: Test framework for comprehensive test suite
+- **httpx**: HTTP client for API testing
+- **python-dotenv**: Environment variable management
+
+## Content Processing (Future RAG Implementation)
+- **BeautifulSoup4**: HTML parsing for web content extraction
+- **lxml**: XML/HTML processing library
+- **python-multipart**: Form data handling
+
+# Current Status
+
+**Phase 1 Complete**: Core application with safety guardrails
+- ✅ FastAPI backend with UK autism focus
+- ✅ Safety guardrails preventing inappropriate advice
+- ✅ Professional UI with disclaimer
+- ✅ Comprehensive test suite (15 tests passing)
+- ✅ Static assets properly configured
+- ✅ Workflow running on port 5000
+
+**Phase 2 Pending**: RAG system implementation
+- 📋 ChromaDB vector store integration
+- 📋 UK autism source crawling pipeline
+- 📋 Citation system for responses
+- 📋 Hounslow-specific content routing
+
+# Technical Notes
+
+- Application serves on port 5000 with auto-reload enabled
+- Static files mounted at `/static/` route
+- Europe/London timezone for all timestamps
+- CORS enabled for development (should be restricted for production)
+- No heavy ML dependencies in current version for faster deployment
