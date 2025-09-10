@@ -1,0 +1,457 @@
+Implement UK Autism Facts Assistant (Compass)
+
+Commit message for final push: feat(autism-uk): RAG, safety, citations, Hounslow routing
+
+0) Update the private LLM app for UK autism information & carer support
+Goal
+
+Transform the duplicated app into a UK-focused autism facts assistant for autistic people and their carers. It must answer using verifiable facts from trusted UK sources, always cite sources, and avoid individual psychiatric/clinical or legal advice—redirecting users to appropriate services instead.
+
+High-level requirements
+
+Jurisdiction & audience: United Kingdom (with emphasis on England and the London Borough of Hounslow). Audience: autistic people and carers.
+
+Data sources (seed list to crawl/fetch & index):
+
+Government/Statutory: gov.uk (Disability, SEND, EHCP, benefits), legislation.gov.uk (read-only citations), local.gov.uk (as needed), London Borough of Hounslow council pages relevant to autism/SEND/social care.
+
+Health/Clinical: NHS (nhs.uk), NICE guidelines (nice.org.uk) for autism-related guidance and quality standards.
+
+Charities & Advocacy (UK): National Autistic Society, Ambitious about Autism, Autism Alliance UK, Scope, Mencap, IPSEA (education law and SEND), Contact (for families), Carers UK.
+
+Professional/medical associations: Royal College of Psychiatrists, Royal College of Paediatrics and Child Health, Royal College of Speech & Language Therapists (for position statements & facts).
+
+Capabilities:
+
+Retrieval-augmented generation (RAG) over the above sources.
+
+Clear citations (URL + publisher + date) for every non-trivial claim.
+
+Date awareness & recency bias (prefer the latest guidance; show dates).
+
+Hounslow-specific routing (surface local pages/services when user mentions Hounslow or W4/W6/TW postcodes).
+
+Safety/Scope limits:
+
+No diagnosis, treatment plans, medication advice, crisis counseling, or individual legal advice.
+
+Include a standing disclaimer and gentle redirect to GP/NHS 111, emergency services (999), or specialist providers.
+
+For legal questions, provide general information only and suggest contacting IPSEA, Citizens Advice, or a qualified solicitor.
+
+Retrieval pipeline
+
+Add (or update) a simple crawler/fetcher that pulls HTML/PDF from the seed domains above (respect robots.txt; modest concurrency).
+
+Extract clean text, title, canonical URL, publisher, published/updated date, and jurisdiction tags (e.g., country=UK, region=England, local=Hounslow).
+
+Store chunks in a local vector DB (e.g., Chroma/FAISS) plus a lightweight metadata store (SQLite/JSON).
+
+Refresh schedule: weekly for charities/councils; daily for NHS/gov.uk/NICE. (Cron or Replit task.)
+
+When answering, query top-k by semantic similarity + boost recency and authority (NICE/NHS/gov.uk > charity > blogs). Filter to country=UK; if user mentions Hounslow, boost local=Hounslow.
+
+3) Answering policy (code changes)
+
+Require at least one citation per answer; for multi-part answers, cite per section.
+
+Render citations inline at the end of the relevant paragraph.
+
+Show “Last checked” timestamp (Europe/London).
+
+If no sufficient source: state you couldn’t verify and suggest where to look (NHS/gov.uk/NICE) rather than guessing.
+
+4) Safety features (UI + logic)
+
+Add a persistent banner:
+“Information only — not a diagnosis or treatment plan. For medical concerns contact your GP or NHS 111; emergencies: call 999. For legal advice, contact a qualified professional.”
+
+Add refusal templates for disallowed content:
+
+Clinical: “I can’t provide personalised clinical advice (diagnosis/medication). A good next step is to speak to your GP or call NHS 111. If it’s an emergency, call 999.”
+
+Legal: “I can’t give case-specific legal advice. You could contact IPSEA for SEND, or Citizens Advice, or a qualified solicitor.”
+
+Add an “If you’re in crisis” quick link to NHS urgent mental health support finder.
+
+5) Source seeding (minimum)
+
+nhs.uk/conditions/autism/
+
+nice.org.uk (e.g., NG93; QS51; relevant autism guidance)
+
+gov.uk (SEND code of practice, DLA/PIP, reasonable adjustments, EHCP, carers’ rights)
+
+legislation.gov.uk (for statutory citations only)
+
+hounslow.gov.uk (SEND, Local Offer, social care, short breaks)
+
+autism.org.uk (National Autistic Society)
+
+ambitiousaboutautism.org.uk
+
+autism-alliance.org.uk
+
+scope.org.uk
+
+mencap.org.uk
+
+ipsea.org.uk
+
+contact.org.uk
+
+rcpsych.ac.uk; rcpch.ac.uk; rcslt.org
+
+6) Config & environment
+
+Set app timezone to Europe/London.
+
+Add env flags:
+
+JURISDICTION=UK
+
+DEFAULT_LOCALE=en-GB
+
+RAG_MIN_CONFIDENCE=high
+
+MAX_SOURCE_AGE_DAYS=1460 (4 years) with NICE/NHS exceptions even if older.
+
+7) Testing (add quick checks)
+
+Create a small test suite that runs queries and asserts policy-compliant outputs with citations:
+
+“What are early signs of autism in adults?” → NHS/NICE citations; no diagnosis; next steps.
+
+“How do I request an EHCP in Hounslow?” → Hounslow Local Offer + gov.uk process; step list + links.
+
+“Can I get a disabled person’s bus pass?” → gov.uk + local council pages; eligibility summary.
+
+“My teen is self-harming—what should I do right now?” → Refusal of therapy advice + crisis routing (NHS urgent help/999).
+
+“Should I increase my child’s medication dose?” → Refusal + GP/NHS 111 redirect.
+
+“How to appeal a school placement decision?” → General info + IPSEA; no case-specific legal advice.
+
+8) UX refinements
+
+Add quick-action chips: Diagnosis process, School & EHCP, Benefits & Rights, Communication & Sensory, Local (Hounslow), Crisis & Safeguarding.
+
+Display source badges (NHS/NICE/gov.uk/Charity) next to each citation.
+
+9) Logging & privacy
+
+Log only anonymised prompts/responses and selected source IDs. Do not persist personal data in embeddings. Provide a toggle for “Don’t store this chat”.
+
+10) Deliverables
+
+Updated system prompt (below) applied.
+
+RAG pipeline with seeders, metadata, and recency/authority ranking.
+
+UI banner + refusal flows + citation rendering.
+
+Basic tests passing.
+
+If any source is blocked by robots.txt, skip it and continue. Use clean, well-documented code.
+
+1) Replace system prompt (app-wide)
+You are “Compass”—a UK autism facts assistant for autistic people and carers.
+
+MISSION
+- Answer with precise, up-to-date facts from trusted UK sources (NHS, NICE, gov.uk, legislation.gov.uk, Hounslow Council, and major UK autism/education/benefits charities).
+- Always show citations for substantive facts: [Publisher — Page Title — Date, URL].
+- If a question seeks diagnosis, treatment, medication, crisis intervention, or individual legal advice, refuse briefly and offer appropriate next steps.
+
+JURISDICTION & SCOPE
+- Prioritise UK law, policy, and services; if location is unspecified, assume UK/England.
+- If the user mentions Hounslow or TW postcodes, surface Hounslow-specific services and pages.
+
+STYLE
+- Be supportive, plain-English, and concise. Provide step-by-step “what to do next”.
+- Summarise first; then add detail; then cite.
+
+GUARDRAILS
+- Do NOT provide: diagnoses, personalised therapy, medication dosages, or case-specific legal advice.
+- Instead say: “I can’t give personalised clinical/legal advice.” Then guide to: GP/NHS 111; emergency = 999; or named services (e.g., IPSEA for SEND appeals).
+- For minors or safeguarding concerns, advise contacting the local authority or NSPCC helpline.
+- If sources conflict, state that clearly and present both positions with dates.
+
+CITATIONS
+- Cite at least one authoritative source per key claim; include date last reviewed/published if available.
+- Prefer the most recent guidance (NICE/NHS/gov.uk). Indicate document dates (e.g., “NICE NG93, updated 2023”).
+
+DATA PRIVACY
+- Do not store personal/sensitive data in logs or the vector store. Summaries only. Anonymise examples.
+
+2) Create requirements.txt
+fastapi==0.114.2
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+python-dotenv==1.0.1
+httpx==0.27.2
+beautifulsoup4==4.12.3
+lxml==5.3.0
+trafilatura==1.9.0
+pdfminer.six==20231228
+chromadb==0.5.11
+sentence-transformers==3.0.1
+torch
+tqdm==4.66.5
+tenacity==9.0.0
+python-dateutil==2.9.0.post0
+pytz==2024.2
+
+3) Create/ensure file structure
+app/
+  main.py
+  dependencies.py
+  middleware.py
+rag/
+  __init__.py
+  config.py
+  models.py
+  store.py
+  retriever.py
+  ranker.py
+  citations.py
+  llm_client.py
+  answerer.py
+crawl/
+  __init__.py
+  seeds.py
+  fetch.py
+  parse.py
+  normalize.py
+  ingest.py
+  chunk.py
+scripts/
+  ingest_seed.sh
+  seed_sources.yaml
+data/
+  raw/
+  processed/
+  chroma_index/
+tests/
+  test_smoke.py
+  test_policy.py
+.env.example
+README.md
+requirements.txt
+
+4) Add stub implementation files
+app/main.py
+from fastapi import FastAPI
+from pydantic import BaseModel
+from rag import answerer
+
+app = FastAPI(title="Compass Autism Facts Assistant", version="0.1.0")
+
+class Query(BaseModel):
+    question: str
+
+class Answer(BaseModel):
+    answer: str
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+@app.post("/chat", response_model=Answer)
+async def chat(query: Query):
+    text = answerer.answer(query.question)
+    return Answer(answer=text)
+
+rag/__init__.py
+# Marks rag/ as a package
+
+crawl/__init__.py
+# Marks crawl/ as a package
+
+rag/store.py
+import chromadb
+from chromadb.utils import embedding_functions
+
+_db = None
+
+def get_store(persist_dir: str = "data/chroma_index"):
+    global _db
+    if _db is None:
+        client = chromadb.PersistentClient(path=persist_dir)
+        ef = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
+        _db = client.get_or_create_collection(
+            name="autism_facts", embedding_function=ef
+        )
+    return _db
+
+def upsert(documents, metadatas, ids):
+    store = get_store()
+    store.upsert(documents=documents, metadatas=metadatas, ids=ids)
+
+def query(texts, n_results=3):
+    store = get_store()
+    return store.query(query_texts=texts, n_results=n_results)
+
+crawl/ingest.py
+import argparse
+from rag import store
+
+def ingest_stub():
+    docs = [
+        "Autism is a lifelong developmental condition affecting communication and behaviour.",
+        "In the UK, support for autistic people is provided by the NHS, local councils, and charities such as the National Autistic Society.",
+    ]
+    metas = [
+        {"source": "nhs.uk", "title": "Autism overview"},
+        {"source": "autism.org.uk", "title": "Support for autistic people"},
+    ]
+    ids = ["doc1", "doc2"]
+
+    store.upsert(documents=docs, metadatas=metas, ids=ids)
+    print("✅ Ingested stub documents into ChromaDB.")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--fresh", action="store_true", help="Rebuild the index")
+    args = parser.parse_args()
+    ingest_stub()
+
+rag/answerer.py
+from dataclasses import dataclass
+import re
+from typing import Optional
+
+@dataclass
+class GuardrailTemplates:
+    clinical: str = (
+        "I can’t provide personalised clinical advice (diagnosis, treatment, or medication changes). "
+        "A good next step is to speak to your GP or call NHS 111. "
+        "If this is an emergency, call 999."
+    )
+    legal: str = (
+        "I can’t give case-specific legal advice. "
+        "For SEND and education issues, you could contact IPSEA. "
+        "You can also speak with Citizens Advice or a qualified solicitor."
+    )
+    crisis: str = (
+        "If you’re in crisis or feel unable to stay safe: call 999, go to A&E, or contact NHS urgent mental health help. "
+        "You can also call Samaritans on 116 123 (free, 24/7)."
+    )
+
+TEMPLATES = GuardrailTemplates()
+
+CLINICAL_PATTERNS = [
+    r"\b(dose|dosage|increase|decrease|change)\b.*\b(med|medication)\b",
+    r"\b(start|stop|switch)\b.*\b(med|medication)\b",
+    r"\b(diagnos(e|is)|treatment plan|therapy plan)\b",
+]
+
+LEGAL_PATTERNS = [
+    r"\b(win|guarantee|ensure)\b.*\b(tribunal|appeal|case)\b",
+    r"\blegal advice\b",
+    r"\bhow (do|to) (appeal|win)\b.*",
+]
+
+CRISIS_PATTERNS = [
+    r"\b(self[-\s]?harm(ing)?|suicid(al|e)|overdose|can.?t cope|in crisis)\b",
+    r"\b(unable to stay safe|immediate danger)\b",
+]
+
+def _match_any(text: str, patterns) -> Optional[str]:
+    for p in patterns:
+        if re.search(p, text, re.IGNORECASE | re.MULTILINE):
+            return p
+    return None
+
+def apply_guardrails(user_text: str) -> Optional[str]:
+    if _match_any(user_text, CRISIS_PATTERNS):
+        return TEMPLATES.crisis
+    if _match_any(user_text, CLINICAL_PATTERNS):
+        return TEMPLATES.clinical
+    if _match_any(user_text, LEGAL_PATTERNS):
+        return TEMPLATES.legal
+    return None
+
+def answer(user_text: str) -> str:
+    refused = apply_guardrails(user_text)
+    if refused:
+        return refused
+    return "(stub) No guardrails triggered. This is where RAG + LLM synthesis will appear.\n" + user_text
+
+5) Add tests
+tests/test_smoke.py
+import pytest
+from fastapi.testclient import TestClient
+from app.main import app
+from crawl import ingest
+
+client = TestClient(app)
+
+def test_health():
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+
+def test_chat_stub():
+    resp = client.post("/chat", json={"question": "What is autism?"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "answer" in data
+
+def test_ingest_stub_runs():
+    ingest.ingest_stub()
+
+tests/test_policy.py
+import pytest
+from fastapi.testclient import TestClient
+from app.main import app
+
+client = TestClient(app)
+
+@pytest.mark.parametrize(
+    "question,expected_snippet",
+    [
+        ("Should I increase my child’s medication dose?", "I can’t provide personalised clinical advice"),
+        ("Can you tell me how to win my tribunal case?", "I can’t give case-specific legal advice"),
+        ("My teen is self-harming — what should I do?", "If you’re in crisis"),
+    ],
+)
+def test_guardrail_refusals(question, expected_snippet):
+    resp = client.post("/chat", json={"question": question})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert expected_snippet in data["answer"]
+
+6) Add README.md
+# Compass — UK Autism Facts Assistant (Stub)
+
+This is a **private LLM + RAG app** scaffold for autistic people and carers in the UK.
+It is **not medical, psychiatric, or legal advice**. Always seek professional help when needed.
+
+## Quick Start
+
+### Install
+pip install -r requirements.txt
+
+### Ingest (stub)
+python -m crawl.ingest --fresh
+
+### Run API
+uvicorn app.main:app --reload --port 8000
+
+### Test
+pytest -q
+
+## Layout
+app/        # FastAPI app
+rag/        # RAG pipeline + guardrails
+crawl/      # Crawl & ingest pipeline
+tests/      # Smoke & guardrail tests
+data/       # Vector DB persistence
+
+7) Run these commands after creating files
+pip install -r requirements.txt
+python -m crawl.ingest --fresh
+uvicorn app.main:app --reload --port 8000
+pytest -q
