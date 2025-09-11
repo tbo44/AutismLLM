@@ -121,10 +121,9 @@ body {
 .message-bubble {
     padding: 12px 16px;
     border-radius: 18px;
-    word-wrap: break-word;
-    word-break: break-word;
-    overflow-wrap: break-word;
-    hyphens: auto;
+    word-break: normal;
+    hyphens: none;
+    overflow-wrap: normal;
     line-height: 1.4;
     max-width: 280px;
     overflow: hidden;
