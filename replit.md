@@ -59,7 +59,11 @@ Jurisdiction: United Kingdom (emphasis on England and Hounslow)
 - **httpx**: HTTP client for API testing
 - **python-dotenv**: Environment variable management
 
-## Content Processing (Future RAG Implementation)
+## Content Processing & RAG Implementation
+- **ChromaDB**: Vector database for semantic search and document storage
+- **SentenceTransformers**: Text embeddings for semantic similarity
+- **Groq**: Open-source LLM API client for intelligent response generation
+- **Trafilatura**: Web content extraction and text processing
 - **BeautifulSoup4**: HTML parsing for web content extraction
 - **lxml**: XML/HTML processing library
 - **python-multipart**: Form data handling
@@ -77,11 +81,11 @@ Jurisdiction: United Kingdom (emphasis on England and Hounslow)
 **Phase 2 Complete**: Full RAG system implementation
 - ✅ ChromaDB vector store with proper SentenceTransformer embeddings
 - ✅ UK autism source crawling pipeline (14 documents from NHS, NAS, Gov.UK)
-- ✅ OpenAI LLM integration with configurable model (gpt-4o default)
+- ✅ Groq LLM integration with Llama 3.1 70B model (open-source via Groq API)
 - ✅ Intelligent retrieval with authority ranking and Hounslow-specific routing
 - ✅ Citation system with source transparency and disclaimers
 - ✅ End-to-end RAG pipeline: crawl → embed → retrieve → synthesize → cite
-- ✅ Production-ready system processing live chat requests
+- ✅ Production-ready system processing live chat requests with open-source models
 
 # Technical Notes
 

@@ -1,31 +1,31 @@
 """
-OpenAI LLM Client for UK Autism Assistant
-Handles natural language generation with safety guardrails
+Groq LLM Client for UK Autism Assistant
+Handles natural language generation with safety guardrails using open-source models
 """
 
 import os
 import json
 import logging
 from typing import List, Dict, Any, Optional
-from openai import OpenAI
+from groq import Groq
 
 logger = logging.getLogger(__name__)
 
 class UKAutismLLMClient:
     def __init__(self):
         self.client = None
-        # Use configurable model with stable default
-        self.model = os.environ.get("OPENAI_MODEL", "gpt-4o")
+        # Use configurable Groq model with stable default
+        self.model = os.environ.get("GROQ_MODEL", "llama-3.1-70b-versatile")
         self._initialize_client()
     
     def _initialize_client(self):
-        """Initialize OpenAI client"""
-        api_key = os.environ.get("OPENAI_API_KEY")
+        """Initialize Groq client"""
+        api_key = os.environ.get("GROQ_API_KEY")
         if not api_key:
-            raise ValueError("OPENAI_API_KEY environment variable not found")
+            raise ValueError("GROQ_API_KEY environment variable not found")
         
-        self.client = OpenAI(api_key=api_key)
-        logger.info("OpenAI client initialized successfully")
+        self.client = Groq(api_key=api_key)
+        logger.info("Groq client initialized successfully")
     
     def synthesize_response(self, user_question: str, retrieved_chunks: List[Dict[str, Any]], 
                           context: Optional[str] = None) -> Dict[str, Any]:
