@@ -15,7 +15,7 @@ class UKAutismLLMClient:
     def __init__(self):
         self.client = None
         # Use configurable Groq model with stable default
-        self.model = os.environ.get("GROQ_MODEL", "llama-3.1-70b-versatile")
+        self.model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
         self._initialize_client()
     
     def _initialize_client(self):

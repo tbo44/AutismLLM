@@ -4,6 +4,7 @@ This is Maya, a UK-focused autism facts assistant built with FastAPI and vanilla
 
 # Recent Changes
 
+**September 2025**: Converted from OpenAI to Groq open-source LLMs
 **January 2025**: Transformed from personal LLM app to specialized UK autism assistant
 - Implemented comprehensive safety guardrails for clinical/legal/crisis questions
 - Added UK-specific autism information system
