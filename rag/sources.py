@@ -32,10 +32,10 @@ UK_SOURCES = [
         authority=SourceAuthority.GOVERNMENT,
         crawl_paths=[
             "/children-with-special-educational-needs",
-            "/special-educational-needs-support-council",
-            "/education-health-care-plans-ehcp",
-            "/disability-living-allowance-children",
-            "/personal-independence-payment-pip"
+            "/children-with-special-educational-needs/extra-SEN-help",
+            "/government/statistics/education-health-and-care-plans-england-2025",
+            "/government/publications/send-19-to-25-year-olds-entitlement-to-ehc-plans/send-19-to-25-year-olds-entitlement-to-ehc-plans",
+            "/disability-living-allowance-children"
         ],
         description="Official UK government guidance on SEND and benefits"
     ),
@@ -48,9 +48,11 @@ UK_SOURCES = [
         crawl_paths=[
             "/conditions/autism/",
             "/conditions/autism/what-is-autism/",
-            "/conditions/autism/signs/",
-            "/conditions/autism/getting-diagnosed/",
-            "/conditions/autism/support/"
+            "/conditions/autism/signs/adults/",
+            "/conditions/autism/signs/children/",
+            "/conditions/autism/getting-diagnosed/how-to-get-diagnosed/",
+            "/conditions/autism/getting-diagnosed/assessments/",
+            "/conditions/autism/other-conditions/"
         ],
         description="NHS official autism information and guidance"
     ),
@@ -62,11 +64,12 @@ UK_SOURCES = [
         authority=SourceAuthority.NATIONAL_CHARITY,
         crawl_paths=[
             "/advice-and-guidance",
-            "/advice-and-guidance/what-is-autism",
-            "/advice-and-guidance/autism-and-mental-health",
-            "/advice-and-guidance/benefits-and-money",
-            "/advice-and-guidance/education",
-            "/advice-and-guidance/employment"
+            "/advice-and-guidance/topics/about-autism",
+            "/advice-and-guidance/topics/diagnosis/before-diagnosis/signs-that-a-child-or-adult-may-be-autistic",
+            "/advice-and-guidance/topics/mental-health",
+            "/advice-and-guidance/topics/employment",
+            "/advice-and-guidance/topics/strategies-and-interventions",
+            "/advice-and-guidance/topics/resources-for-autistic-teenagers"
         ],
         description="UK's leading autism charity providing comprehensive support information"
     ),
@@ -76,10 +79,9 @@ UK_SOURCES = [
         base_url="https://www.ambitiousaboutautism.org.uk",
         authority=SourceAuthority.NATIONAL_CHARITY,
         crawl_paths=[
-            "/understanding-autism",
-            "/education-and-learning",
-            "/information-about-autism",
-            "/support-for-families"
+            "/about-us",
+            "/about-us/media-centre/blog",
+            "/contact-us"
         ],
         description="National charity focused on education and young people with autism"
     ),
@@ -90,10 +92,10 @@ UK_SOURCES = [
         base_url="https://www.ipsea.org.uk",
         authority=SourceAuthority.SPECIALIST_ORG,
         crawl_paths=[
-            "/education-law-and-appeals",
-            "/school-issues",
-            "/ehcp-needs-assessment",
-            "/appeals-and-mediation"
+            "/appealing-to-the-send-tribunal",
+            "/general-advice-for-all-appeals",
+            "/how-to-submit-an-appeal-general-advice",
+            "/pages/category/education-health-and-care-plans"
         ],
         description="Independent Provider of Special Education Advice"
     ),
