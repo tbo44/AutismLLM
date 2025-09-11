@@ -122,8 +122,8 @@ body {
     padding: 12px 16px;
     border-radius: 18px;
     word-wrap: break-word;
-    word-break: break-all;
-    overflow-wrap: anywhere;
+    word-break: break-word;
+    overflow-wrap: break-word;
     hyphens: auto;
     line-height: 1.4;
     max-width: 280px;
