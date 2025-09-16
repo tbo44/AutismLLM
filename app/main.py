@@ -3,47 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from rag import answerer
-from contextlib import asynccontextmanager
 import pytz
 from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Initialize and cleanup for the FastAPI app"""
-    # Startup: Pre-initialize RAG system to eliminate cold start
-    logger.info("🚀 Starting Maya - Pre-initializing RAG system...")
-    
-    try:
-        from rag.rag_system import get_rag_system
-        
-        # Get and initialize the RAG system
-        rag_system = get_rag_system()
-        if not rag_system.initialized:
-            rag_system.initialize()
-            logger.info("✅ RAG system initialized successfully")
-        
-        # Warmup: Run a dummy query to cache embeddings and models
-        logger.info("🔥 Warming up embedding model...")
-        warmup_response = rag_system.answer_question("warmup test")
-        logger.info("✅ RAG system warmed up - first responses will now be fast!")
-        
-    except Exception as e:
-        logger.error(f"❌ RAG initialization failed: {e}")
-        logger.info("📋 Maya will fall back to basic guardrails")
-    
-    yield  # App runs here
-    
-    # Shutdown: cleanup if needed
-    logger.info("👋 Maya shutting down")
-
-app = FastAPI(
-    title="Maya Autism Facts Assistant", 
-    version="0.1.0",
-    lifespan=lifespan
-)
+app = FastAPI(title="Maya Autism Facts Assistant", version="0.1.0")
 
 # Enable CORS
 app.add_middleware(
@@ -73,17 +39,8 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """Health check with RAG system status"""
-    try:
-        from rag.rag_system import get_rag_system
-        rag_system = get_rag_system()
-        return {
-            "status": "ok", 
-            "rag_initialized": rag_system.initialized,
-            "startup_optimization": "enabled"
-        }
-    except Exception as e:
-        return {"status": "ok", "rag_initialized": False, "error": str(e)}
+    """Simple health check - responds immediately for deployment"""
+    return {"status": "ok", "service": "maya-autism-assistant"}
 
 @app.post("/chat", response_model=Answer)
 async def chat(query: Query):

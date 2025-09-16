@@ -62,21 +62,26 @@ def apply_guardrails(user_text: str) -> Optional[str]:
 def answer(user_text: str) -> str:
     """
     Main answer function for Maya - UK Autism Facts Assistant
-    Now with full RAG system integration
+    Uses lazy initialization to avoid blocking deployment startup
     """
     try:
         from .rag_system import get_rag_system
+        import logging
+        logger = logging.getLogger(__name__)
         
-        # Get the RAG system instance
+        # Get the RAG system instance (lazy initialization)
         rag_system = get_rag_system()
         
-        # Initialize if needed
+        # Initialize if needed (happens on first request only)
         if not rag_system.initialized:
+            logger.info("Initializing RAG system on first request...")
             init_result = rag_system.initialize()
             
             # If knowledge base is empty, provide helpful response
             if init_result.get("needs_population", False):
                 return _provide_bootstrap_response(user_text)
+            
+            logger.info("RAG system initialized successfully")
         
         # Use the full RAG system to answer
         return rag_system.answer_question(user_text)
