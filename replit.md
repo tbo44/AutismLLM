@@ -4,16 +4,18 @@ This is Maya, a UK-focused autism facts assistant built with FastAPI and vanilla
 
 # Recent Changes
 
-**October 30, 2025**: Reverted to simple, reliable blocking initialization
-- **DECISION**: Reverted from async lazy initialization to simple blocking approach for reliability
-- **WHY**: Lazy initialization had silent failures causing "system not fully initialized" errors
-- **CURRENT APPROACH**: Simple synchronous initialization on first request (slow but reliable)
+**October 30, 2025**: Fixed HuggingFace rate limiting and reverted to simple initialization
+- **CRITICAL FIX**: Added HF_TOKEN secret to resolve "429 Too Many Requests" errors in deployment
+- **ROOT CAUSE**: HuggingFace blocks downloads without authentication tokens
+- **SOLUTION**: Free HuggingFace read token allows model downloads in production
+- **DEPLOYMENT**: Reverted from async lazy initialization to simple blocking approach for reliability
+- Simple synchronous initialization on first request (slow but reliable)
 - Frontend shows helpful "Initializing..." message during first request (~1-2 min deployed)
 - Health check endpoint responds instantly for deployment compatibility
 - Answer delivered automatically after initialization completes
 - Replaced "Tell me a joke" with "What is autism?" suggestion button
 - Performance: Health check instant, first request 10-15s dev / 1-2min deployed, subsequent ~2s
-- **LESSON LEARNED**: Async initialization with error masking caused regression; simplicity wins
+- **LESSON LEARNED**: Always check deployment logs first when published site differs from dev
 
 **September 2025**: Converted from OpenAI to Groq open-source LLMs
 **January 2025**: Transformed from personal LLM app to specialized UK autism assistant
