@@ -152,20 +152,21 @@ def _provide_initializing_response(user_text: str) -> str:
     if refused:
         return refused
         
-    return f"""Hi! I'm Maya, your UK autism facts assistant. I'm currently loading my knowledge base (this takes about 30 seconds on first use).
+    return f"""**Please wait. Initializing server. This may take up to a minute...**
 
-Your question: {user_text}
+I'm Maya, your UK autism facts assistant. I'm currently loading my knowledge base with information from NHS, National Autistic Society, Gov.UK and other trusted UK sources.
 
-While I'm getting ready, here are trusted UK sources you can check:
+Your question: _{user_text}_
+
+**Please ask your question again in about 30-60 seconds** and I'll have my full knowledge base ready to provide a detailed answer with citations!
+
+While you wait, you can check these trusted sources directly:
 • **NHS**: nhs.uk/conditions/autism/
 • **National Autistic Society**: autism.org.uk
-• **Gov.UK SEND guidance**: gov.uk/special-educational-needs-support-council
-• **IPSEA**: ipsea.org.uk (for education advice)
+• **Gov.UK SEND**: gov.uk/special-educational-needs-support-council
+• **IPSEA** (education advice): ipsea.org.uk
 
-If you're in Hounslow:
-• **Hounslow Council SEND**: hounslow.gov.uk
-
-**Please ask your question again in a moment** and I'll have my full knowledge base ready to help!
+---
 
 **Important:** This information is for guidance only. For personalised advice:
 • **Medical questions:** Contact your GP or call NHS 111

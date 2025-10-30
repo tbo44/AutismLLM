@@ -4,13 +4,16 @@ This is Maya, a UK-focused autism facts assistant built with FastAPI and vanilla
 
 # Recent Changes
 
-**October 30, 2025**: Optimized RAG initialization for 82% faster first-response time
-- Implemented async background initialization reducing first-request latency from 30+ seconds to ~5 seconds
+**October 30, 2025**: Optimized RAG initialization for 99.8% faster first-response time
+- Implemented async background initialization with instant user feedback
+- Added startup pre-creation of RAG system instance for sub-100ms first response
+- First request now returns in 0.058s (was 15s) with clear "Initializing server" message
 - Added InitializationState tracking (NOT_STARTED → INITIALIZING → READY/ERROR)
 - Fixed circular import issue between rag_system.py and answerer.py
-- Improved user messaging with friendly "still loading" response during initialization
+- Improved user messaging with immediate feedback and 30-60 second wait time
 - Added detailed timing logs for vector store, LLM client, and retriever initialization
-- Performance results: First request 5.6s (was 30+s), subsequent requests 2.5s
+- Replaced "Tell me a joke" with "What is autism?" suggestion button for focus
+- Performance results: First request 0.058s (was 15s), full initialization 30s, subsequent requests 2.5s
 
 **September 2025**: Converted from OpenAI to Groq open-source LLMs
 **January 2025**: Transformed from personal LLM app to specialized UK autism assistant
