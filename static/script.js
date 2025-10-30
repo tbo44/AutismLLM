@@ -64,8 +64,8 @@ class MayaApp {
     handleSuggestion(action) {
         let message = '';
         switch (action) {
-            case 'tell-joke':
-                message = 'Tell me a joke';
+            case 'autism-info':
+                message = 'What is autism?';
                 break;
             case 'support-services':
                 message = 'What support services are available?';
