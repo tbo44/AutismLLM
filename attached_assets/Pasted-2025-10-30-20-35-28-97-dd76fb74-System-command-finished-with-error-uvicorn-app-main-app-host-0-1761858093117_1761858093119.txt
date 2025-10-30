@@ -1,0 +1,96 @@
+2025-10-30 20:35:28.97
+dd76fb74
+System
+command finished with error [uvicorn app.main:app --host 0.0.0.0 --port 5000]: signal: terminated
+2025-10-30 20:52:36.50
+6647b2a9
+User
+Failed to send telemetry event ClientStartEvent: capture() takes 1 positional argument but 3 were given
+2025-10-30 20:52:37.55
+6647b2a9
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/transformers/utils/hub.py", line 321, in cached_file
+2025-10-30 20:52:37.55
+6647b2a9
+User
+file = cached_files(path_or_repo_id=path_or_repo_id, filenames=[filename], **kwargs)
+2025-10-30 20:52:37.55
+6647b2a9
+User
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2025-10-30 20:52:37.55
+6647b2a9
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/transformers/utils/hub.py", line 562, in cached_files
+2025-10-30 20:52:37.55
+6647b2a9
+User
+raise OSError(f"There was a specific connection error when trying to load {path_or_repo_id}:\n{e}") from e
+2025-10-30 20:52:37.55
+6647b2a9
+User
+OSError: There was a specific connection error when trying to load sentence-transformers/all-MiniLM-L6-v2:
+2025-10-30 20:52:37.55
+6647b2a9
+User
+429 Client Error: Too Many Requests for url: https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/xet-read-token/c9745ed1d9f207416be6d2e6f8de32d1f16199bf (Request ID: Root=1-6903d015-173c203153bc31151a770984;64cfac7c-b6d2-433f-9eb2-303e65b63654)
+2025-10-30 20:52:37.55
+6647b2a9
+User
+2025-10-30 20:52:37.55
+6647b2a9
+User
+We had to rate limit your IP (2600:1900:0:2d01::2e00). To continue using our service, create a HF account or login to your existing account, and make sure you pass a HF_TOKEN if you're using the API.
+2025-10-30 20:52:37.55
+6647b2a9
+User
+Error processing question: There was a specific connection error when trying to load sentence-transformers/all-MiniLM-L6-v2:
+2025-10-30 20:52:37.55
+6647b2a9
+User
+429 Client Error: Too Many Requests for url: https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/xet-read-token/c9745ed1d9f207416be6d2e6f8de32d1f16199bf (Request ID: Root=1-6903d015-173c203153bc31151a770984;64cfac7c-b6d2-433f-9eb2-303e65b63654)
+2025-10-30 20:52:37.55
+6647b2a9
+User
+2025-10-30 20:52:37.55
+6647b2a9
+User
+We had to rate limit your IP (2600:1900:0:2d01::2e00). To continue using our service, create a HF account or login to your existing account, and make sure you pass a HF_TOKEN if you're using the API.
+2025-10-30 20:52:37.55
+6647b2a9
+User
+Traceback (most recent call last):
+2025-10-30 20:52:37.55
+6647b2a9
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/huggingface_hub/utils/_http.py", line 409, in hf_raise_for_status
+2025-10-30 20:52:37.55
+6647b2a9
+User
+response.raise_for_status()
+2025-10-30 20:52:37.55
+6647b2a9
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/requests/models.py", line 1026, in raise_for_status
+2025-10-30 20:52:37.55
+6647b2a9
+User
+raise HTTPError(http_error_msg, response=self)
+2025-10-30 20:52:37.55
+6647b2a9
+User
+requests.exceptions.HTTPError: 429 Client Error: Too Many Requests for url: https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/xet-read-token/c9745ed1d9f207416be6d2e6f8de32d1f16199bf
+2025-10-30 20:52:37.55
+6647b2a9
+User
+2025-10-30 20:52:37.55
+6647b2a9
+User
+The above exception was the direct cause of the following exception:
+2025-10-30 20:52:37.55
+6647b2a9
+User
+2025-10-30 20:52:37.55
+6647b2a9
+User
+Traceback (most recent call last):
