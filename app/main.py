@@ -113,15 +113,18 @@ async def chat(query: Query):
                 return Answer(answer=text, timestamp=f"Last checked: {timestamp}")
         
         # Wait for initialization to complete (with timeout)
+        # Increased timeout to 120s for deployment environments which may be slower
         logger.info("⏳ Waiting for RAG system initialization to complete...")
         try:
-            await asyncio.wait_for(_initialization_task, timeout=60.0)
+            await asyncio.wait_for(_initialization_task, timeout=120.0)
         except asyncio.TimeoutError:
-            logger.error("⏰ Initialization timeout after 60 seconds")
+            logger.error("⏰ Initialization timeout after 120 seconds")
+            # Reset task to allow retry
+            _initialization_task = None
             from rag import answerer
             text = answerer.apply_guardrails(query.question) or (
-                "Sorry, the system is taking longer than expected to initialize. "
-                "Please try again in a moment."
+                "The system is still loading. This can take up to 2 minutes on first use. "
+                "Please wait 30 seconds and try your question again."
             )
             return Answer(answer=text, timestamp=f"Last checked: {timestamp}")
         except Exception as e:

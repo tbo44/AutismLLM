@@ -104,7 +104,7 @@ class MayaApp {
         if (isFirstMessage) {
             const initMessage = {
                 role: 'assistant',
-                content: '**Please wait. Initializing server. This may take up to a minute...**\n\nI am loading my knowledge base with information from NHS, National Autistic Society, Gov.UK and other trusted UK sources. Your answer will appear below once ready.'
+                content: '**Please wait. Initializing server. This may take up to 2 minutes...**\n\nI am loading my knowledge base with information from NHS, National Autistic Society, Gov.UK and other trusted UK sources. Your answer will appear below once ready.'
             };
             this.addMessage(initMessage);
             // Get reference to the message element we just added
