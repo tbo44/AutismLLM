@@ -8,7 +8,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Maya Autism Facts Assistant", version="0.1.0")
+app = FastAPI(title="Maya Autism Facts Assistant", version="0.2.0")
 
 # Global RAG system instance (loaded on first request)
 _rag_system = None

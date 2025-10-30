@@ -1,0 +1,205 @@
+Search
+Time
+Deployment
+Source
+Log
+2025-10-30 19:16:11.70
+66711422
+User
+INFO: 34.121.43.20:0 - "POST /chat HTTP/1.1" 200 OK
+2025-10-30 19:18:18.70
+66711422
+User
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2025-10-30 19:18:18.70
+66711422
+User
+asyncio.exceptions.CancelledError
+2025-10-30 19:18:18.70
+66711422
+User
+INFO: 34.121.43.20:0 - "POST /chat HTTP/1.1" 500 Internal Server Error
+2025-10-30 19:35:15.64
+a5d2b341
+System
+starting up user application
+2025-10-30 19:35:15.64
+a5d2b341
+System
+metasidecar: loaded enterprise status from environment is_enterprise=false
+2025-10-30 19:35:15.64
+a5d2b341
+System
+forwarding local port 5000 to external port 80 (mapped as 1104)
+2025-10-30 19:35:20.87
+a5d2b341
+User
+INFO: Started server process [28]
+2025-10-30 19:35:20.87
+a5d2b341
+User
+INFO: Waiting for application startup.
+2025-10-30 19:35:20.87
+a5d2b341
+User
+INFO: Application startup complete.
+2025-10-30 19:35:20.90
+a5d2b341
+User
+INFO: Uvicorn running on http://0.0.0.0:5000 (Press CTRL+C to quit)
+2025-10-30 19:35:21.24
+a5d2b341
+User
+INFO: 127.0.0.1:34470 - "GET / HTTP/1.1" 200 OK
+2025-10-30 19:36:15.03
+a5d2b341
+User
+INFO: 35.196.143.163:0 - "GET / HTTP/1.1" 200 OK
+2025-10-30 19:36:15.24
+a5d2b341
+User
+INFO: 104.196.198.220:0 - "GET /static/script.js?v=3 HTTP/1.1" 200 OK
+2025-10-30 19:37:24.85
+a5d2b341
+User
+⏰ Initialization timeout after 60 seconds
+2025-10-30 19:37:24.85
+a5d2b341
+User
+INFO: 35.190.144.184:0 - "POST /chat HTTP/1.1" 200 OK
+2025-10-30 19:37:27.00
+a5d2b341
+User
+Failed to send telemetry event ClientStartEvent: capture() takes 1 positional argument but 3 were given
+2025-10-30 19:38:02.98
+a5d2b341
+User
+INFO: 35.196.143.163:0 - "POST /chat HTTP/1.1" 500 Internal Server Error
+2025-10-30 19:38:22.01
+66711422
+System
+system: received signal terminated
+2025-10-30 19:38:22.09
+66711422
+User
+INFO: Shutting down
+2025-10-30 19:38:22.19
+66711422
+User
+INFO: Waiting for application shutdown.
+2025-10-30 19:38:22.19
+66711422
+User
+INFO: Application shutdown complete.
+2025-10-30 19:38:22.19
+66711422
+User
+INFO: Finished server process [25]
+2025-10-30 19:38:22.24
+66711422
+System
+command finished with error [uvicorn app.main:app --host 0.0.0.0 --port 5000]: signal: terminated
+2025-10-30 19:38:22.32
+66711422
+System
+main done, exiting
+2025-10-30 19:38:39.69
+a5d2b341
+User
+INFO: 104.196.198.220:0 - "POST /chat HTTP/1.1" 500 Internal Server Error
+2025-10-30 19:39:32.88
+a5d2b341
+User
+await self.middleware_stack(scope, receive, send)
+2025-10-30 19:39:32.88
+a5d2b341
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/routing.py", line 735, in app
+2025-10-30 19:39:32.88
+a5d2b341
+User
+await route.handle(scope, receive, send)
+2025-10-30 19:39:32.88
+a5d2b341
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/routing.py", line 288, in handle
+2025-10-30 19:39:32.88
+a5d2b341
+User
+await self.app(scope, receive, send)
+2025-10-30 19:39:32.88
+a5d2b341
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/routing.py", line 76, in app
+2025-10-30 19:39:32.88
+a5d2b341
+User
+await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+2025-10-30 19:39:32.88
+a5d2b341
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/_exception_handler.py", line 51, in wrapped_app
+2025-10-30 19:39:32.88
+a5d2b341
+User
+await app(scope, receive, sender)
+2025-10-30 19:39:32.88
+a5d2b341
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/routing.py", line 73, in app
+2025-10-30 19:39:32.88
+a5d2b341
+User
+response = await f(request)
+2025-10-30 19:39:32.88
+a5d2b341
+User
+^^^^^^^^^^^^^^^^
+2025-10-30 19:39:32.88
+a5d2b341
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/fastapi/routing.py", line 301, in app
+2025-10-30 19:39:32.88
+a5d2b341
+User
+raw_response = await run_endpoint_function(
+2025-10-30 19:39:32.88
+a5d2b341
+User
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2025-10-30 19:39:32.88
+a5d2b341
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/fastapi/routing.py", line 212, in run_endpoint_function
+2025-10-30 19:39:32.88
+a5d2b341
+User
+return await dependant.call(**values)
+2025-10-30 19:39:32.88
+a5d2b341
+User
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2025-10-30 19:39:32.88
+a5d2b341
+User
+File "/home/runner/workspace/app/main.py", line 97, in chat
+2025-10-30 19:39:32.88
+a5d2b341
+User
+exc = _initialization_task.exception()
+2025-10-30 19:39:32.88
+a5d2b341
+User
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2025-10-30 19:39:32.88
+a5d2b341
+User
+asyncio.exceptions.CancelledError
+2025-10-30 19:39:32.88
+a5d2b341
+User
+INFO: 104.196.198.220:0 - "POST /chat HTTP/1.1" 500 Internal Server Error
+2025-10-30 19:51:31.23
+32df607b
+System
+starting up user application
