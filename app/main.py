@@ -48,5 +48,6 @@ async def chat(query: Query):
     london_tz = pytz.timezone('Europe/London')
     timestamp = datetime.now(london_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
     
-    text = answerer.answer(query.question)
+    # Use async answer function for background initialization
+    text = await answerer.answer_async(query.question)
     return Answer(answer=text, timestamp=f"Last checked: {timestamp}")

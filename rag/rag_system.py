@@ -7,15 +7,22 @@ import asyncio
 import logging
 from typing import Dict, Any, Optional
 import os
+import time
+from enum import Enum
 
 from .crawler import crawl_and_chunk_all
 from .vector_store import UKAutismVectorStore
 from .llm_client import UKAutismLLMClient
 from .retriever import UKAutismRetriever
 from .citations import CitationFormatter
-from .answerer import apply_guardrails
 
 logger = logging.getLogger(__name__)
+
+class InitializationState(Enum):
+    NOT_STARTED = "not_started"
+    INITIALIZING = "initializing"
+    READY = "ready"
+    ERROR = "error"
 
 class UKAutismRAGSystem:
     def __init__(self):
@@ -24,11 +31,70 @@ class UKAutismRAGSystem:
         self.retriever = None
         self.citation_formatter = CitationFormatter()
         self.initialized = False
+        self.init_state = InitializationState.NOT_STARTED
+        self.init_error = None
+        self._init_lock = asyncio.Lock()
+    
+    async def initialize_async(self):
+        """Initialize all RAG components asynchronously in background"""
+        async with self._init_lock:
+            if self.init_state in [InitializationState.READY, InitializationState.INITIALIZING]:
+                return
+            
+            self.init_state = InitializationState.INITIALIZING
+            start_time = time.time()
+            
+            try:
+                logger.info("🚀 Starting background RAG system initialization...")
+                
+                # Run heavy initialization in thread pool to avoid blocking
+                await asyncio.to_thread(self._initialize_sync)
+                
+                elapsed = time.time() - start_time
+                logger.info(f"✅ RAG System initialized successfully in {elapsed:.2f}s")
+                
+                self.init_state = InitializationState.READY
+                self.initialized = True
+                
+            except Exception as e:
+                elapsed = time.time() - start_time
+                logger.error(f"❌ Failed to initialize RAG system after {elapsed:.2f}s: {str(e)}")
+                self.init_state = InitializationState.ERROR
+                self.init_error = str(e)
+                self.initialized = False
+    
+    def _initialize_sync(self):
+        """Synchronous initialization logic (runs in thread pool)"""
+        logger.info("📦 Loading vector store and embeddings model...")
+        vec_start = time.time()
+        
+        # Initialize vector store (loads ChromaDB + SentenceTransformer)
+        self.vector_store = UKAutismVectorStore()
+        self.vector_store.initialize()
+        
+        vec_elapsed = time.time() - vec_start
+        logger.info(f"✓ Vector store loaded in {vec_elapsed:.2f}s")
+        
+        # Initialize LLM client (lightweight)
+        logger.info("🤖 Initializing LLM client...")
+        llm_start = time.time()
+        self.llm_client = UKAutismLLMClient()
+        llm_elapsed = time.time() - llm_start
+        logger.info(f"✓ LLM client ready in {llm_elapsed:.2f}s")
+        
+        # Initialize retriever
+        logger.info("🔍 Setting up retriever...")
+        self.retriever = UKAutismRetriever(self.vector_store, self.llm_client)
+        logger.info("✓ Retriever configured")
+        
+        # Check collection stats
+        stats = self.vector_store.get_collection_stats()
+        logger.info(f"📊 Knowledge base contains {stats.get('total_chunks', 0)} chunks")
     
     def initialize(self):
-        """Initialize all RAG components"""
+        """Legacy synchronous initialize - deprecated but kept for compatibility"""
         try:
-            logger.info("Initializing UK Autism RAG System...")
+            logger.info("Initializing UK Autism RAG System (sync mode)...")
             
             # Initialize vector store
             self.vector_store = UKAutismVectorStore()
@@ -41,6 +107,7 @@ class UKAutismRAGSystem:
             self.retriever = UKAutismRetriever(self.vector_store, self.llm_client)
             
             self.initialized = True
+            self.init_state = InitializationState.READY
             logger.info("RAG System initialized successfully")
             
             # Check if we need to populate the vector store
@@ -55,6 +122,8 @@ class UKAutismRAGSystem:
         except Exception as e:
             logger.error(f"Failed to initialize RAG system: {str(e)}")
             self.initialized = False
+            self.init_state = InitializationState.ERROR
+            self.init_error = str(e)
             raise
     
     async def populate_knowledge_base(self):
@@ -84,7 +153,8 @@ class UKAutismRAGSystem:
             return "System not initialized. Please try again in a moment."
         
         try:
-            # Apply safety guardrails first
+            # Apply safety guardrails first (import here to avoid circular dependency)
+            from .answerer import apply_guardrails
             guardrail_response = apply_guardrails(user_question)
             if guardrail_response:
                 return guardrail_response

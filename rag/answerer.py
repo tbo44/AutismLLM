@@ -59,9 +59,56 @@ def apply_guardrails(user_text: str) -> Optional[str]:
         return TEMPLATES.legal
     return None
 
+async def answer_async(user_text: str) -> str:
+    """
+    Main async answer function for Maya - UK Autism Facts Assistant
+    Uses background initialization for fast first response
+    """
+    try:
+        from .rag_system import get_rag_system, InitializationState
+        import logging
+        import asyncio
+        logger = logging.getLogger(__name__)
+        
+        # Get the RAG system instance
+        rag_system = get_rag_system()
+        
+        # Check initialization state
+        if rag_system.init_state == InitializationState.NOT_STARTED:
+            # Trigger background initialization (non-blocking)
+            logger.info("🚀 Triggering background RAG initialization on first request...")
+            asyncio.create_task(rag_system.initialize_async())
+            return _provide_initializing_response(user_text)
+        
+        elif rag_system.init_state == InitializationState.INITIALIZING:
+            # Still initializing, return friendly message
+            logger.info("⏳ RAG system still initializing, providing interim response")
+            return _provide_initializing_response(user_text)
+        
+        elif rag_system.init_state == InitializationState.ERROR:
+            # Initialization failed, provide fallback
+            logger.error(f"❌ RAG system in error state: {rag_system.init_error}")
+            return _provide_fallback_response(user_text)
+        
+        # System is ready, use full RAG pipeline
+        return rag_system.answer_question(user_text)
+        
+    except Exception as e:
+        # Fallback to basic guardrails if RAG system fails
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"RAG system error: {str(e)}")
+        
+        # Check guardrails as fallback
+        refused = apply_guardrails(user_text)
+        if refused:
+            return refused
+            
+        return _provide_fallback_response(user_text)
+
 def answer(user_text: str) -> str:
     """
-    Main answer function for Maya - UK Autism Facts Assistant
+    Synchronous wrapper for backward compatibility
     Uses lazy initialization to avoid blocking deployment startup
     """
     try:
@@ -98,6 +145,32 @@ def answer(user_text: str) -> str:
             return refused
             
         return _provide_fallback_response(user_text)
+
+def _provide_initializing_response(user_text: str) -> str:
+    """Response while RAG system is initializing in background"""
+    refused = apply_guardrails(user_text)
+    if refused:
+        return refused
+        
+    return f"""Hi! I'm Maya, your UK autism facts assistant. I'm currently loading my knowledge base (this takes about 30 seconds on first use).
+
+Your question: {user_text}
+
+While I'm getting ready, here are trusted UK sources you can check:
+• **NHS**: nhs.uk/conditions/autism/
+• **National Autistic Society**: autism.org.uk
+• **Gov.UK SEND guidance**: gov.uk/special-educational-needs-support-council
+• **IPSEA**: ipsea.org.uk (for education advice)
+
+If you're in Hounslow:
+• **Hounslow Council SEND**: hounslow.gov.uk
+
+**Please ask your question again in a moment** and I'll have my full knowledge base ready to help!
+
+**Important:** This information is for guidance only. For personalised advice:
+• **Medical questions:** Contact your GP or call NHS 111
+• **Legal/SEND issues:** Contact IPSEA, Citizens Advice, or a qualified solicitor
+• **Crisis support:** Call 999, contact Samaritans (116 123), or go to A&E"""
 
 def _provide_bootstrap_response(user_text: str) -> str:
     """Response when knowledge base is empty"""
