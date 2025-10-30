@@ -11,16 +11,6 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Maya Autism Facts Assistant", version="0.1.0")
 
-# Pre-create RAG system instance on startup for instant first response
-# (models are not loaded yet - that happens on first chat request)
-@app.on_event("startup")
-async def startup_event():
-    """Pre-create RAG system instance without loading heavy models"""
-    from rag.rag_system import get_rag_system
-    logger.info("Pre-creating RAG system instance for fast first response...")
-    _ = get_rag_system()  # Just create the instance, don't initialize
-    logger.info("RAG system instance ready")
-
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
