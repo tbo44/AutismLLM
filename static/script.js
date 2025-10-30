@@ -85,8 +85,11 @@ class MayaApp {
         const content = this.messageInput.value.trim();
         if (!content) return;
 
+        // Check if this is the first user message
+        const isFirstMessage = this.messages.length === 1; // Only welcome message so far
+        
         // Hide suggestions after first message
-        if (this.messages.length === 1) { // Only welcome message so far
+        if (isFirstMessage) {
             this.suggestions.style.display = 'none';
         }
 
@@ -95,6 +98,18 @@ class MayaApp {
             role: 'user',
             content: content
         });
+
+        // For first message, show instant initialization notice
+        let initMessageElement = null;
+        if (isFirstMessage) {
+            const initMessage = {
+                role: 'assistant',
+                content: '**Please wait. Initializing server. This may take up to a minute...**\n\nI\'m loading my knowledge base with information from NHS, National Autistic Society, Gov.UK and other trusted UK sources. Your answer will appear below once ready.'
+            };
+            this.addMessage(initMessage);
+            // Get reference to the message element we just added
+            initMessageElement = this.chatArea.lastChild;
+        }
 
         // Clear input and show loading
         this.messageInput.value = '';
@@ -115,6 +130,12 @@ class MayaApp {
 
             const data = await response.json();
             
+            // If we showed initialization message, remove it first
+            if (initMessageElement) {
+                initMessageElement.remove();
+                this.messages.pop(); // Remove from messages array
+            }
+            
             // Add assistant response
             this.addMessage({
                 role: 'assistant',
@@ -123,6 +144,13 @@ class MayaApp {
 
         } catch (error) {
             console.error('Error sending message:', error);
+            
+            // Remove initialization message if present
+            if (initMessageElement) {
+                initMessageElement.remove();
+                this.messages.pop();
+            }
+            
             this.addMessage({
                 role: 'assistant',
                 content: 'Sorry, I encountered an error. Please try again.'
