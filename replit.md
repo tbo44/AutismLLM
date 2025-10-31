@@ -8,6 +8,7 @@ This is Maya, a UK-focused autism facts assistant built with FastAPI and vanilla
 - **FEATURE**: Added optional width expansion toggle for carers and desktop users
 - **DEFAULT**: Maintains 420px narrow focus mode for autism-friendly reduced overwhelm
 - **EXPANDED**: Optional 960px width mode on tablets/desktop (min-width: 768px)
+- **MOBILE BEHAVIOR**: Layout toggle hidden on mobile (< 768px) to prevent confusion - only appears when functional
 - **PERSISTENCE**: Layout preference saved in localStorage per device
 - **ACCESSIBILITY**: Keyboard accessible (Tab, Enter, Space), 44px touch targets, iOS safe-area support
 - **TEXT CHANGE**: "NORMAL MODE" renamed to "NEUROTYPICAL MODE" for clarity
