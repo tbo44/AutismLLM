@@ -1,0 +1,152 @@
+Prompt for Replit Agent 3 — Keep 400px Focus, Add Optional Expand
+
+Update the MAYA UI to keep the current narrow, mobile-style layout by default on all devices, while providing an accessible toggle that widens the app on larger screens. Persist the user’s choice in localStorage. Do not change backend logic.
+
+Goals
+
+Default Focus Mode: centered column, max width 400–420px, full height, no horizontal scroll.
+
+Optional Expanded Mode: on toggle, widen to 800–960px (cap at min(96vw, 1000px)), still single column (no side panels).
+
+Persist Preference: remember the last mode per device via localStorage("maya-layout").
+
+A11y: keyboard and screen-reader friendly; avoids motion if user prefers reduced motion.
+
+Required changes
+A) HTML / React structure
+
+Add a top-right layout toggle button in the header:
+
+Text: “Expand width” ↔ “Narrow width”
+
+aria-pressed reflects state.
+
+Keyboard accessible (Enter/Space).
+
+Add a state class on the root app container: .app[data-layout="focus"] (default) or .app[data-layout="expanded"].
+
+B) CSS
+
+Remove any fixed 400px width rules applied globally; scope width to the main container.
+
+Mobile-first variables:
+
+:root {
+  --focus-max-w: 420px;
+  --expanded-max-w: 960px;      /* upper bound for desktops */
+  --pad: clamp(10px, 2vw, 20px);
+  --radius: 16px;
+}
+html, body { height: 100%; margin: 0; }
+.app {
+  min-height: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr auto; /* header, messages, composer */
+  justify-items: center;
+  background: var(--bg, #0b0c10);
+  color: var(--fg, #eef2f7);
+}
+.shell {
+  width: 100%;
+  max-width: var(--focus-max-w);
+  padding: var(--pad);
+}
+/* Expanded mode on larger screens */
+@media (min-width: 768px) {
+  .app[data-layout="expanded"] .shell {
+    max-width: min(96vw, var(--expanded-max-w));
+  }
+}
+/* Messages area fills vertical space */
+.messages {
+  overflow: auto;
+  max-height: calc(100vh - 220px); /* adjust to header/composer height */
+}
+/* Respect iOS safe areas */
+.shell {
+  padding-left: max(var(--pad), env(safe-area-inset-left));
+  padding-right: max(var(--pad), env(safe-area-inset-right));
+  padding-bottom: max(var(--pad), env(safe-area-inset-bottom));
+}
+/* Toggle button */
+.layout-toggle {
+  position: absolute;
+  right: 12px; top: 12px;
+  border-radius: 999px;
+  padding: 8px 12px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.05);
+  cursor: pointer;
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+C) JS (vanilla) or React logic
+
+On load:
+
+Read localStorage.getItem("maya-layout"). If not set, default to "focus".
+
+Set document.querySelector(".app").dataset.layout = state.
+
+On toggle:
+
+Switch between "focus" and "expanded".
+
+Update aria-pressed and button label.
+
+Save to localStorage.
+
+Vanilla JS snippet (adapt to React if needed):
+
+(function () {
+  const app = document.querySelector('.app');
+  const btn = document.querySelector('.layout-toggle');
+  const key = 'maya-layout';
+  const saved = localStorage.getItem(key);
+  const prefers = saved === 'expanded' ? 'expanded' : 'focus';
+  app.dataset.layout = prefers;
+  btn.setAttribute('aria-pressed', String(prefers === 'expanded'));
+  btn.textContent = prefers === 'expanded' ? 'Narrow width' : 'Expand width';
+
+  function toggle() {
+    const next = app.dataset.layout === 'expanded' ? 'focus' : 'expanded';
+    app.dataset.layout = next;
+    localStorage.setItem(key, next);
+    btn.setAttribute('aria-pressed', String(next === 'expanded'));
+    btn.textContent = next === 'expanded' ? 'Narrow width' : 'Expand width';
+  }
+  btn.addEventListener('click', toggle);
+  btn.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+  });
+})();
+
+D) Viewport height shim (mobile)
+
+Keep/introduce --vh fix if not present and prefer it in .messages max-height when reliable.
+
+E) Testing matrix (manual is fine)
+
+Phone (360×640): default = focus; no horizontal scroll; toggle present but keeps 100% width (max 420px).
+
+Tablet (768×1024): default = focus; toggle expands to ~800–960px; readable line lengths.
+
+Laptop/Desktop (≥1366px wide): default = focus (centered column). Toggle expands to ~800–960px and persists after reload.
+
+A11y: toggle reachable by Tab; Space/Enter activate; aria-pressed changes; honors prefers-reduced-motion.
+
+Non-goals
+
+No multi-column/side panels.
+
+No changes to backend endpoints or streaming.
+
+Deliverables
+
+Updated HTML/React, CSS, and JS implementing focus/expanded modes with persistence.
+
+Short README note: how the toggle works, how to change --focus-max-w/--expanded-max-w.
+
+Before/after screenshots on phone, tablet, desktop.
