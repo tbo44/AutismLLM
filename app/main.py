@@ -76,7 +76,14 @@ class Answer(BaseModel):
 async def root():
     """Serve the main chat interface"""
     from fastapi.responses import FileResponse
-    return FileResponse('static/index.html')
+    return FileResponse(
+        'static/index.html',
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
+    )
 
 @app.get("/health")
 async def health():
