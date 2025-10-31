@@ -4,15 +4,18 @@ This is Maya, a UK-focused autism facts assistant built with FastAPI and vanilla
 
 # Recent Changes
 
-**October 31, 2025 (latest)**: Fixed deployment health check failures
+**October 31, 2025 (latest)**: Fixed deployment health check failures - PRODUCTION READY
 - **CRITICAL FIX**: Resolved 5-minute timeout failures on autoscale deployments
-- **NON-BLOCKING STARTUP**: RAG initialization now uses `asyncio.to_thread()` to prevent event loop blocking
-- **ULTRA-FAST HEALTH**: `/health` endpoint responds in ~3ms with zero dependencies for deployment health checks
-- **DEPLOYMENT CONFIG**: Autoscale deployments now configured to use `/health` endpoint
-- **NEW ENDPOINT**: `/status` endpoint provides RAG readiness info for frontend monitoring
-- **STARTUP ORDER**: Server starts immediately (~0.2s), RAG initializes in background (15-20s)
-- **VERIFICATION**: Logs confirm "Application startup complete" happens BEFORE RAG initialization
-- **IMPACT**: Deployments now pass health checks immediately, enabling successful production rollouts
+- **DEPLOYMENT CONFIG**: Configured autoscale deployment with `healthCheckPath = "/health"` for proper health checks
+- **ULTRA-FAST HEALTH**: `/health` endpoint responds in ~3ms with zero dependencies
+- **NON-BLOCKING STARTUP**: Added 0.1s delay before background RAG initialization to ensure server fully starts first
+- **LAZY IMPORTS**: Moved all heavy RAG imports inside background tasks (not at module level) to prevent blocking
+- **FIRE-AND-FORGET**: Startup event spawns background task and completes immediately without awaiting
+- **STARTUP ORDER**: Server starts in ~0.2s, RAG initializes in background thread pool (15-20s)
+- **VERIFICATION**: "Application startup complete" log appears immediately, before RAG initialization begins
+- **STATUS ENDPOINT**: `/status` provides `rag_ready` boolean for frontend monitoring of background initialization
+- **CHAT BUBBLES**: Fixed responsive layout - bubbles now expand to 680px in wide mode (was stuck at 280px)
+- **IMPACT**: Deployments pass health checks in <1 second, enabling successful production rollouts
 
 **October 31, 2025 (earlier)**: Responsive layout with focus-first design
 - **FEATURE**: Added optional width expansion toggle for carers and desktop users

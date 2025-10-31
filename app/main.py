@@ -30,15 +30,16 @@ async def initialize_rag_background():
     """Background task to initialize RAG system without blocking server startup"""
     global _rag_system, _startup_complete
     
+    # Add small delay to ensure server fully starts before heavy initialization
+    import asyncio
+    await asyncio.sleep(0.1)
+    
     logger.info("🚀 Maya background initialization starting...")
     start_time = datetime.now()
     
     try:
         # Run initialization in thread pool to avoid blocking event loop
-        import asyncio
-        from rag.rag_system import get_rag_system
-        
-        # Use asyncio.to_thread to run blocking operations without blocking the event loop
+        # Import RAG module ONLY inside this background task to avoid blocking server startup
         _rag_system = await asyncio.to_thread(_initialize_rag_sync)
         
         elapsed = (datetime.now() - start_time).total_seconds()
@@ -51,6 +52,7 @@ async def initialize_rag_background():
 
 def _initialize_rag_sync():
     """Synchronous RAG initialization - runs in thread pool"""
+    # Import heavy dependencies ONLY when needed (not at module level)
     from rag.rag_system import get_rag_system
     
     logger.info("📦 Loading RAG system...")
@@ -79,9 +81,10 @@ def _initialize_rag_sync():
 async def startup_event():
     """Start background initialization without blocking server startup"""
     import asyncio
-    logger.info("🚀 Maya server starting - RAG initialization running in background...")
-    # Create task without awaiting - allows server to start immediately
+    logger.info("🚀 Maya server starting - spawning background RAG initialization task...")
+    # Create fire-and-forget background task - server startup completes immediately
     asyncio.create_task(initialize_rag_background())
+    logger.info("✅ Server startup event complete - background task spawned")
 
 class Query(BaseModel):
     question: str
