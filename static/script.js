@@ -2,9 +2,11 @@ class MayaApp {
     constructor() {
         this.messages = [];
         this.lowStimMode = localStorage.getItem('maya-low-stim') === 'true';
+        this.layoutMode = localStorage.getItem('maya-layout') || 'focus';
         this.initializeElements();
         this.bindEvents();
         this.applyLowStimMode();
+        this.applyLayoutMode();
         this.addWelcomeMessage();
     }
 
@@ -13,7 +15,9 @@ class MayaApp {
         this.messageInput = document.getElementById('messageInput');
         this.sendButton = document.getElementById('sendButton');
         this.lowStimToggle = document.getElementById('lowStimToggle');
+        this.layoutToggle = document.getElementById('layoutToggle');
         this.suggestions = document.getElementById('suggestions');
+        this.appContainer = document.querySelector('.app-container');
     }
 
     bindEvents() {
@@ -33,6 +37,15 @@ class MayaApp {
             this.applyLowStimMode();
         });
 
+        // Layout toggle
+        this.layoutToggle.addEventListener('click', () => this.toggleLayout());
+        this.layoutToggle.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                this.toggleLayout();
+            }
+        });
+
         // Suggestion buttons
         this.suggestions.addEventListener('click', (e) => {
             if (e.target.classList.contains('suggestion-btn')) {
@@ -49,7 +62,23 @@ class MayaApp {
         } else {
             document.body.classList.remove('low-stim');
             this.lowStimToggle.classList.remove('active');
-            this.lowStimToggle.textContent = 'NORMAL MODE';
+            this.lowStimToggle.textContent = 'NEUROTYPICAL MODE';
+        }
+    }
+
+    toggleLayout() {
+        this.layoutMode = this.layoutMode === 'focus' ? 'expanded' : 'focus';
+        localStorage.setItem('maya-layout', this.layoutMode);
+        this.applyLayoutMode();
+    }
+
+    applyLayoutMode() {
+        this.appContainer.setAttribute('data-layout', this.layoutMode);
+        const isExpanded = this.layoutMode === 'expanded';
+        this.layoutToggle.setAttribute('aria-pressed', String(isExpanded));
+        const textSpan = this.layoutToggle.querySelector('span');
+        if (textSpan) {
+            textSpan.textContent = isExpanded ? 'Narrow width' : 'Expand width';
         }
     }
 
