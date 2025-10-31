@@ -1,0 +1,182 @@
+Create “Maya – Hounslow Bureaucracy Knowledge Seed” for a RAG system that supports autistic people and carers in the London Borough of Hounslow (UK).
+
+GOAL
+- Produce a high-quality, de-duplicated, citation-rich resource dataset focused on navigating bureaucratic processes: eligibility, applications, evidence, rejections, mandatory reconsiderations, appeals, and complaints.
+- Output BOTH JSONL and CSV with identical fields and values.
+
+DELIVERABLES
+1) File: maya_hounslow_knowledge_seed.jsonl  (UTF-8, one JSON object per line)
+2) File: maya_hounslow_knowledge_seed.csv    (UTF-8, RFC4180)
+3) File: README.md (schema, sources list, coverage summary)
+Target size: 40–80 entries. ≥60% must be Hounslow-specific; the remainder can be UK-wide if directly applicable to Hounslow users.
+
+SCOPE & CATEGORIES (use these exact values)
+- category: ["benefits", "education_send", "adult_social_care", "appeals_complaints", "employment_skills", "travel_access", "health_mental_health", "community_daily_living", "carer_support"]
+- format_type: ["step_by_step", "template_letter", "checklist", "flowchart", "guide", "eligibility", "timetable_deadlines", "contact_directory"]
+- audience: ["autistic_adult", "parent_carer", "young_person", "professional"]
+- source_type: ["local_authority", "nhs", "government", "charity", "community_org", "legal_advice"]
+- locality: ["hounslow", "west_london", "national_uk"]
+
+CORE SOURCES TO PRIORITIZE (seed list; expand with related deep links)
+Local (must be majority of entries):
+- Hounslow Local Offer (fsd.hounslow.gov.uk) – EHCP, SEND processes, transport, short breaks
+- Hounslow SENDIASS (hounslowsendiass.org.uk) – guides, templates, tribunal info
+- Hounslow Council main site (hounslow.gov.uk) – benefits, adult social care, blue badge, council tax reduction, discretionary support
+- Carers Hounslow (carers-hounslow.org.uk) – carer assessments, respite, benefits help
+- Citizens Advice Hounslow (hounslowcabs.org.uk) – PIP/DLA/UC step-by-steps, appeals
+- Autism Hounslow (autismhounslow.org.uk) – local peer support and practical info
+- Work Hounslow (workhounslow.co.uk) – supported employment, skills
+- Hounslow Connect (hounslowconnect.com) – local services directory
+- West London NHS Trust (westlondon.nhs.uk) – ASD pathways, mental health
+
+National (supplementary):
+- GOV.UK – PIP/DLA/UC, Blue Badge, appeals, SEND Tribunal, Care Act rights
+- National Autistic Society – autism-specific guides to benefits, assessments
+- IPSEA – model letters, SEND appeals, timelines
+- Council for Disabled Children – mediation/dispute resolution explainers
+- Carers UK – Carers’ assessments, rights, complaints
+- Scope – benefits/appeals templates, employment support
+- Turn2us – benefits calculator and “how to apply”
+- Local Government & Social Care Ombudsman – complaints process
+- NHS (nhs.uk) – complaints process, mental health help
+
+FOR EACH ENTRY, CREATE THESE FIELDS (all required unless noted):
+- id: "maya_hounslow_{slugified_title}"
+- title: concise, descriptive
+- url
+- source_name
+- source_type: one of allowed values
+- category: one of allowed values
+- subcategory: free text (e.g., "PIP", "DLA", "EHCP assessment", "Care Act assessment", "SEND Tribunal", "Blue Badge")
+- audience: one or more from allowed (store as array)
+- age_range: one of ["child_u16","young_person_16_25","adult_18plus","all_ages"]
+- locality: one of allowed values
+- description_plain: 1–3 sentences in Plain English (UK) describing what this resource helps with
+- steps_summary: bullet-like string with 3–8 numbered steps (plain text, concise, action-oriented)
+- eligibility_summary: 1–3 sentences (what criteria apply and how autism/sensory needs may be evidenced)
+- evidence_required: comma-separated list (diagnosis letter, EHCP, GP letter, educational reports, daily living examples, etc.)
+- deadlines: key timelines (e.g., "PIP Mandatory Reconsideration: 1 month from decision; SEND appeal: 2 months or 1 month from mediation certificate")
+- contacts: structured object with any available phone, email, address; if none, "web_only:true"
+- opening_hours: string if relevant or "N/A"
+- legal_basis: statute/policy references or controlling guidance URL(s) (e.g., “Care Act 2014”, “Children and Families Act 2014”, “SEND Code of Practice 2015”)
+- format_type: one of allowed values
+- pdf_available: true/false
+- filetype: "webpage" | "pdf" | "doc" | "mixed"
+- tags: array of short tags (e.g., ["appeal","template","hounslow","pip"])
+- notes_for_maya: short instruction on how the assistant should use this (e.g., “Offer step-by-step + signpost to SENDIASS template if user mentions refusal to assess.”)
+- reliability_score: integer 1–5 (gov/nhs/local_authority=5; major charities=4–5; others=3–4)
+- last_verified_date: ISO date of when you last checked the link
+- update_cycle: "6_months" | "annual" | "ad_hoc"
+- breadcrumb: site path text if available
+- license: terms/usage note if known or "unspecified"
+- content_excerpt: ≤700 chars quotation/paraphrase that captures the core promise (no more than 200 quoted words)
+- sha256: checksum of downloaded file (optional; fill if you download assets)
+- duplicate_of: null or id of canonical entry if very similar (avoid duplicates—prefer null)
+
+QUALITY & STYLE REQUIREMENTS
+- Use UK spelling. Keep language calm, direct, autism- and carer-friendly. No jargon; if a term is necessary, briefly define it.
+- Emphasise bureaucracy navigation: how to apply, what to send, common rejection reasons, how to appeal, timelines, who to contact.
+- Prefer primary/local sources; only include national sources that are directly actionable for Hounslow users.
+- Avoid opinion pieces, forums, and social posts unless the page is an official guidance or template.
+- Ensure at least:
+  - 8–12 entries: benefits (PIP, DLA, UC LCWRA, Carer’s Allowance, Blue Badge, Council Tax Reduction, Motability)
+  - 10–15 entries: education_send (EHCP request, refusal to assess, draft plan review, mediation, SEND Tribunal, transport)
+  - 6–10 entries: adult_social_care & carer_support (Care Act assessment, Carer’s assessment, respite, Direct Payments)
+  - 6–10 entries: appeals_complaints (MR, tribunal, LGSCO, NHS complaints)
+  - 4–8 entries: employment_skills, travel_access, health_mental_health, community_daily_living (including Quiet Hours, travel mentoring, crisis lines)
+
+DATA GATHERING & ENRICHMENT TASKS
+1) Crawl/collect from the seed domains; follow internal links to specific guidance pages, downloadable PDFs, and templates.
+2) Extract: contacts, deadlines, eligibility, evidence, steps. If info is split across pages, consolidate and cite the main URLs (use the best overview URL).
+3) Mark pdf_available/filetype accurately; prefer stable URLs and PDFs for process guides.
+4) Populate legal_basis with relevant UK acts/guidance where clear.
+5) Assign reliability_score per rules above.
+
+DE-DUPLICATION & VALIDATION
+- De-dupe by URL and by title similarity (Levenshtein ≥ 0.9 implies potential dup).
+- Validate that all required fields are present and non-empty (except sha256, duplicate_of).
+- HTTP check: every url must return 200 OK at time of creation.
+- JSONL validity: each line is valid JSON; no trailing commas; keys as specified.
+- CSV validity: include header; escape commas and quotes properly.
+
+README.md CONTENT
+- Schema documented with allowed values and field definitions.
+- Count of entries by category and locality.
+- Source list with domains.
+- Notes on verification date and suggested recrawl frequency.
+
+SAMPLE (provide these two complete entries first, then continue to build the full set)
+
+JSONL sample lines (also include same rows in CSV):
+{
+  "id":"maya_hounslow_pip_mandatory_reconsideration_nas",
+  "title":"PIP: How to ask for a Mandatory Reconsideration",
+  "url":"https://www.autism.org.uk/advice-and-guidance/topics/benefits-and-money/pip/mandatory-reconsideration",
+  "source_name":"National Autistic Society",
+  "source_type":"charity",
+  "category":"benefits",
+  "subcategory":"PIP",
+  "audience":["autistic_adult","parent_carer"],
+  "age_range":"adult_18plus",
+  "locality":"national_uk",
+  "description_plain":"Step-by-step guide to challenging a PIP decision, including deadlines, what to write, and what evidence helps for autistic people.",
+  "steps_summary":"1. Read your decision letter. 2. Call to request MR (optional) and write to DWP within 1 month. 3. Explain which descriptors apply and why. 4. Attach evidence (diary, GP/psych reports). 5. Send tracked post. 6. Await MR notice; consider appeal if refused.",
+  "eligibility_summary":"You must have received a PIP decision letter within the last month; extensions possible with reasons. Autism-related daily living and mobility difficulties can qualify.",
+  "evidence_required":"decision letter, medical letters, EHCP/education reports if relevant, support worker letters, daily living diary",
+  "deadlines":"Mandatory Reconsideration: within 1 month of decision (extensions possible).",
+  "contacts":{"web_only":true},
+  "opening_hours":"N/A",
+  "legal_basis":"Social Security (Personal Independence Payment) Regulations; gov.uk PIP appeals guidance",
+  "format_type":"step_by_step",
+  "pdf_available":false,
+  "filetype":"webpage",
+  "tags":["appeal","pip","mandatory_reconsideration"],
+  "notes_for_maya":"If user mentions PIP refusal, present steps_summary and offer a short template letter.",
+  "reliability_score":4,
+  "last_verified_date":"2025-10-31",
+  "update_cycle":"annual",
+  "breadcrumb":"Advice and Guidance › Benefits and Money › PIP",
+  "license":"unspecified",
+  "content_excerpt":"This page explains how to request a mandatory reconsideration of a PIP decision and what evidence to include...",
+  "sha256":null,
+  "duplicate_of":null
+}
+{
+  "id":"maya_hounslow_ehcp_request_sendiass_hounslow",
+  "title":"Requesting an Education, Health and Care Needs Assessment (EHCP) in Hounslow",
+  "url":"https://www.hounslowsendiass.org.uk/ehcp",
+  "source_name":"Hounslow SENDIASS",
+  "source_type":"local_authority",
+  "category":"education_send",
+  "subcategory":"EHCP assessment",
+  "audience":["parent_carer","young_person"],
+  "age_range":"young_person_16_25",
+  "locality":"hounslow",
+  "description_plain":"Plain-English guide for asking the council to assess your child or yourself for an EHCP in Hounslow, including model letters.",
+  "steps_summary":"1. Gather needs and evidence. 2. Use the model letter to request assessment to the SEN team. 3. Council decides within 6 weeks. 4. If refused, consider mediation. 5. Appeal to SEND Tribunal within the deadline.",
+  "eligibility_summary":"Available where special educational needs may require provision beyond what a mainstream setting can ordinarily provide.",
+  "evidence_required":"school reports, EP/SaLT/OT reports, CAMHS letters, support plans, attainment data",
+  "deadlines":"Council decision on assess: 6 weeks; Tribunal appeal: within 2 months of decision or 1 month from mediation certificate.",
+  "contacts":{"email":"[add SEN team email from page]","phone":"[add if listed]"},
+  "opening_hours":"Mon–Fri (office hours) if listed; otherwise N/A",
+  "legal_basis":"Children and Families Act 2014; SEND Code of Practice 2015",
+  "format_type":"template_letter",
+  "pdf_available":true,
+  "filetype":"pdf",
+  "tags":["ehcp","template","appeal","hounslow"],
+  "notes_for_maya":"Offer the model letter and remind user of the 6-week decision timeline.",
+  "reliability_score":5,
+  "last_verified_date":"2025-10-31",
+  "update_cycle":"annual",
+  "breadcrumb":"EHCP › Request an assessment",
+  "license":"unspecified",
+  "content_excerpt":"Use our model letter to request an EHC needs assessment from Hounslow Council...",
+  "sha256":null,
+  "duplicate_of":null
+}
+
+EXECUTION NOTES
+- After generating the two sample entries, proceed to complete the full 40–80 entry set using the seed domains and rules.
+- Ensure every link is live (HTTP 200), and fill last_verified_date with today’s date.
+- Produce JSONL and CSV with identical content and field order where applicable.
+- Finish by writing README.md with schema, allowed values, and a table summarising counts by category and locality.
