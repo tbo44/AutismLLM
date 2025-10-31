@@ -1,0 +1,224 @@
+You are updating the MAYA chatbot service to minimize first-response latency (“cold start”) on Replit Autoscale ($25/mo) with this stack:
+
+Deployment: Replit Autoscale (no guaranteed always-on pod)
+
+Embeddings: HuggingFace sentence-transformers/all-MiniLM-L6-v2
+
+LLM: Groq llama-3.3-70b-versatile (via groq Python SDK)
+
+Vector store: ChromaDB (persistent local path)
+
+Objectives
+
+Make the first user reply appear within ~300–600 ms perceived time (via streaming), even after scale-to-zero.
+
+Reduce true cold start time by pre-baking & preloading everything possible.
+
+Keep the app warm using a free external ping strategy compatible with the $25 plan.
+
+Required changes
+
+A. Server code (FastAPI or current Python server)
+
+Add an @app.on_event("startup") hook that:
+
+Initializes a single global Chroma PersistentClient and collection (no telemetry, allow_reset=False), pointing to CHROMA_DIR (default /data/chroma).
+
+Loads SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2") once and calls .encode(["warmup"]).
+
+Creates one shared Groq client Groq(api_key=GROQ_API_KEY) and sends a 1-token warm call.
+
+Executes a tiny collection.query(query_texts=["hello"], n_results=1) to warm Chroma.
+
+Add a GET /warmup endpoint that touches: MiniLM .encode(["hello"]) and Chroma .query(), and returns {"ok": true}.
+
+Ensure long-lived HTTP connections and event loop perf:
+
+Start with uvicorn --workers 1 --loop uvloop.
+
+Implement streaming responses for chat:
+
+Endpoint /chat should:
+
+Do RAG: embed the user query with MiniLM, query Chroma with top_k=3 for turn 1 (expand later turns if convo state exists).
+
+Construct the final prompt and stream Groq tokens back immediately (Server-Sent Events or chunked StreamingResponse).
+
+Keep heavy imports in module scope only if needed at startup; import rarely-used tools lazily inside functions.
+
+B. Build & dependencies
+
+Pin these (or latest compatible) versions in requirements.txt:
+
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+httpx==0.27.2
+sentence-transformers==3.2.0
+chromadb==0.5.5
+groq==0.11.0
+
+
+Pre-download the MiniLM model at build time so it’s baked into the image/layer:
+
+If using Dockerfile, add a build step that runs:
+
+python - <<'PY'
+from sentence_transformers import SentenceTransformer
+SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+PY
+
+
+If using Replit Nix, add a postBuild that installs requirements and runs the same Python prefetch block.
+
+C. Configuration & env
+
+Add env vars with sensible defaults:
+
+GROQ_API_KEY (required)
+
+CHROMA_DIR=/data/chroma
+
+CHROMA_COLLECTION=maya
+
+Ensure the persistent storage path exists and Chroma points to it.
+
+D. Warm-keeping (free)
+
+Add a GitHub Actions workflow .github/workflows/warmup.yml that pings https://<YOUR-URL>/warmup every 5 minutes:
+
+name: Warm MAYA
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping warmup
+        run: |
+          curl -sS --max-time 10 "https://<YOUR-URL>/warmup" || true
+
+
+Document how to swap the URL after deploy.
+
+Files to create or modify
+
+app.py (or current server entry):
+
+Add startup warmers, /warmup, /chat streaming, and turn-1 top_k=3.
+
+requirements.txt:
+
+Add/Pin the versions above.
+
+Either Dockerfile or replit.nix:
+
+Include the MiniLM prefetch step.
+
+.github/workflows/warmup.yml:
+
+The 5-minute curl job.
+
+Acceptance criteria (what to measure)
+
+Cold boot (no running instance): first token rendered to client < 1.0s in typical runs on Replit Autoscale; goal ~300–600 ms perceived with streaming (the full answer can complete later).
+
+Warm hits after the ping cadence: first token < 400 ms.
+
+/warmup returns {"ok": true} and warms MiniLM, Chroma, and Groq without errors.
+
+No runtime downloads of the MiniLM model (confirm via logs: no HF fetch on first request).
+
+Chroma points to CHROMA_DIR and queries succeed across restarts (persistence verified).
+
+Code patterns to use (agent may adapt)
+
+Startup warmup (template):
+
+@app.on_event("startup")
+def startup():
+    app.state.chroma = PersistentClient(path=os.getenv("CHROMA_DIR","/data/chroma"),
+                                        settings=Settings(allow_reset=False, anonymized_telemetry=False))
+    app.state.col = app.state.chroma.get_or_create_collection(os.getenv("CHROMA_COLLECTION","maya"))
+
+    app.state.embed = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    _ = app.state.embed.encode(["warmup"])
+
+    app.state.groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    try:
+        app.state.groq.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role":"user","content":"ping"}],
+            max_tokens=1,
+            temperature=0
+        )
+    except Exception:
+        pass
+
+    try:
+        app.state.col.query(query_texts=["hello"], n_results=1)
+    except Exception:
+        pass
+
+
+Warmup endpoint (template):
+
+@app.get("/warmup")
+def warmup():
+    _ = app.state.embed.encode(["hello"])
+    _ = app.state.col.query(query_texts=["hello"], n_results=1)
+    return {"ok": True}
+
+
+Turn-1 retrieval & streaming (template):
+
+def retrieve(query: str, k:int=3) -> str:
+    qv = app.state.embed.encode([query]).tolist()[0]
+    res = app.state.col.query(query_embeddings=[qv], n_results=k)
+    docs = []
+    for i in range(len(res.get("documents",[[]])[0])):
+        doc = res["documents"][0][i]
+        md  = res.get("metadatas",[[{}]])[0][i]
+        docs.append(f"[{md.get('title','doc')}]\n{doc}")
+    return "\n\n---\n\n".join(docs)
+
+async def stream_groq(prompt: str):
+    with app.state.groq.chat.completions.stream(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role":"system","content":"You are MAYA, a concise UK autism support assistant."},
+                  {"role":"user","content": prompt}],
+        temperature=0.2,
+        max_tokens=600
+    ) as stream:
+        for event in stream:
+            if event.type == "token":
+                yield event.token.encode()
+            elif event.type == "error":
+                yield f"\n[error] {event.error}\n".encode()
+
+@app.post("/chat")
+async def chat(prompt: str):
+    context = retrieve(prompt, k=3)
+    full_prompt = f"Context:\n{context}\n\nUser question:\n{prompt}\n\nAnswer clearly; cite titles when helpful."
+    return StreamingResponse(stream_groq(full_prompt), media_type="text/plain")
+
+Deliverables
+
+Updated server code with startup warmups, /warmup, streaming /chat, and turn-1 top_k=3.
+
+requirements.txt with pinned versions.
+
+Either Dockerfile or replit.nix including MiniLM prefetch.
+
+.github/workflows/warmup.yml that pings /warmup every 5 minutes.
+
+A short README note with:
+
+Env vars to set (GROQ_API_KEY, CHROMA_*),
+
+How to update the warmup URL post-deploy,
+
+The uvicorn start command.
+
+Please implement all changes, commit them, and provide a brief summary of what was added and where, plus a quick test log showing the first streamed tokens after a cold deploy.
