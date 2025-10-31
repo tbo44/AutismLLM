@@ -4,7 +4,17 @@ This is Maya, a UK-focused autism facts assistant built with FastAPI and vanilla
 
 # Recent Changes
 
-**October 31, 2025 (latest)**: Responsive layout with focus-first design
+**October 31, 2025 (latest)**: Fixed deployment health check failures
+- **CRITICAL FIX**: Resolved 5-minute timeout failures on autoscale deployments
+- **NON-BLOCKING STARTUP**: RAG initialization now uses `asyncio.to_thread()` to prevent event loop blocking
+- **ULTRA-FAST HEALTH**: `/health` endpoint responds in ~3ms with zero dependencies for deployment health checks
+- **DEPLOYMENT CONFIG**: Autoscale deployments now configured to use `/health` endpoint
+- **NEW ENDPOINT**: `/status` endpoint provides RAG readiness info for frontend monitoring
+- **STARTUP ORDER**: Server starts immediately (~0.2s), RAG initializes in background (15-20s)
+- **VERIFICATION**: Logs confirm "Application startup complete" happens BEFORE RAG initialization
+- **IMPACT**: Deployments now pass health checks immediately, enabling successful production rollouts
+
+**October 31, 2025 (earlier)**: Responsive layout with focus-first design
 - **FEATURE**: Added optional width expansion toggle for carers and desktop users
 - **DEFAULT**: Maintains 420px narrow focus mode for autism-friendly reduced overwhelm
 - **EXPANDED**: Optional 960px width mode on tablets/desktop (min-width: 768px)
@@ -85,12 +95,14 @@ Maya uses **dual knowledge sources** for comprehensive coverage:
 ## Backend Architecture
 - **Framework**: FastAPI with Python 3.11, providing robust API endpoints
 - **Core Endpoints**: 
-  - `/` - Serves main chat interface
-  - `/health` - Health check endpoint with `rag_ready` status
+  - `/` - Serves main chat interface (FileResponse with no-cache headers)
+  - `/health` - Ultra-fast health check endpoint (~3ms, zero dependencies) for deployment probes
+  - `/status` - Extended status endpoint with RAG readiness info for frontend monitoring
   - `/warmup` - Component health check and keep-alive endpoint
   - `/chat` - Main conversation endpoint with safety guardrails
-- **Startup Optimization**: Background async task initializes RAG system without blocking server startup
-- **Deployment Ready**: Server responds to health checks immediately (~0.2s) for successful deployments
+- **Startup Optimization**: Background async task uses `asyncio.to_thread()` to initialize RAG in thread pool
+- **Non-Blocking Design**: Server starts in ~0.2s, responds to health checks immediately while RAG loads in background
+- **Deployment Ready**: Autoscale deployment configured to use `/health` endpoint, passes health checks instantly
 - **Lazy Loading**: Chat endpoint falls back to on-demand initialization if background task incomplete
 - **Safety System**: Regex-based guardrail patterns detecting clinical, legal, and crisis content
 - **Configuration**: Environment variable-based with UK timezone and locale settings
