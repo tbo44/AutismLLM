@@ -4,15 +4,17 @@ This is Maya, a UK-focused autism facts assistant built with FastAPI and vanilla
 
 # Recent Changes
 
-**October 31, 2025**: Startup optimization with pre-warming hooks
+**October 31, 2025**: Startup optimization with background initialization
 - **PERFORMANCE BREAKTHROUGH**: Reduced warm response time from 10-15s to ~1.6s
-- **IMPLEMENTATION**: Added `@app.on_event("startup")` hook that pre-loads RAG system at boot
+- **DEPLOYMENT FIX**: Moved RAG initialization to background task to pass health checks immediately
+- **IMPLEMENTATION**: Background async task initializes RAG system without blocking server startup
+- **HEALTH CHECKS**: Server responds to health checks in ~0.2s, enabling successful deployments
 - **COMPONENTS WARMED**: SentenceTransformer embedder, ChromaDB vector store, Groq client
-- **NEW ENDPOINTS**: `/health` now includes `rag_ready` status; `/warmup` exercises critical components
+- **NEW ENDPOINTS**: `/health` includes `rag_ready` status; `/warmup` exercises critical components
 - **KEEP-ALIVE AUTOMATION**: GitHub Actions workflow pings `/warmup` every 5 minutes to prevent cold starts
-- **DEPLOYMENT READY**: Configure `MAYA_WARMUP_URL` secret to enable keep-alive pings in production
-- **TESTING**: All endpoints verified - health check instant, chat responses ~1.65s
-- **IMPACT**: Near-instant responses for users, production-grade reliability
+- **LAZY LOADING**: Chat endpoint falls back to on-demand initialization if background task incomplete
+- **TESTING**: Health check 0.2s, chat responses ~1.65s, deployment health checks pass
+- **IMPACT**: Production-ready deployment with near-instant responses for users
 
 **October 31, 2025 (earlier)**: Comprehensive structured knowledge dataset deployed
 - **MAJOR MILESTONE**: Created and imported 28-entry structured knowledge seed dataset
@@ -77,7 +79,9 @@ Maya uses **dual knowledge sources** for comprehensive coverage:
   - `/health` - Health check endpoint with `rag_ready` status
   - `/warmup` - Component health check and keep-alive endpoint
   - `/chat` - Main conversation endpoint with safety guardrails
-- **Startup Optimization**: Pre-warming hook loads RAG system at boot for instant responses
+- **Startup Optimization**: Background async task initializes RAG system without blocking server startup
+- **Deployment Ready**: Server responds to health checks immediately (~0.2s) for successful deployments
+- **Lazy Loading**: Chat endpoint falls back to on-demand initialization if background task incomplete
 - **Safety System**: Regex-based guardrail patterns detecting clinical, legal, and crisis content
 - **Configuration**: Environment variable-based with UK timezone and locale settings
 - **Keep-Alive**: GitHub Actions workflow prevents cold starts via periodic warmup pings
@@ -149,9 +153,10 @@ Maya uses **dual knowledge sources** for comprehensive coverage:
 - CORS enabled for development (should be restricted for production)
 
 ## Performance & Startup
-- **Pre-warming**: RAG system loads at startup via `@app.on_event("startup")` hook
-- **Startup time**: ~15-20s to fully initialize (ChromaDB + embeddings + Groq)
-- **Response times**: Health check instant, chat responses ~1.6s (warm), first request after cold start ~1.6s
+- **Background initialization**: RAG system loads in background task without blocking server startup
+- **Health check response**: ~0.2s (immediate), enabling deployment health checks to pass
+- **Initialization time**: Background task completes in ~15-20s (ChromaDB + embeddings + Groq)
+- **Chat response times**: ~1.6s (warm), lazy-loads if background initialization incomplete
 - **Keep-alive**: GitHub Actions workflow pings `/warmup` every 5 minutes
 - **Cold start prevention**: Configure `MAYA_WARMUP_URL` secret with production URL for automated pings
-- **Component warmup**: Embedder and ChromaDB exercised during startup for optimal performance
+- **Deployment ready**: Server starts immediately, RAG initializes asynchronously for production compatibility

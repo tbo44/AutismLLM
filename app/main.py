@@ -26,12 +26,11 @@ app.add_middleware(
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-@app.on_event("startup")
-async def startup_event():
-    """Pre-load RAG system at startup for faster first response"""
+async def initialize_rag_background():
+    """Background task to initialize RAG system without blocking server startup"""
     global _rag_system, _startup_complete
     
-    logger.info("🚀 Starting Maya - Pre-loading RAG system...")
+    logger.info("🚀 Maya background initialization starting...")
     start_time = datetime.now()
     
     try:
@@ -57,12 +56,18 @@ async def startup_event():
         
         elapsed = (datetime.now() - start_time).total_seconds()
         _startup_complete = True
-        logger.info(f"✅ Maya ready! Startup completed in {elapsed:.1f}s")
+        logger.info(f"✅ Maya ready! Background initialization completed in {elapsed:.1f}s")
         
     except Exception as e:
-        logger.error(f"❌ Startup failed: {str(e)}", exc_info=True)
-        # Allow server to start anyway - will retry on first request
+        logger.error(f"❌ Background initialization failed: {str(e)}", exc_info=True)
         _startup_complete = False
+
+@app.on_event("startup")
+async def startup_event():
+    """Start background initialization without blocking server startup"""
+    import asyncio
+    logger.info("🚀 Maya server starting - RAG initialization running in background...")
+    asyncio.create_task(initialize_rag_background())
 
 class Query(BaseModel):
     question: str
