@@ -4,6 +4,15 @@ This is Maya, a UK-focused autism facts assistant built with FastAPI and vanilla
 
 # Recent Changes
 
+**October 31, 2025**: Comprehensive structured knowledge dataset deployed
+- **MAJOR MILESTONE**: Created and imported 28-entry structured knowledge seed dataset
+- **COVERAGE**: Benefits (6), Education/SEND (5), Adult Social Care (4), Appeals (4), Health (2), Employment (1), Travel (3), Community (3)
+- **QUALITY**: Each entry includes verified URLs, step-by-step guidance, deadlines, contacts, evidence requirements, legal basis
+- **SOURCES**: Gov.UK, NHS, Hounslow Council, National Autistic Society, IPSEA, official charities
+- **TESTING**: Confirmed accurate retrieval for DLA applications and SEND Tribunal appeals
+- **IMPACT**: Users can now get detailed bureaucratic process guidance for UK autism support systems
+- **NEXT STEPS**: Quarterly content reviews recommended to keep rates/deadlines current (especially April 2026 LCWRA change)
+
 **October 30, 2025**: Fixed HuggingFace rate limiting and reverted to simple initialization
 - **CRITICAL FIX**: Added HF_TOKEN secret to resolve "429 Too Many Requests" errors in deployment
 - **ROOT CAUSE**: HuggingFace blocks downloads without authentication tokens
