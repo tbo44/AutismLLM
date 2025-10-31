@@ -47,7 +47,10 @@ body {
 @media (min-width: 768px) {
     .app-container[data-layout="expanded"] {
         max-width: min(96vw, var(--expanded-max-w));
-        --bubble-max-w: 680px;
+    }
+    
+    .app-container[data-layout="expanded"] .message-bubble {
+        max-width: 680px;
     }
 }
 
@@ -416,5 +419,5 @@ button:focus-visible {
         animation-iteration-count: 1 !important;
         transition-duration: 0.01ms !important;
     }
-}/* Cache bust: 1757597944 */
-/* Force reload: 1757597974 */
+}/* Cache bust: 1761930362 */
+/* Force reload: 1761930362 */
