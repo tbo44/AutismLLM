@@ -34,25 +34,12 @@ async def initialize_rag_background():
     start_time = datetime.now()
     
     try:
+        # Run initialization in thread pool to avoid blocking event loop
+        import asyncio
         from rag.rag_system import get_rag_system
-        _rag_system = get_rag_system()
-        _rag_system.initialize()
         
-        # Warm up the system with test queries
-        logger.info("🔥 Warming up RAG components...")
-        try:
-            # Warm embedder (most critical for fast response)
-            _rag_system.vector_store.embedder.encode(["warmup"])
-            logger.info("✅ SentenceTransformer warmed")
-        except Exception as e:
-            logger.warning(f"Embedder warmup failed (non-critical): {e}")
-        
-        try:
-            # Warm ChromaDB with actual search
-            _rag_system.vector_store.search("warmup test", n_results=1)
-            logger.info("✅ ChromaDB warmed")
-        except Exception as e:
-            logger.warning(f"ChromaDB warmup failed (non-critical): {e}")
+        # Use asyncio.to_thread to run blocking operations without blocking the event loop
+        _rag_system = await asyncio.to_thread(_initialize_rag_sync)
         
         elapsed = (datetime.now() - start_time).total_seconds()
         _startup_complete = True
@@ -62,11 +49,38 @@ async def initialize_rag_background():
         logger.error(f"❌ Background initialization failed: {str(e)}", exc_info=True)
         _startup_complete = False
 
+def _initialize_rag_sync():
+    """Synchronous RAG initialization - runs in thread pool"""
+    from rag.rag_system import get_rag_system
+    
+    logger.info("📦 Loading RAG system...")
+    rag_system = get_rag_system()
+    rag_system.initialize()
+    
+    # Warm up the system with test queries
+    logger.info("🔥 Warming up RAG components...")
+    try:
+        # Warm embedder (most critical for fast response)
+        rag_system.vector_store.embedder.encode(["warmup"])
+        logger.info("✅ SentenceTransformer warmed")
+    except Exception as e:
+        logger.warning(f"Embedder warmup failed (non-critical): {e}")
+    
+    try:
+        # Warm ChromaDB with actual search
+        rag_system.vector_store.search("warmup test", n_results=1)
+        logger.info("✅ ChromaDB warmed")
+    except Exception as e:
+        logger.warning(f"ChromaDB warmup failed (non-critical): {e}")
+    
+    return rag_system
+
 @app.on_event("startup")
 async def startup_event():
     """Start background initialization without blocking server startup"""
     import asyncio
     logger.info("🚀 Maya server starting - RAG initialization running in background...")
+    # Create task without awaiting - allows server to start immediately
     asyncio.create_task(initialize_rag_background())
 
 class Query(BaseModel):
@@ -92,9 +106,14 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """Health check endpoint - responds immediately"""
+    """Ultra-lightweight health check endpoint - responds immediately without dependencies"""
+    return {"status": "ok"}
+
+@app.get("/status")
+async def status():
+    """Extended status endpoint with RAG readiness info (for frontend)"""
     return {
-        "status": "ok", 
+        "status": "ok",
         "service": "maya-autism-assistant",
         "rag_ready": _startup_complete
     }
