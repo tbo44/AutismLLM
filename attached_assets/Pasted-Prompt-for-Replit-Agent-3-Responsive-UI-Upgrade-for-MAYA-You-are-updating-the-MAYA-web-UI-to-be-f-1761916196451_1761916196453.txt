@@ -1,0 +1,236 @@
+Prompt for Replit Agent 3 — Responsive UI Upgrade for MAYA
+
+You are updating the MAYA web UI to be fully responsive. Today it’s hard-coded to ~400px for mobile. We need it to adapt to the user’s device (phone/tablet/desktop/laptop) and browser window size, with clean scaling and accessibility.
+
+Tech context
+
+Frontend: vanilla HTML/CSS/JS or React (use what’s already in the repo; don’t rewrite the stack)
+
+Backend: FastAPI (don’t change)
+
+Current mobile layout width ≈ 400px (hard-coded somewhere in CSS)
+
+Objectives
+
+Mobile-first design that scales up gracefully to tablets and desktops.
+
+On desktop/laptop, the app should use the available screen (width and height) instead of staying 400px wide.
+
+Preserve a compact, readable layout with sane line lengths and spacing.
+
+Respect accessibility & system prefs (reduced motion, contrast, font scaling).
+
+No breaking changes to existing functionality.
+
+Required changes
+A) Layout & CSS
+
+Implement a mobile-first responsive layout with CSS Grid/Flex.
+
+Replace any fixed widths (e.g., .container { width: 400px; }) with fluid rules using min() / max() / clamp() and CSS variables.
+
+Add a centered, responsive container for the chat UI:
+
+:root {
+  --page-max-w: 1600px;      /* hard cap for ultra-wide */
+  --container-pad: clamp(12px, 2vw, 24px);
+  --font-size: clamp(14px, 1.2vw, 18px);
+  --radius: 16px;
+}
+
+html { font-size: 100%; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg, #0b0c10);
+  color: var(--fg, #eef2f7);
+}
+
+.app {
+  /* full-height, minus mobile browser UI quirks (see JS shim below) */
+  min-height: calc(var(--vh, 1vh) * 100);
+  display: grid;
+  grid-template-rows: auto 1fr auto; /* header, content, composer */
+}
+
+.container {
+  width: min(100%, var(--page-max-w));
+  margin-inline: auto;
+  padding: var(--container-pad);
+}
+
+.chat-shell {
+  display: grid;
+  gap: clamp(8px, 1.2vw, 16px);
+  grid-template-columns: 1fr;
+}
+
+/* Desktop: optional 2-column (messages + context/side panel) */
+@media (min-width: 1024px) {
+  .chat-shell {
+    grid-template-columns: 2fr 1fr; /* main + side */
+    align-items: start;
+  }
+  .side-panel {
+    position: sticky;
+    top: var(--container-pad);
+    max-height: calc(var(--vh, 1vh) * 100 - 2 * var(--container-pad));
+    overflow: auto;
+  }
+}
+
+/* Tablet middle ground */
+@media (min-width: 768px) and (max-width: 1023.98px) {
+  .chat-shell { grid-template-columns: 1fr; }
+}
+
+/* Message area sizing */
+.messages {
+  overflow: auto;
+  max-height: calc(var(--vh, 1vh) * 100 - 240px); /* header+composer rough */
+  padding-right: 4px; /* give space for scrollbar */
+}
+
+/* Composer sticks to bottom */
+.composer {
+  position: sticky;
+  bottom: 0;
+  background: rgba(0,0,0,0.35);
+  backdrop-filter: saturate(120%) blur(6px);
+  padding: var(--container-pad);
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+
+/* Fluid typography */
+.messages, .composer, .side-panel {
+  font-size: var(--font-size);
+  line-height: 1.45;
+}
+
+
+Create well-chosen breakpoints and keep them minimal:
+
+@media (min-width: 480px) — small phones → large phones
+
+@media (min-width: 768px) — tablets/landscape
+
+@media (min-width: 1024px) — laptops/desktops (enable optional side panel)
+
+@media (min-width: 1440px) — large screens (increase paddings/gaps slightly)
+
+Use container queries where appropriate (if supported in the current build target) for components that need local reflow.
+
+Respect safe-area insets on iOS:
+
+.container { padding-left: max(var(--container-pad), env(safe-area-inset-left));
+             padding-right: max(var(--container-pad), env(safe-area-inset-right)); }
+.composer  { padding-bottom: max(var(--container-pad), env(safe-area-inset-bottom)); }
+
+B) Viewport height fix (mobile browsers)
+
+Add a tiny JS shim to fix 100vh on mobile:
+
+// viewport.js (import once)
+function setVhUnit() {
+  const vh = window.innerHeight * 0.01;
+  document.documentElement.style.setProperty('--vh', `${vh}px`);
+}
+window.addEventListener('resize', setVhUnit);
+window.addEventListener('orientationchange', setVhUnit);
+setVhUnit();
+
+
+Ensure the root .app uses min-height: calc(var(--vh) * 100).
+
+C) Adaptive density & typography
+
+Use clamp() for paddings, gaps, and font sizes (see variables above) so UI isn’t too cramped on phones or too airy on desktops.
+
+Limit line length of long text (answers) to improve readability:
+
+.message-text { max-width: 70ch; }
+
+D) Images & DPR
+
+Where images/avatars are used, serve responsive sizes:
+
+Use srcset with 1x, 2x to handle high-DPI displays.
+
+Constrain images with max-width: 100%; height: auto;.
+
+E) Accessibility & user prefs
+
+Respect prefers-reduced-motion:
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+
+
+Add a contrast toggle (CSS class on <html> or .app), e.g., data-theme="high-contrast", and a minimal button in the header to switch it.
+
+Ensure interactive targets (buttons, inputs) have min 44×44 px hit areas.
+
+F) Meta & viewport
+
+Confirm the document has:
+
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+
+G) Optional desktop enhancement
+
+On min-width: 1024px, enable a two-panel layout:
+
+Left: messages (2fr)
+
+Right: side panel (1fr) for citations, retrieved context, or settings.
+
+This must collapse to a single column below 1024px.
+
+Files to add/modify
+
+styles.css (or equivalent): implement rules above; remove fixed widths.
+
+viewport.js: add the --vh shim and import it once.
+
+index.html / App.jsx (or equivalent):
+
+Ensure .app, .container, .chat-shell, .messages, .composer, .side-panel structure exists.
+
+Add the meta viewport tag if missing.
+
+Wire in the contrast toggle button (optional).
+
+Acceptance criteria
+
+Phone (360×640): single-column chat; composer sticky; no horizontal scroll; content readable; safe-area respected.
+
+Tablet portrait (768×1024): single-column; comfortable margins; no fixed 400px constraint.
+
+Laptop (1366×768) and Desktop (1920×1080):
+
+App expands to fit width/height.
+
+Optional side panel visible ≥1024px and sticky; messages scroll independently.
+
+First contentful paint shows a layout wider than 400px (no centered narrow column unless window is very narrow).
+
+Window resize: layout adapts fluidly with no layout jumps.
+
+A11y: prefers-reduced-motion honored; contrast toggle works; buttons ≥44px; line length ≤70ch.
+
+Non-goals
+
+Do not alter backend routes, streaming, or business logic.
+
+Do not introduce a heavy CSS framework; keep dependencies minimal. If Tailwind is already present, you may implement the same behavior with it.
+
+Deliverables
+
+Updated CSS/JS/HTML (or React components) implementing the responsive layout.
+
+A short README note: breakpoints used, how to adjust --page-max-w, where to toggle side panel.
+
+Before/after screenshots: mobile, tablet, desktop.
+
+A quick test matrix run-through (manually or with Playwright) confirming acceptance criteria.
