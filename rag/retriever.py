@@ -119,6 +119,9 @@ class UKAutismRetriever:
         authority = int(metadata['authority'])
         authority_boost = (6 - authority) * 0.1  # 0.5 for gov, 0.4 for NHS, etc.
         
+        # Structured entry boost (prefer curated bureaucratic guides)
+        structured_boost = 0.15 if metadata.get('is_structured') else 0.0
+        
         # Recency boost (more recent content gets slight priority)
         # This would require parsing crawled_at timestamp, simplified for now
         recency_boost = 0.0
@@ -140,6 +143,6 @@ class UKAutismRetriever:
                 elif term in text_lower:
                     term_match_boost += 0.02
         
-        final_score = base_score + authority_boost + recency_boost + length_boost + term_match_boost
+        final_score = base_score + authority_boost + structured_boost + recency_boost + length_boost + term_match_boost
         
         return min(final_score, 1.0)  # Cap at 1.0

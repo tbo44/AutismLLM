@@ -33,6 +33,24 @@ Jurisdiction: United Kingdom (emphasis on England and Hounslow)
 
 # Project Architecture
 
+## Knowledge Base System
+
+Maya uses **dual knowledge sources** for comprehensive coverage:
+
+### Web Crawling System
+- Crawls UK autism websites (NHS, NAS, Gov.UK, etc.)
+- Extracts general autism information
+- 14 documents from trusted sources
+- Good for: Definitions, general guidance, factual information
+
+### Structured Knowledge Import (NEW!)
+- Imports curated JSONL/CSV files with rich metadata
+- Contains step-by-step bureaucratic guides
+- Includes contacts, deadlines, evidence requirements, legal basis
+- Good for: PIP appeals, EHCP requests, Blue Badge applications, etc.
+- **Prioritized in search** - Gets +0.15 relevance boost
+- See `docs/STRUCTURED_KNOWLEDGE_GUIDE.md` for full details
+
 ## Backend Architecture
 - **Framework**: FastAPI with Python 3.11, providing robust API endpoints
 - **Core Endpoints**: 
