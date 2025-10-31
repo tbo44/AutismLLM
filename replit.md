@@ -4,7 +4,16 @@ This is Maya, a UK-focused autism facts assistant built with FastAPI and vanilla
 
 # Recent Changes
 
-**October 31, 2025**: Startup optimization with background initialization
+**October 31, 2025 (latest)**: Responsive layout with focus-first design
+- **FEATURE**: Added optional width expansion toggle for carers and desktop users
+- **DEFAULT**: Maintains 420px narrow focus mode for autism-friendly reduced overwhelm
+- **EXPANDED**: Optional 960px width mode on tablets/desktop (min-width: 768px)
+- **PERSISTENCE**: Layout preference saved in localStorage per device
+- **ACCESSIBILITY**: Keyboard accessible (Tab, Enter, Space), 44px touch targets, iOS safe-area support
+- **TEXT CHANGE**: "NORMAL MODE" renamed to "NEUROTYPICAL MODE" for clarity
+- **IMPACT**: Flexible layout accommodates both autistic users (narrow focus) and carers (expanded view)
+
+**October 31, 2025 (earlier)**: Startup optimization with background initialization
 - **PERFORMANCE BREAKTHROUGH**: Reduced warm response time from 10-15s to ~1.6s
 - **DEPLOYMENT FIX**: Moved RAG initialization to background task to pass health checks immediately
 - **IMPLEMENTATION**: Background async task initializes RAG system without blocking server startup
@@ -88,9 +97,20 @@ Maya uses **dual knowledge sources** for comprehensive coverage:
 
 ## Frontend Architecture
 - **Technology Stack**: Vanilla HTML, CSS, and JavaScript for simplicity
-- **UI Design**: Dark theme with prominent safety disclaimer banner
+- **UI Design**: Light theme with calm, autism-friendly color palette
 - **Chat Interface**: MayaApp class managing real-time conversations
-- **Responsive Design**: Mobile-friendly with accessible styling
+- **Responsive Design**: Mobile-first with optional width expansion
+- **Layout Modes**:
+  - **Focus Mode** (default): 420px narrow width for reduced overwhelm and easy reading
+  - **Expanded Mode** (optional): 960px width for carers/desktop users who need more space
+  - User preference saved in localStorage per device
+- **Accessibility Features**:
+  - Low-stimulation mode toggle (removes colors, reduces visual complexity)
+  - Neurotypical mode for users who prefer standard color schemes
+  - Layout toggle button with keyboard support (Enter/Space)
+  - 44px minimum touch targets for buttons
+  - iOS safe-area support for notch devices
+  - Respects prefers-reduced-motion for smooth transitions
 
 ## Safety & Compliance System
 - **Guardrails**: Automatic detection and refusal of inappropriate content

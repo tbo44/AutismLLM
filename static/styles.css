@@ -53,6 +53,7 @@ body {
 .header {
     background: linear-gradient(135deg, #B3E5FC 0%, #E1F5FE 100%);
     padding: 20px;
+    padding-top: max(20px, env(safe-area-inset-top));
     text-align: center;
     border-radius: 0 0 20px 20px;
 }
@@ -86,12 +87,19 @@ body {
     font-weight: 600;
     cursor: pointer;
     transition: all 0.3s ease;
-    display: inline-flex;
+    display: none; /* Hidden on mobile by default */
     align-items: center;
     gap: 6px;
     color: #1565C0;
     min-height: 44px;
     min-width: 44px;
+}
+
+/* Show layout toggle only on tablet/desktop where it has effect */
+@media (min-width: 768px) {
+    .layout-toggle {
+        display: inline-flex;
+    }
 }
 
 .layout-toggle:hover {
