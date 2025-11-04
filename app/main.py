@@ -198,11 +198,19 @@ async def chat(query: Query):
     timestamp = datetime.now(london_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
     
     try:
-        # Load RAG system if needed (lazy initialization on first request)
-        rag_system = _load_rag_system()
+        # Ensure RAG system is loaded (handles both background init and lazy loading)
+        global _rag_system
+        if _rag_system is None:
+            logger.info("RAG system not ready, initializing now...")
+            _rag_system = _load_rag_system()
+        
+        # Double-check the RAG system is actually initialized
+        if not _rag_system.initialized:
+            logger.warning("RAG system exists but not initialized, initializing now...")
+            _rag_system.initialize()
         
         # Answer the question
-        text = rag_system.answer_question(query.question)
+        text = _rag_system.answer_question(query.question)
         return Answer(answer=text, timestamp=f"Last checked: {timestamp}")
         
     except Exception as e:
