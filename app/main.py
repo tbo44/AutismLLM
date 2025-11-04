@@ -6,6 +6,11 @@ import pytz
 from datetime import datetime
 import logging
 
+# Configure logging to ensure startup events are visible
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Maya Autism Facts Assistant", version="0.2.0")
