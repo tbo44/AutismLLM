@@ -66,14 +66,25 @@ class UKAutismLLMClient:
             # Define language complexity guidelines based on comprehension level
             language_guidelines = {
                 "clear": """
-LANGUAGE LEVEL - CLEAR (Simple Words):
-- Use very simple, everyday words that a 10-12 year old would understand
-- Keep sentences short (10-15 words maximum)
-- Avoid technical terms - if you must use them, explain them immediately in simple words
-- Break complex ideas into small, simple steps
-- Use bullet points and numbered lists
-- Examples: Say "doctor" not "physician", "help" not "assistance", "get" not "obtain"
-- Reading level target: Lower secondary school (Key Stage 3)""",
+LANGUAGE LEVEL - CLEAR (Very Simple Words):
+- Write like you're talking to a 10 year old child
+- Use ONLY simple, everyday words - NO fancy words at all
+- Keep sentences VERY short (6-8 words maximum per sentence)
+- ONE idea per sentence - no compound sentences
+- NO technical words - if you absolutely must use one, explain it like talking to a child
+- Break everything into tiny, simple steps
+- Use lots of bullet points and short numbered lists
+- Simple word examples:
+  * Say "help" NOT "support", "assistance", "aid"
+  * Say "doctor" NOT "physician", "GP", "practitioner"  
+  * Say "get" NOT "obtain", "receive", "acquire"
+  * Say "show" NOT "demonstrate", "exhibit", "display"
+  * Say "different" NOT "diverse", "varied", "distinct"
+  * Say "money help" NOT "financial assistance", "benefits"
+  * Say "school help" NOT "educational support", "SEND provision"
+- Avoid ALL jargon, acronyms, and formal language
+- Reading level target: Primary/early secondary (ages 8-11)
+- Think: How would I explain this to my younger sibling?""",
                 
                 "standard": """
 LANGUAGE LEVEL - STANDARD:
