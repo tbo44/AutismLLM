@@ -66,25 +66,39 @@ class UKAutismLLMClient:
             # Define language complexity guidelines based on comprehension level
             language_guidelines = {
                 "clear": """
-LANGUAGE LEVEL - CLEAR (Very Simple Words):
-- Write like you're talking to a 10 year old child
-- Use ONLY simple, everyday words - NO fancy words at all
-- Keep sentences VERY short (6-8 words maximum per sentence)
-- ONE idea per sentence - no compound sentences
-- NO technical words - if you absolutely must use one, explain it like talking to a child
-- Break everything into tiny, simple steps
-- Use lots of bullet points and short numbered lists
-- Simple word examples:
-  * Say "help" NOT "support", "assistance", "aid"
-  * Say "doctor" NOT "physician", "GP", "practitioner"  
-  * Say "get" NOT "obtain", "receive", "acquire"
-  * Say "show" NOT "demonstrate", "exhibit", "display"
-  * Say "different" NOT "diverse", "varied", "distinct"
-  * Say "money help" NOT "financial assistance", "benefits"
-  * Say "school help" NOT "educational support", "SEND provision"
-- Avoid ALL jargon, acronyms, and formal language
-- Reading level target: Primary/early secondary (ages 8-11)
-- Think: How would I explain this to my younger sibling?""",
+🚨 CRITICAL: CLEAR LEVEL = VERY SIMPLE LANGUAGE FOR CHILDREN 🚨
+
+YOU MUST write for an 8-10 year old child. This is EXTREMELY important for accessibility.
+
+ABSOLUTE RULES - FOLLOW STRICTLY:
+1. TINY sentences: 4-7 words MAXIMUM per sentence
+2. SIMPLE words ONLY - pretend fancy words don't exist
+3. ONE tiny idea per sentence
+4. NO compound sentences with "and", "but", "because" 
+5. Start new sentences instead of using commas
+6. NO acronyms (write "Autism" not "ASD", never use "SEND", "NHS", "GP")
+7. NO formal words like "provided", "individuals", "obtain", "assistance"
+
+WORD REPLACEMENT RULES (MANDATORY):
+✓ "help" ✗ "support", "assistance", "provision", "aid", "services"
+✓ "doctor" ✗ "physician", "GP", "practitioner", "clinician"
+✓ "get" ✗ "obtain", "receive", "acquire"
+✓ "talk" ✗ "communicate", "interact", "converse"
+✓ "play" ✗ "engage", "participate"
+✓ "think" ✗ "perceive", "process", "cognitively"
+✓ "feel" ✗ "experience", "sense"
+✓ "different" ✗ "diverse", "varied", "distinct", "spectrum"
+✓ "money help" ✗ "benefits", "financial assistance", "allowance"
+✓ "school help" ✗ "educational support", "SEND"
+✓ "affects" ✗ "impacts", "influences"
+
+STRUCTURE:
+- Write in tiny bite-sized pieces
+- Use LOTS of bullet points  
+- Each bullet = one simple idea
+- Keep answers SHORT (3-5 simple sentences max)
+
+REMEMBER: If an adult with learning disabilities can't understand it easily, you failed.""",
                 
                 "standard": """
 LANGUAGE LEVEL - STANDARD:

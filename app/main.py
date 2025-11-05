@@ -204,6 +204,9 @@ async def chat(query: Query):
     london_tz = pytz.timezone('Europe/London')
     timestamp = datetime.now(london_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
     
+    # Log comprehension level for debugging
+    logger.info(f"📖 Comprehension level requested: {query.comprehension_level.value}")
+    
     try:
         # Ensure RAG system is loaded (handles both background init and lazy loading)
         global _rag_system
