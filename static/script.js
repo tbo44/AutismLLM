@@ -3,10 +3,12 @@ class MayaApp {
         this.messages = [];
         this.lowStimMode = localStorage.getItem('maya-low-stim') === 'true';
         this.layoutMode = localStorage.getItem('maya-layout') || 'focus';
+        this.comprehensionLevel = localStorage.getItem('maya-comprehension') || 'standard';
         this.initializeElements();
         this.bindEvents();
         this.applyLowStimMode();
         this.applyLayoutMode();
+        this.applyComprehensionLevel();
         this.addWelcomeMessage();
     }
 
@@ -16,6 +18,7 @@ class MayaApp {
         this.sendButton = document.getElementById('sendButton');
         this.lowStimToggle = document.getElementById('lowStimToggle');
         this.layoutToggle = document.getElementById('layoutToggle');
+        this.comprehensionSelect = document.getElementById('comprehensionLevel');
         this.suggestions = document.getElementById('suggestions');
         this.appContainer = document.querySelector('.app-container');
     }
@@ -44,6 +47,12 @@ class MayaApp {
                 e.preventDefault();
                 this.toggleLayout();
             }
+        });
+
+        // Comprehension level selector
+        this.comprehensionSelect.addEventListener('change', (e) => {
+            this.comprehensionLevel = e.target.value;
+            localStorage.setItem('maya-comprehension', this.comprehensionLevel);
         });
 
         // Suggestion buttons
@@ -80,6 +89,10 @@ class MayaApp {
         if (textSpan) {
             textSpan.textContent = isExpanded ? 'Narrow width' : 'Expand width';
         }
+    }
+
+    applyComprehensionLevel() {
+        this.comprehensionSelect.value = this.comprehensionLevel;
     }
 
     addWelcomeMessage() {
@@ -150,7 +163,10 @@ class MayaApp {
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ question: content })
+                body: JSON.stringify({ 
+                    question: content,
+                    comprehension_level: this.comprehensionLevel
+                })
             });
 
             if (!response.ok) {

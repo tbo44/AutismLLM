@@ -31,9 +31,15 @@ class UKAutismLLMClient:
         logger.info("Groq client initialized successfully")
     
     def synthesize_response(self, user_question: str, retrieved_chunks: List[Dict[str, Any]], 
-                          context: Optional[str] = None) -> Dict[str, Any]:
+                          context: Optional[str] = None, comprehension_level: str = "standard") -> Dict[str, Any]:
         """
         Generate response using retrieved information with UK autism focus
+        
+        Args:
+            user_question: The user's question
+            retrieved_chunks: Retrieved context chunks from the vector store
+            context: Optional additional context
+            comprehension_level: Reading complexity - "clear" (simple), "standard", or "complex" (detailed)
         """
         if not self.client:
             return {
@@ -57,7 +63,36 @@ class UKAutismLLMClient:
                 metadata = chunk['metadata']
                 sources_used.add((metadata['source_name'], metadata['url'], metadata['title']))
             
-            # Build system prompt for UK autism assistant
+            # Define language complexity guidelines based on comprehension level
+            language_guidelines = {
+                "clear": """
+LANGUAGE LEVEL - CLEAR (Simple Words):
+- Use very simple, everyday words that a 10-12 year old would understand
+- Keep sentences short (10-15 words maximum)
+- Avoid technical terms - if you must use them, explain them immediately in simple words
+- Break complex ideas into small, simple steps
+- Use bullet points and numbered lists
+- Examples: Say "doctor" not "physician", "help" not "assistance", "get" not "obtain"
+- Reading level target: Lower secondary school (Key Stage 3)""",
+                
+                "standard": """
+LANGUAGE LEVEL - STANDARD:
+- Use clear, accessible language suitable for general audiences
+- Keep sentences reasonably short but can include some complexity
+- Explain technical terms when first introduced
+- Balance detail with readability
+- Reading level target: GCSE/A-Level (ages 14-18)""",
+                
+                "complex": """
+LANGUAGE LEVEL - COMPLEX (Detailed):
+- Use precise, detailed language with technical accuracy
+- Include comprehensive explanations and context
+- Use proper legal, medical, and bureaucratic terminology
+- Provide in-depth information with nuanced explanations
+- Reading level target: Adult / Professional"""
+            }
+            
+            # Build system prompt for UK autism assistant with comprehension level
             system_prompt = """You are Maya, a UK autism facts assistant. You provide helpful, accurate information about autism in the UK context.
 
 IMPORTANT GUIDELINES:
@@ -69,6 +104,8 @@ IMPORTANT GUIDELINES:
 6. Never provide medical diagnoses, treatment plans, or medication advice
 7. Never provide specific legal advice for individual cases
 8. If someone appears in crisis, direct them to appropriate services
+
+{language_instruction}
 
 WHEN CONTEXT INCLUDES STRUCTURED GUIDANCE (steps, deadlines, contacts):
 - Present the step-by-step instructions clearly
@@ -93,11 +130,17 @@ CONTEXT INFORMATION:
 
 Please provide a helpful response based on the context information above. Remember to focus on UK-specific information and cite your sources."""
 
+            # Get language instruction based on comprehension level
+            language_instruction = language_guidelines.get(comprehension_level, language_guidelines["standard"])
+            
             # Generate response
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": system_prompt.format(context=context_text)},
+                    {"role": "system", "content": system_prompt.format(
+                        language_instruction=language_instruction,
+                        context=context_text
+                    )},
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.3,  # Lower temperature for more factual responses

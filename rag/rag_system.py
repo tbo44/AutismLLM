@@ -145,9 +145,13 @@ class UKAutismRAGSystem:
             logger.warning("No chunks were created from crawling")
             return {"success": False, "chunks_added": 0}
     
-    def answer_question(self, user_question: str) -> str:
+    def answer_question(self, user_question: str, comprehension_level: str = "standard") -> str:
         """
         Main entry point for answering questions using the full RAG pipeline
+        
+        Args:
+            user_question: The user's question
+            comprehension_level: Reading complexity level - "clear" (simple), "standard", or "complex" (detailed)
         """
         if not self.initialized:
             return "System not initialized. Please try again in a moment."
@@ -181,10 +185,11 @@ Please feel free to ask me about any of these topics!"""
             if not retrieval_result["results"]:
                 return self._handle_no_results(user_question)
             
-            # Generate response using LLM
+            # Generate response using LLM with comprehension level
             llm_result = self.llm_client.synthesize_response(
                 user_question, 
-                retrieval_result["results"]
+                retrieval_result["results"],
+                comprehension_level=comprehension_level
             )
             
             if not llm_result["success"]:

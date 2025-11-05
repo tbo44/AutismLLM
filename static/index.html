@@ -18,6 +18,14 @@
         <div class="header">
             <div class="app-title">MAYA</div>
             <div class="header-controls">
+                <div class="comprehension-selector">
+                    <label for="comprehensionLevel" class="selector-label">Reading level:</label>
+                    <select id="comprehensionLevel" class="comprehension-select" title="Choose answer complexity">
+                        <option value="clear">Clear (simple words)</option>
+                        <option value="standard" selected>Standard</option>
+                        <option value="complex">Complex (detailed)</option>
+                    </select>
+                </div>
                 <button id="layoutToggle" class="layout-toggle" aria-pressed="false" title="Expand or narrow the chat width">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M21 3H3v18h18V3z"/>

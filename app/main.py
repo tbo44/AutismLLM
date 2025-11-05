@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from enum import Enum
 import pytz
 from datetime import datetime
 import logging
@@ -91,8 +92,14 @@ async def startup_event():
     asyncio.create_task(initialize_rag_background())
     logger.info("✅ Server startup event complete - background task spawned")
 
+class ComprehensionLevel(str, Enum):
+    clear = "clear"
+    standard = "standard"
+    complex = "complex"
+
 class Query(BaseModel):
     question: str
+    comprehension_level: ComprehensionLevel = ComprehensionLevel.standard
 
 class Answer(BaseModel):
     answer: str
@@ -209,8 +216,8 @@ async def chat(query: Query):
             logger.warning("RAG system exists but not initialized, initializing now...")
             _rag_system.initialize()
         
-        # Answer the question
-        text = _rag_system.answer_question(query.question)
+        # Answer the question with comprehension level (convert enum to string value)
+        text = _rag_system.answer_question(query.question, comprehension_level=query.comprehension_level.value)
         return Answer(answer=text, timestamp=f"Last checked: {timestamp}")
         
     except Exception as e:

@@ -1,8 +1,19 @@
 # Overview
 
-This is Maya, a UK-focused autism facts assistant built with FastAPI and vanilla JavaScript. The application provides a web-based chat interface for autistic people and carers to get information about UK autism support, services, benefits, and education. The system includes robust safety guardrails to prevent inappropriate medical, legal, or crisis advice.
+This is Maya, a UK-focused autism facts assistant built with FastAPI and vanilla JavaScript. The application provides a web-based chat interface for autistic people and carers to get information about UK autism support, services, benefits, and education. The system includes robust safety guardrails to prevent inappropriate medical, legal, or crisis advice, plus advanced accessibility features including reading comprehension level options for users with learning disabilities.
 
 # Recent Changes
+
+**November 5, 2025 (latest)**: Added reading comprehension level accessibility feature
+- **ACCESSIBILITY BREAKTHROUGH**: Three reading levels (Clear/Standard/Complex) for users with learning disabilities
+- **CLEAR LEVEL**: Simple everyday words targeting lower secondary school (Key Stage 3, ages 10-12)
+- **STANDARD LEVEL**: Accessible language for general audiences (GCSE/A-Level, ages 14-18)
+- **COMPLEX LEVEL**: Detailed technical language for adult/professional audiences
+- **UI SELECTOR**: Dropdown in header with "Reading level:" label, persisted in localStorage
+- **BACKEND VALIDATION**: Pydantic enum validation rejects invalid comprehension levels
+- **LLM PROMPTS**: Comprehensive language guidelines adjust vocabulary, sentence length, and technical terms
+- **TESTING**: All three levels produce visibly distinct language complexity
+- **IMPACT**: Users with learning disabilities can now receive answers at appropriate comprehension levels
 
 **October 31, 2025 (latest)**: Fixed deployment health check failures - PRODUCTION READY
 - **CRITICAL FIX**: Resolved 5-minute timeout failures on autoscale deployments
@@ -121,12 +132,14 @@ Maya uses **dual knowledge sources** for comprehensive coverage:
   - **Expanded Mode** (optional): 960px width for carers/desktop users who need more space
   - User preference saved in localStorage per device
 - **Accessibility Features**:
+  - **Reading comprehension levels**: Clear/Standard/Complex selector for users with learning disabilities
   - Low-stimulation mode toggle (removes colors, reduces visual complexity)
   - Neurotypical mode for users who prefer standard color schemes
   - Layout toggle button with keyboard support (Enter/Space)
   - 44px minimum touch targets for buttons
   - iOS safe-area support for notch devices
   - Respects prefers-reduced-motion for smooth transitions
+  - All preferences persisted in localStorage
 
 ## Safety & Compliance System
 - **Guardrails**: Automatic detection and refusal of inappropriate content
