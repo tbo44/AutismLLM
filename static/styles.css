@@ -306,7 +306,7 @@ details.sources[open] > summary {
 }
 
 .sources-list li {
-    margin: 6px 0;
+    margin: 2px 0;
 }
 
 .sources-list a {
@@ -413,6 +413,7 @@ details.sources[open] > summary {
 /* Input Area */
 .input-area {
     padding: 20px;
+    padding-bottom: 70px; /* Extra space to prevent footer from hiding input */
     background: #FAFAFA;
     border-top: 1px solid #E0E0E0;
 }
