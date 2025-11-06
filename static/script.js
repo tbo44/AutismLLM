@@ -235,13 +235,7 @@ class MayaApp {
             // Build sources section if sources exist
             let sourcesHTML = '';
             if (message.sources && message.sources.length > 0) {
-                const sourcesList = message.sources.map(src => `
-                    <li>
-                        <a href="${src.url}" target="_blank" rel="noopener noreferrer">
-                            ${src.publisher ? `<strong>${src.publisher}</strong> – ` : ''}${src.title}
-                        </a>
-                    </li>
-                `).join('');
+                const sourcesList = message.sources.map(src => `<li><a href="${src.url}" target="_blank" rel="noopener noreferrer">${src.publisher ? `<strong>${src.publisher}</strong> – ` : ''}${src.title}</a></li>`).join('');
                 
                 sourcesHTML = `
                     <details class="sources">
