@@ -101,9 +101,15 @@ class Query(BaseModel):
     question: str
     comprehension_level: ComprehensionLevel = ComprehensionLevel.standard
 
+class Source(BaseModel):
+    title: str
+    url: str
+    publisher: str
+
 class Answer(BaseModel):
     answer: str
     timestamp: str
+    sources: list[Source] = []
     disclaimer: str = "Information only — not a diagnosis or treatment plan. For medical concerns contact your GP or NHS 111; emergencies: call 999. For legal advice, contact a qualified professional."
 
 @app.get("/")
@@ -220,8 +226,16 @@ async def chat(query: Query):
             _rag_system.initialize()
         
         # Answer the question with comprehension level (convert enum to string value)
-        text = _rag_system.answer_question(query.question, comprehension_level=query.comprehension_level.value)
-        return Answer(answer=text, timestamp=f"Last checked: {timestamp}")
+        result = _rag_system.answer_question(query.question, comprehension_level=query.comprehension_level.value)
+        
+        # Extract answer and sources from result dictionary
+        answer_text = result.get("answer", "")
+        sources_list = result.get("sources", [])
+        
+        # Convert sources to Source objects
+        sources = [Source(**src) for src in sources_list]
+        
+        return Answer(answer=answer_text, timestamp=f"Last checked: {timestamp}", sources=sources)
         
     except Exception as e:
         logger.error(f"Error processing question: {str(e)}", exc_info=True)
@@ -231,4 +245,4 @@ async def chat(query: Query):
         text = answerer.apply_guardrails(query.question) or (
             "Sorry, I encountered an error. Please try your question again."
         )
-        return Answer(answer=text, timestamp=f"Last checked: {timestamp}")
+        return Answer(answer=text, timestamp=f"Last checked: {timestamp}", sources=[])

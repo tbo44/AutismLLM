@@ -145,28 +145,31 @@ class UKAutismRAGSystem:
             logger.warning("No chunks were created from crawling")
             return {"success": False, "chunks_added": 0}
     
-    def answer_question(self, user_question: str, comprehension_level: str = "standard") -> str:
+    def answer_question(self, user_question: str, comprehension_level: str = "standard") -> dict:
         """
         Main entry point for answering questions using the full RAG pipeline
         
         Args:
             user_question: The user's question
             comprehension_level: Reading complexity level - "clear" (simple), "standard", or "complex" (detailed)
+            
+        Returns:
+            dict with 'answer' (str) and 'sources' (list of dicts with title, url, publisher)
         """
         if not self.initialized:
-            return "System not initialized. Please try again in a moment."
+            return {"answer": "System not initialized. Please try again in a moment.", "sources": []}
         
         try:
             # Apply safety guardrails first (import here to avoid circular dependency)
             from .answerer import apply_guardrails
             guardrail_response = apply_guardrails(user_question)
             if guardrail_response:
-                return guardrail_response
+                return {"answer": guardrail_response, "sources": []}
             
             # Check content appropriateness
             appropriateness = self.llm_client.check_content_appropriateness(user_question)
             if not appropriateness.get("appropriate", True):
-                return f"""I'm focused on providing information about autism in the UK. 
+                off_topic_response = f"""I'm focused on providing information about autism in the UK. 
 
 {appropriateness.get('reason', 'Your question seems to be outside my area of expertise.')}
 
@@ -178,6 +181,7 @@ I can help with questions about:
 • Government guidance and NHS resources
 
 Please feel free to ask me about any of these topics!"""
+                return {"answer": off_topic_response, "sources": []}
             
             # Retrieve relevant information
             retrieval_result = self.retriever.retrieve(user_question)
@@ -195,21 +199,28 @@ Please feel free to ask me about any of these topics!"""
             if not llm_result["success"]:
                 return self._handle_generation_error(user_question)
             
-            # Format with citations
-            response_with_citations = self._format_final_response(
-                llm_result, 
-                retrieval_result
-            )
+            # Extract sources from LLM result
+            sources = []
+            for source_name, url, title in llm_result.get("sources_used", []):
+                sources.append({
+                    "title": title,
+                    "url": url,
+                    "publisher": source_name
+                })
             
-            return response_with_citations
+            # Return answer without inline citations (sources will be shown separately)
+            return {
+                "answer": llm_result["response"],
+                "sources": sources
+            }
             
         except Exception as e:
             logger.error(f"Error in answer_question: {str(e)}")
             return self._handle_system_error()
     
-    def _handle_no_results(self, user_question: str) -> str:
+    def _handle_no_results(self, user_question: str) -> dict:
         """Handle case when no relevant information is found"""
-        return f"""I don't have specific information about that in my knowledge base yet.
+        answer = f"""I don't have specific information about that in my knowledge base yet.
 
 For your question about: {user_question}
 
@@ -220,26 +231,41 @@ I'd recommend checking these trusted UK sources:
 • **IPSEA**: ipsea.org.uk (for education and legal advice)
 
 If you're in Hounslow, you can also contact:
-• **Hounslow Council SEND team**: hounslow.gov.uk
-
-{self.citation_formatter.create_source_disclaimer()}"""
+• **Hounslow Council SEND team**: hounslow.gov.uk"""
+        
+        return {
+            "answer": answer,
+            "sources": [
+                {"title": "Autism", "url": "https://www.nhs.uk/conditions/autism/", "publisher": "NHS"},
+                {"title": "What is autism", "url": "https://www.autism.org.uk/advice-and-guidance/what-is-autism", "publisher": "National Autistic Society"},
+                {"title": "SEND support", "url": "https://www.gov.uk/special-educational-needs-support-council", "publisher": "Gov.UK"},
+                {"title": "Special educational needs and disabilities", "url": "https://www.ipsea.org.uk/", "publisher": "IPSEA"}
+            ]
+        }
     
-    def _handle_generation_error(self, user_question: str) -> str:
+    def _handle_generation_error(self, user_question: str) -> dict:
         """Handle LLM generation errors"""
-        return f"""I'm having trouble generating a response right now.
+        answer = f"""I'm having trouble generating a response right now.
 
 For your question about: {user_question}
 
 Please try these trusted sources directly:
 • **NHS**: nhs.uk/conditions/autism/
 • **National Autistic Society**: autism.org.uk
-• **Gov.UK SEND guidance**: gov.uk/special-educational-needs-support-council
-
-{self.citation_formatter.create_source_disclaimer()}"""
+• **Gov.UK SEND guidance**: gov.uk/special-educational-needs-support-council"""
+        
+        return {
+            "answer": answer,
+            "sources": [
+                {"title": "Autism", "url": "https://www.nhs.uk/conditions/autism/", "publisher": "NHS"},
+                {"title": "What is autism", "url": "https://www.autism.org.uk/advice-and-guidance/what-is-autism", "publisher": "National Autistic Society"},
+                {"title": "SEND support", "url": "https://www.gov.uk/special-educational-needs-support-council", "publisher": "Gov.UK"}
+            ]
+        }
     
-    def _handle_system_error(self) -> str:
+    def _handle_system_error(self) -> dict:
         """Handle system-level errors"""
-        return """I'm experiencing technical difficulties right now. Please try again in a moment.
+        answer = """I'm experiencing technical difficulties right now. Please try again in a moment.
 
 In the meantime, you can find reliable autism information at:
 • **NHS**: nhs.uk/conditions/autism/
@@ -247,6 +273,14 @@ In the meantime, you can find reliable autism information at:
 • **Gov.UK**: gov.uk (search for autism support)
 
 For urgent support, contact NHS 111 or your GP."""
+        
+        return {
+            "answer": answer,
+            "sources": [
+                {"title": "Autism", "url": "https://www.nhs.uk/conditions/autism/", "publisher": "NHS"},
+                {"title": "What is autism", "url": "https://www.autism.org.uk/advice-and-guidance/what-is-autism", "publisher": "National Autistic Society"}
+            ]
+        }
     
     def _format_final_response(self, llm_result: Dict[str, Any], 
                              retrieval_result: Dict[str, Any]) -> str:

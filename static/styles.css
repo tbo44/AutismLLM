@@ -261,6 +261,130 @@ body {
     border-bottom-right-radius: 6px;
 }
 
+/* Collapsible Sources */
+details.sources {
+    margin-top: 12px;
+    border-top: 1px dashed #D0D0D0;
+    padding-top: 10px;
+}
+
+details.sources > summary {
+    list-style: none;
+    cursor: pointer;
+    outline: none;
+    padding: 6px 8px;
+    border-radius: 8px;
+    font-size: 13px;
+    color: #555;
+    transition: background-color 0.2s ease;
+    user-select: none;
+}
+
+details.sources > summary::-webkit-details-marker {
+    display: none;
+}
+
+details.sources > summary:hover {
+    background-color: rgba(66, 165, 245, 0.08);
+}
+
+details.sources > summary:focus {
+    outline: 2px solid #42A5F5;
+    outline-offset: 2px;
+    border-radius: 8px;
+}
+
+details.sources[open] > summary {
+    margin-bottom: 8px;
+}
+
+.sources-list {
+    margin: 8px 0 8px 16px;
+    padding-left: 8px;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+.sources-list li {
+    margin: 6px 0;
+}
+
+.sources-list a {
+    color: #1565C0;
+    text-decoration: underline;
+    word-break: break-word;
+}
+
+.sources-list a:hover {
+    color: #0D47A1;
+}
+
+.sources-list a:focus {
+    outline: 2px solid #42A5F5;
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+.disclaimer-expanded {
+    font-size: 12px;
+    color: #666;
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: rgba(255, 152, 0, 0.05);
+    border-left: 3px solid #FF9800;
+    border-radius: 4px;
+    line-height: 1.5;
+}
+
+/* Persistent Footer Disclaimer */
+.footer-disclaimer {
+    position: fixed;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 12px;
+    width: min(calc(100% - 24px), var(--focus-max-w));
+    background: #F9FAFB;
+    border: 1px solid #E0E0E0;
+    border-radius: 999px;
+    padding: 10px 16px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    font-size: 13px;
+    z-index: 100;
+}
+
+@media (min-width: 768px) {
+    .app-container[data-layout="expanded"] ~ .footer-disclaimer,
+    .app-container[data-layout="expanded"] .footer-disclaimer {
+        width: min(calc(100% - 24px), var(--expanded-max-w));
+    }
+}
+
+.footer-link {
+    white-space: nowrap;
+    text-decoration: underline;
+    color: #1565C0;
+    font-weight: 500;
+}
+
+.footer-link:hover {
+    color: #0D47A1;
+}
+
+.footer-link:focus {
+    outline: 2px solid #42A5F5;
+    outline-offset: 2px;
+    border-radius: 8px;
+}
+
+/* Add bottom padding to chat area to prevent footer from covering messages */
+.chat-area {
+    padding-bottom: 80px; /* Extra space for footer */
+}
+
 /* Suggestions */
 .suggestions {
     padding: 0 20px 10px;
