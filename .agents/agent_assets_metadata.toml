@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "KRscbHLVl5fchxfasehLv"
+uri = "file://MAYA_RAG_TECHNICAL_GUIDE.md"
+type = "text"
+title = "Maya RAG System — Technical Guide"
