@@ -24,6 +24,40 @@ logger = logging.getLogger(__name__)
 # Ensure log directory exists
 Path("logs").mkdir(exist_ok=True)
 
+# ── Re-index history logger (logs/reindex.log) ──────────────────────────────
+# Dedicated logger so every re-index (scheduled or manual) is appended to a
+# persistent file with its result (success/failure + chunk count).
+_reindex_logger = logging.getLogger("maya.reindex_history")
+_reindex_logger.setLevel(logging.INFO)
+_reindex_logger.propagate = False
+if not _reindex_logger.handlers:
+    _reindex_fh = logging.FileHandler("logs/reindex.log")
+    _reindex_fh.setFormatter(
+        logging.Formatter("%(asctime)s  %(levelname)-7s  %(message)s")
+    )
+    _reindex_logger.addHandler(_reindex_fh)
+
+# ── Scheduled re-index configuration ────────────────────────────────────────
+# A lightweight async scheduler keeps Maya's knowledge base fresh without anyone
+# having to remember to hit /admin/crawl. All settings are env-configurable.
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+# Enabled by default; set SCHEDULED_REINDEX_ENABLED=false to turn off.
+_SCHEDULED_REINDEX_ENABLED: bool = _env_bool("SCHEDULED_REINDEX_ENABLED", True)
+# Hour of day (UK time) to run the nightly re-index. Default 2 = 2am.
+try:
+    _REINDEX_SCHEDULE_HOUR: int = int(os.environ.get("REINDEX_SCHEDULE_HOUR", "2"))
+except ValueError:
+    _REINDEX_SCHEDULE_HOUR = 2
+_REINDEX_SCHEDULE_HOUR = max(0, min(23, _REINDEX_SCHEDULE_HOUR))
+# "crawl" = full live crawl + reindex (keeps Hounslow info fresh); "seed" = seed-only.
+_SCHEDULED_REINDEX_MODE: str = os.environ.get("SCHEDULED_REINDEX_MODE", "crawl").strip().lower()
+_UK_TZ = pytz.timezone("Europe/London")
+
 # ── Admin token ────────────────────────────────────────────────────────────
 # Use ADMIN_TOKEN env var; if not set, generate a random one and log it once.
 _ADMIN_TOKEN: str = os.environ.get("ADMIN_TOKEN", "").strip() or secrets.token_urlsafe(32)
@@ -94,6 +128,10 @@ async def startup_event():
     import asyncio
     logger.info("🚀 Maya server starting – spawning background RAG initialisation task...")
     asyncio.create_task(initialize_rag_background())
+    if _SCHEDULED_REINDEX_ENABLED:
+        asyncio.create_task(_scheduled_reindex_loop())
+    else:
+        logger.info("⏰ Scheduled re-index disabled (SCHEDULED_REINDEX_ENABLED=false).")
     logger.info("✅ Server startup event complete – background task spawned")
 
 
@@ -516,7 +554,53 @@ async def admin_dashboard(
 # ──────────────────────────────────────────────────────────────────────
 
 _crawl_task: asyncio.Task | None = None
-_crawl_status: dict = {"running": False, "last_run": None, "last_result": None}
+_crawl_status: dict = {
+    "running": False,
+    "last_run": None,
+    "last_result": None,
+    # Set when a re-index fails so the failure surfaces prominently in
+    # /admin/crawl/status until the next successful run clears it.
+    "alert": None,
+}
+
+
+def _record_reindex_result(source: str, result: dict) -> None:
+    """
+    Append a re-index outcome to logs/reindex.log and, on failure, raise a
+    prominent alert that surfaces via /admin/crawl/status.
+
+    `source` is a short label such as "scheduled", "manual-crawl", or
+    "manual-reindex".
+    """
+    when = datetime.utcnow().isoformat() + "Z"
+    if result.get("success"):
+        total = result.get("total_chunks", "?")
+        seed = result.get("seed_chunks", "?")
+        crawled = result.get("crawled_chunks", "?")
+        elapsed = result.get("elapsed_seconds", "?")
+        _reindex_logger.info(
+            f"[{source}] SUCCESS — {total} chunks "
+            f"(seed={seed}, crawled={crawled}) in {elapsed}s"
+        )
+        # A successful run clears any standing failure alert.
+        _crawl_status["alert"] = None
+    else:
+        detail = (
+            result.get("error")
+            or result.get("stderr_tail")
+            or (f"exit code {result['exit_code']}" if result.get("exit_code") is not None else "unknown error")
+        )
+        _reindex_logger.warning(f"[{source}] FAILURE — {detail}")
+        logger.warning(
+            f"🚨 Re-index FAILED ({source}): {detail} — "
+            "knowledge base may be stale. See /admin/crawl/status and logs/reindex.log."
+        )
+        _crawl_status["alert"] = {
+            "level": "warning",
+            "source": source,
+            "message": f"Re-index failed ({source}): {detail}",
+            "at": when,
+        }
 
 
 def _verify_admin_token(authorization: str | None):
@@ -531,10 +615,13 @@ def _verify_admin_token(authorization: str | None):
         raise HTTPException(status_code=403, detail="Invalid admin token.")
 
 
-async def _run_crawl_and_reindex_background():
+async def _run_crawl_and_reindex_background(source: str = "manual-crawl"):
     """
     Full pipeline: crawl trusted UK autism sources → add to ChromaDB alongside
     seed JSONL data → hot-reload RAG system.
+
+    `source` labels who triggered the run (e.g. "manual-crawl" or "scheduled")
+    and is recorded in logs/reindex.log.
     """
     global _rag_system, _startup_complete, _crawl_status
     _crawl_status["running"] = True
@@ -590,6 +677,7 @@ async def _run_crawl_and_reindex_background():
             "seed_chunks": seed_count,
             "crawled_chunks": chunks_from_crawl,
         }
+        _record_reindex_result(source, _crawl_status["last_result"])
         logger.info("✅ RAG system reloaded after crawl+reindex.")
 
     except Exception as e:
@@ -600,12 +688,13 @@ async def _run_crawl_and_reindex_background():
             "elapsed_seconds": round(elapsed, 1),
             "error": str(e),
         }
+        _record_reindex_result(source, _crawl_status["last_result"])
     finally:
         _crawl_status["running"] = False
         _crawl_status["last_run"] = datetime.utcnow().isoformat() + "Z"
 
 
-async def _run_reindex_only_background():
+async def _run_reindex_only_background(source: str = "manual-reindex"):
     """Seed-only re-index (no live crawling) — faster, used by /admin/reindex."""
     global _rag_system, _startup_complete, _crawl_status
     import subprocess
@@ -631,6 +720,7 @@ async def _run_reindex_only_background():
                 "elapsed_seconds": round(elapsed, 1),
                 "stdout_tail": proc.stdout.strip()[-2000:],
             }
+            _record_reindex_result(source, _crawl_status["last_result"])
             logger.info("✅ RAG system reloaded after seed re-index.")
         else:
             logger.error(f"❌ Re-index script failed (exit {proc.returncode}): {proc.stderr[:500]}")
@@ -639,12 +729,69 @@ async def _run_reindex_only_background():
                 "exit_code": proc.returncode,
                 "stderr_tail": proc.stderr.strip()[-2000:],
             }
+            _record_reindex_result(source, _crawl_status["last_result"])
     except Exception as e:
         logger.error(f"❌ Re-index background task error: {e}", exc_info=True)
         _crawl_status["last_result"] = {"success": False, "error": str(e)}
+        _record_reindex_result(source, _crawl_status["last_result"])
     finally:
         _crawl_status["running"] = False
         _crawl_status["last_run"] = datetime.utcnow().isoformat() + "Z"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Scheduled (nightly) re-index — keeps the knowledge base fresh with no
+# manual intervention. Configured via SCHEDULED_REINDEX_* env vars.
+# ──────────────────────────────────────────────────────────────────────
+
+def _next_scheduled_run(now: datetime | None = None) -> datetime:
+    """Return the next datetime (UK tz) at which the nightly re-index should run."""
+    now = now or datetime.now(_UK_TZ)
+    nxt = now.replace(hour=_REINDEX_SCHEDULE_HOUR, minute=0, second=0, microsecond=0)
+    if nxt <= now:
+        nxt = nxt + timedelta(days=1)
+    return nxt
+
+
+async def _scheduled_reindex_loop():
+    """
+    Background loop that triggers a re-index every day at _REINDEX_SCHEDULE_HOUR
+    (UK time). Uses the full crawl pipeline by default so live Hounslow/UK info
+    stays fresh; set SCHEDULED_REINDEX_MODE=seed for a faster seed-only rebuild.
+    """
+    logger.info(
+        f"⏰ Scheduled re-index enabled — daily at {_REINDEX_SCHEDULE_HOUR:02d}:00 UK time "
+        f"(mode={_SCHEDULED_REINDEX_MODE})."
+    )
+    while True:
+        try:
+            now = datetime.now(_UK_TZ)
+            nxt = _next_scheduled_run(now)
+            delay = (nxt - now).total_seconds()
+            logger.info(
+                f"⏰ Next scheduled re-index at {nxt.isoformat()} "
+                f"(in {delay / 3600:.1f}h)."
+            )
+            await asyncio.sleep(delay)
+
+            if _crawl_status["running"]:
+                logger.info("⏰ Scheduled re-index skipped — a run is already in progress.")
+            else:
+                logger.info("⏰ Starting scheduled re-index...")
+                if _SCHEDULED_REINDEX_MODE == "seed":
+                    await _run_reindex_only_background(source="scheduled")
+                else:
+                    await _run_crawl_and_reindex_background(source="scheduled")
+
+            # Guard against re-triggering within the same scheduled minute.
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            logger.info("⏰ Scheduled re-index loop cancelled.")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Scheduled re-index loop error: {e}", exc_info=True)
+            # Back off briefly before recomputing the next run.
+            await asyncio.sleep(300)
 
 
 @app.post("/admin/crawl")
@@ -689,10 +836,20 @@ async def admin_crawl(authorization: str | None = Header(default=None)):
 async def admin_crawl_status(authorization: str | None = Header(default=None)):
     """Return the status of the last (or current) crawl+reindex run."""
     _verify_admin_token(authorization)
+    next_run = (
+        _next_scheduled_run().isoformat() if _SCHEDULED_REINDEX_ENABLED else None
+    )
     return {
         "running": _crawl_status["running"],
         "last_run": _crawl_status["last_run"],
         "last_result": _crawl_status["last_result"],
+        "alert": _crawl_status["alert"],
+        "schedule": {
+            "enabled": _SCHEDULED_REINDEX_ENABLED,
+            "hour_uk": _REINDEX_SCHEDULE_HOUR,
+            "mode": _SCHEDULED_REINDEX_MODE,
+            "next_run": next_run,
+        },
     }
 
 
