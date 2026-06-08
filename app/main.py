@@ -142,11 +142,12 @@ class FeedbackPayload(BaseModel):
 # ──────────────────────────────────────────────────────────────────────
 
 def _log_question(question: str, source_ids: list):
-    """Append question + retrieved source IDs to logs/questions.log (no PII)."""
+    """Append question text + retrieved source IDs to logs/questions.log.
+    No user identity (IP, name, session) is ever stored."""
     try:
         entry = {
             "ts": datetime.utcnow().isoformat(),
-            "q_len": len(question),
+            "question": question,
             "source_ids": source_ids[:6]
         }
         with open("logs/questions.log", "a", encoding="utf-8") as f:

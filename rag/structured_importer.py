@@ -24,7 +24,10 @@ class StructuredKnowledgeImporter:
     ENRICHMENT_FIELDS = [
         'steps_summary', 'eligibility_summary', 'evidence_required',
         'deadlines', 'contacts', 'opening_hours', 'legal_basis',
-        'notes_for_maya'
+        'notes_for_maya',
+        # Extended metadata fields
+        'date_added', 'last_reviewed', 'last_verified_date',
+        'content', 'content_excerpt', 'tags'
     ]
     
     def __init__(self):
@@ -191,11 +194,28 @@ class StructuredKnowledgeImporter:
                 'age_range': entry.get('age_range', ''),
             }
             
+            # Extended metadata: date_added / last_reviewed (normalised from multiple field names)
+            date_added    = entry.get('date_added') or entry.get('crawled_at', datetime.now().isoformat())
+            last_reviewed = (entry.get('last_reviewed') or entry.get('last_verified_date') or
+                             entry.get('update_cycle') or date_added)
+
+            # content: prefer explicit 'content' field, fall back to content_excerpt
+            content_text = entry.get('content') or entry.get('content_excerpt', '')
+
+            # tags: normalise to JSON string for ChromaDB
+            raw_tags = entry.get('tags', [])
+            tags_str = json.dumps(raw_tags) if isinstance(raw_tags, list) else str(raw_tags)
+
+            metadata['date_added']    = date_added
+            metadata['last_reviewed'] = last_reviewed
+            metadata['content']       = content_text
+            metadata['tags']          = tags_str
+
             chunk = {
                 'text': chunk_text,
                 'metadata': metadata
             }
-            
+
             chunks.append(chunk)
         
         logger.info(f"Converted {len(chunks)} entries to chunks")

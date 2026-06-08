@@ -1,6 +1,17 @@
 """
 Configurable LLM Client for UK Autism Assistant
-Uses OpenAI-compatible API - works with Groq, Ollama, OpenAI, or any compatible endpoint
+Uses OpenAI-compatible API — works with Groq, Ollama, OpenAI, or any compatible endpoint.
+
+Provider selection (priority order):
+  LLM_PROVIDER=groq       → Groq endpoint (requires GROQ_API_KEY or LLM_API_KEY)
+  LLM_PROVIDER=openai     → OpenAI endpoint (requires LLM_API_KEY or OPENAI_API_KEY)
+  LLM_PROVIDER=ollama     → Local Ollama endpoint (LLM_BASE_URL, default http://localhost:11434/v1)
+  LLM_PROVIDER=custom     → LLM_BASE_URL + LLM_API_KEY
+
+  If LLM_PROVIDER is not set:
+    - If GROQ_API_KEY present (and no LLM_BASE_URL overriding)  → Groq
+    - If LLM_BASE_URL present                                    → custom endpoint
+    - Otherwise                                                  → Ollama (local, Qwen default)
 """
 
 import os
@@ -13,57 +24,90 @@ from .structured_formatter import StructuredDataFormatter
 
 logger = logging.getLogger(__name__)
 
-def _build_openai_client() -> OpenAI:
-    """
-    Build an OpenAI-compatible client from environment variables.
 
-    Priority order:
-      1. LLM_BASE_URL + LLM_API_KEY  →  custom endpoint (Ollama, local, etc.)
-      2. LLM_API_KEY alone            →  standard OpenAI
-      3. GROQ_API_KEY present         →  Groq endpoint (default / legacy)
-      4. LLM_BASE_URL alone           →  local endpoint with no auth (Ollama default)
-    """
+def _build_openai_client() -> OpenAI:
+    provider     = os.environ.get("LLM_PROVIDER", "").strip().lower()
     llm_base_url = os.environ.get("LLM_BASE_URL", "").strip()
     llm_api_key  = os.environ.get("LLM_API_KEY", "").strip()
     groq_api_key = os.environ.get("GROQ_API_KEY", "").strip()
+    openai_key   = os.environ.get("OPENAI_API_KEY", "").strip()
+
+    # --- Explicit provider ---
+    if provider == "groq":
+        key = llm_api_key or groq_api_key
+        if not key:
+            raise ValueError("LLM_PROVIDER=groq but no LLM_API_KEY or GROQ_API_KEY found.")
+        logger.info("LLM provider: Groq (explicit)")
+        return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=key)
+
+    if provider == "openai":
+        key = llm_api_key or openai_key
+        if not key:
+            raise ValueError("LLM_PROVIDER=openai but no LLM_API_KEY or OPENAI_API_KEY found.")
+        logger.info("LLM provider: OpenAI (explicit)")
+        return OpenAI(api_key=key)
+
+    if provider in ("ollama", "local"):
+        base = llm_base_url or "http://localhost:11434/v1"
+        logger.info(f"LLM provider: Ollama/local at {base}")
+        return OpenAI(base_url=base, api_key=llm_api_key or "ollama")
+
+    if provider == "custom":
+        if not llm_base_url:
+            raise ValueError("LLM_PROVIDER=custom but LLM_BASE_URL is not set.")
+        logger.info(f"LLM provider: custom endpoint {llm_base_url}")
+        return OpenAI(base_url=llm_base_url, api_key=llm_api_key or "none")
+
+    # --- Auto-detect (no LLM_PROVIDER set) ---
+    if groq_api_key and not llm_base_url and not llm_api_key:
+        logger.info("LLM provider: Groq (auto-detected via GROQ_API_KEY)")
+        return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_api_key)
 
     if llm_base_url and llm_api_key:
-        logger.info(f"LLM: custom endpoint {llm_base_url}")
+        logger.info(f"LLM provider: custom endpoint {llm_base_url} (auto-detected)")
         return OpenAI(base_url=llm_base_url, api_key=llm_api_key)
 
     if llm_api_key:
-        logger.info("LLM: standard OpenAI endpoint")
+        logger.info("LLM provider: OpenAI (auto-detected via LLM_API_KEY)")
         return OpenAI(api_key=llm_api_key)
 
-    if groq_api_key:
-        logger.info("LLM: Groq endpoint (via GROQ_API_KEY)")
-        return OpenAI(
-            base_url="https://api.groq.com/openai/v1",
-            api_key=groq_api_key
-        )
-
     if llm_base_url:
-        logger.info(f"LLM: local endpoint {llm_base_url} (no auth)")
+        logger.info(f"LLM provider: local endpoint {llm_base_url} (no auth)")
         return OpenAI(base_url=llm_base_url, api_key="ollama")
 
-    raise ValueError(
-        "No LLM credentials found. Set LLM_API_KEY, GROQ_API_KEY, or LLM_BASE_URL."
-    )
+    # Default: Ollama-compatible local endpoint with Qwen
+    default_base = "http://localhost:11434/v1"
+    logger.info(f"LLM provider: Ollama default at {default_base} (set LLM_PROVIDER or GROQ_API_KEY to change)")
+    return OpenAI(base_url=default_base, api_key="ollama")
 
 
 def _default_model() -> str:
-    """Return model name from env, falling back to a sensible default."""
     explicit = os.environ.get("LLM_MODEL", "").strip()
     if explicit:
         return explicit
-    if os.environ.get("GROQ_API_KEY") and not os.environ.get("LLM_BASE_URL"):
+
+    provider = os.environ.get("LLM_PROVIDER", "").strip().lower()
+
+    # Explicit Groq → Llama
+    if provider == "groq":
         return "llama-3.3-70b-versatile"
+    # Explicit OpenAI → GPT-4o-mini
+    if provider == "openai":
+        return "gpt-4o-mini"
+    # Explicit Ollama/local/custom → Qwen
+    if provider in ("ollama", "local", "custom"):
+        return "qwen2.5:72b"
+
+    # Auto-detect: GROQ_API_KEY present → Llama; otherwise Qwen
+    if os.environ.get("GROQ_API_KEY") and not os.environ.get("LLM_BASE_URL") and not os.environ.get("LLM_API_KEY"):
+        return "llama-3.3-70b-versatile"
+
     return "qwen2.5:72b"
 
 
 class UKAutismLLMClient:
     def __init__(self):
-        self.client = None
+        self.client      = None
         self.model       = _default_model()
         self.temperature = float(os.environ.get("TEMPERATURE", "0"))
         self.top_p       = float(os.environ.get("TOP_P", "1.0"))
@@ -74,9 +118,9 @@ class UKAutismLLMClient:
         self.client = _build_openai_client()
         logger.info(f"LLM client ready  model={self.model}  temp={self.temperature}  top_p={self.top_p}")
 
-    # ------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────
     # Main response generation
-    # ------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────
 
     def synthesize_response(
         self,
@@ -85,20 +129,9 @@ class UKAutismLLMClient:
         context: Optional[str] = None,
         comprehension_level: str = "standard"
     ) -> Dict[str, Any]:
-        """
-        Generate a structured response using retrieved context.
-
-        Returns dict with keys: response, sources_used, chunks_used, model_used, success
-        """
+        """Generate a structured response using retrieved context."""
         if not self.client:
-            return {
-                "response": "LLM client not available",
-                "sources_used": [],
-                "chunks_used": 0,
-                "model_used": self.model,
-                "success": False,
-                "error": "Client not initialized"
-            }
+            return {"response": "LLM client not available", "sources_used": [], "chunks_used": 0, "model_used": self.model, "success": False, "error": "Client not initialized"}
 
         try:
             sources_used = set()
@@ -162,19 +195,12 @@ CONTEXT INFORMATION:
 {context}"""
 
             user_prompt = f"Question: {user_question}\n\nPlease answer using the context above."
-
             language_instruction = language_guidelines.get(comprehension_level, language_guidelines["standard"])
 
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": system_prompt.format(
-                            language_instruction=language_instruction,
-                            context=context_text
-                        )
-                    },
+                    {"role": "system", "content": system_prompt.format(language_instruction=language_instruction, context=context_text)},
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=self.temperature,
@@ -183,29 +209,15 @@ CONTEXT INFORMATION:
             )
 
             generated_text = response.choices[0].message.content or ""
-
-            return {
-                "response": generated_text,
-                "sources_used": list(sources_used),
-                "chunks_used": len(retrieved_chunks),
-                "model_used": self.model,
-                "success": True
-            }
+            return {"response": generated_text, "sources_used": list(sources_used), "chunks_used": len(retrieved_chunks), "model_used": self.model, "success": True}
 
         except Exception as e:
             logger.error(f"Error generating response: {str(e)}")
-            return {
-                "response": "I'm sorry, I'm having trouble generating a response right now. Please try again in a moment.",
-                "sources_used": [],
-                "chunks_used": 0,
-                "model_used": self.model,
-                "success": False,
-                "error": str(e)
-            }
+            return {"response": "I'm sorry, I'm having trouble generating a response right now. Please try again in a moment.", "sources_used": [], "chunks_used": 0, "model_used": self.model, "success": False, "error": str(e)}
 
-    # ------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────
     # Query enhancement
-    # ------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────
 
     def enhance_query(self, user_question: str) -> str:
         if not self.client:
@@ -232,9 +244,9 @@ CONTEXT INFORMATION:
             logger.error(f"Query enhancement error: {str(e)}")
             return user_question
 
-    # ------------------------------------------------------------------
-    # Content appropriateness check
-    # ------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────
+    # Content appropriateness
+    # ─────────────────────────────────────────────────────────────────
 
     def check_content_appropriateness(self, user_question: str) -> Dict[str, Any]:
         if not self.client:

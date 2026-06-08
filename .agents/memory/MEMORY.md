@@ -1,2 +1,3 @@
-- [LLM provider abstraction](llm-provider.md) — LLM client uses openai package against any compatible endpoint; GROQ_API_KEY triggers Groq base URL automatically
-- [Structured answer format](structured-answer-format.md) — system prompt enforces ## Short Answer / Steps / Who to Contact / Useful Links / Important Note; JS parses these sections for colour-coded rendering
+- [LLM provider selection](llm-provider.md) — priority order: explicit LLM_PROVIDER env var → auto-detect from API keys/base URL → Ollama/Qwen default
+- [Structured answer format](structured-answer-format.md) — system prompt enforces ## sections; JS parses them for colour-coded rendering; /chat endpoint returns field "answer" (not "response")
+- [Seed schema normalisation](seed-schema.md) — importer normalises date_added/last_reviewed/content from legacy field names; ChromaDB metadata must be scalar (tags serialised as JSON string)
