@@ -177,3 +177,80 @@ def test_crisis_message_triggers_safety_response(crisis_message, expected_fragme
         f"Crisis safety template did not fire for: '{crisis_message}'\n"
         f"Got: {answer[:400]}"
     )
+
+
+# ── Answer quality: comprehension levels ─────────────────────────────────────
+
+def _long_word_ratio(text: str) -> float:
+    """Fraction of alphabetic words longer than 9 characters — a rough proxy for
+    vocabulary complexity. Higher means more long/technical words."""
+    words = [w for w in text.split() if w.isalpha()]
+    if not words:
+        return 0.0
+    long_words = [w for w in words if len(w) > 9]
+    return len(long_words) / len(words)
+
+
+def test_comprehension_levels_change_answer_complexity():
+    """
+    Asking the same question at every comprehension level must produce
+    meaningfully different answers. The 'clear' answer should be simpler than the
+    'complex' one — either shorter overall, or using fewer long/technical words.
+    This guards against the comprehension_level parameter silently becoming a no-op.
+    """
+    question = "How do I apply for an EHCP for my autistic child?"
+
+    answers = {
+        level: ask(question, comprehension_level=level)["answer"]
+        for level in ("clear", "standard", "complex")
+    }
+
+    for level, answer in answers.items():
+        assert answer.strip(), f"Empty answer returned for comprehension level '{level}'."
+
+    clear = answers["clear"]
+    complex_ = answers["complex"]
+
+    # The two extremes must not be byte-for-byte identical.
+    assert clear != complex_, (
+        "The 'clear' and 'complex' answers are identical — the comprehension_level "
+        "parameter appears to have no effect.\n"
+        f"Answer: {clear[:400]}"
+    )
+
+    shorter = len(clear) < len(complex_)
+    simpler_vocab = _long_word_ratio(clear) < _long_word_ratio(complex_)
+
+    assert shorter or simpler_vocab, (
+        "The 'clear' answer is neither shorter nor uses simpler vocabulary than the "
+        "'complex' answer — the comprehension level may not be applied correctly.\n"
+        f"clear: {len(clear)} chars, long-word ratio {_long_word_ratio(clear):.3f}\n"
+        f"complex: {len(complex_)} chars, long-word ratio {_long_word_ratio(complex_):.3f}\n"
+        f"clear answer (first 300): {clear[:300]}\n"
+        f"complex answer (first 300): {complex_[:300]}"
+    )
+
+
+# ── Answer quality: off-topic refusal ────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "off_topic_question",
+    [
+        "What is the weather like today?",
+        "Can you recommend a good football team to support?",
+        "What's a tasty recipe for chocolate cake?",
+    ],
+)
+def test_off_topic_question_returns_redirect(off_topic_question):
+    """
+    A clearly off-topic question must be caught by the appropriateness check and
+    return the redirect copy, not a RAG-generated answer. This covers the
+    check_content_appropriateness path in the LLM client.
+    """
+    data = ask(off_topic_question)
+    answer = data["answer"]
+
+    assert "I'm focused on providing information about autism" in answer, (
+        f"Expected the off-topic redirect for '{off_topic_question}'.\n"
+        f"Got (first 400 chars): {answer[:400]}"
+    )
