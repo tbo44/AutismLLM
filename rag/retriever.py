@@ -12,6 +12,78 @@ from .llm_client import UKAutismLLMClient
 
 logger = logging.getLogger(__name__)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Relevance threshold
+# ─────────────────────────────────────────────────────────────────────────────
+# ChromaDB returns a cosine *distance* for every hit (0.0 = identical, larger =
+# less similar; in practice values run from ~0.3 for a strong match up to ~1.4
+# for an unrelated chunk). Any result whose distance is >= this cut-off is
+# dropped, and if nothing survives the retriever returns an empty list so the RAG
+# layer emits the explicit "not in my knowledge base" message instead of
+# hallucinating from irrelevant chunks.
+#
+# Why 0.8 (and how to tune it):
+#   • It was chosen empirically. Precise, keyword-rich phrasings of in-seed
+#     topics score well below it (e.g. "What is the EHCP annual review process
+#     for autism?" ≈ 0.51), while clearly off-topic chunks score ~1.0+.
+#   • It is a genuine trade-off. SHORT, natural questions for topics that DO
+#     exist in the seed data can still score 0.8–1.4 even when the correct chunk
+#     is the top hit — e.g. "What is an EHCP and how do I apply?" ≈ 1.07 and
+#     "How do I renew my Blue Badge?" ≈ 0.90. Those silently fall through, which
+#     is the retrieval gap that `tests/test_retrieval_coverage.py` guards.
+#   • Lower it  → fewer false answers, but more "no information" misses.
+#     Raise it  → better recall, but rising risk of answering from a weak,
+#                 only-loosely-related chunk. Off-topic questions are already
+#                 filtered upstream by the LLM appropriateness check, so the main
+#                 risk of raising it is answering in-domain-but-wrong.
+#   • Before changing the value, run the coverage test and watch which questions
+#     move between CORE_TOPICS (must retrieve) and KNOWN_GAPS (tracked misses).
+#
+# `expand_query_with_synonyms` below mitigates part of the gap for abbreviated
+# queries without touching this number: expanding "EHCP" to its full form pulls
+# the EHCP example from ~1.07 down to ~0.61, back under the threshold.
+MIN_RELEVANCE_THRESHOLD = 0.8
+
+
+# Common UK autism / SEND / benefits acronyms mapped to their full forms.
+# Abbreviations embed far from the spelled-out wording used in the seed text, so
+# appending the full form to the search query is a cheap, deterministic way to
+# recover otherwise-missed matches.
+UK_TERM_EXPANSIONS = {
+    "ehcp": "Education, Health and Care Plan",
+    "pip": "Personal Independence Payment",
+    "dla": "Disability Living Allowance",
+    "send": "Special Educational Needs and Disabilities",
+    "uc": "Universal Credit",
+    "lcwra": "Limited Capability for Work and Work-Related Activity",
+    "asd": "autism spectrum disorder",
+    "camhs": "Child and Adolescent Mental Health Services",
+    "dfg": "Disabled Facilities Grant",
+    "sendiass": "SEND Information Advice and Support Service",
+    "sendias": "SEND Information Advice and Support Service",
+    "tfl": "Transport for London",
+    "dwp": "Department for Work and Pensions",
+}
+
+
+def expand_query_with_synonyms(query: str) -> str:
+    """Append full forms for any UK acronym found in the query.
+
+    Returns the query unchanged when it contains no known acronyms (or already
+    spells the full form out), so callers can cheaply detect whether expansion
+    actually did anything by comparing the result to the input.
+    """
+    lower = query.lower()
+    additions = []
+    for acronym, full_form in UK_TERM_EXPANSIONS.items():
+        if re.search(rf"\b{re.escape(acronym)}\b", lower) and full_form.lower() not in lower:
+            additions.append(full_form)
+    if not additions:
+        return query
+    return f"{query} {' '.join(additions)}"
+
+
 class UKAutismRetriever:
     def __init__(self, vector_store: UKAutismVectorStore, llm_client: UKAutismLLMClient):
         self.vector_store = vector_store
@@ -28,38 +100,28 @@ class UKAutismRetriever:
             # Enhance query for better retrieval
             enhanced_query = self.llm_client.enhance_query(user_question)
             
-            # Perform vector search
-            if hounslow_specific:
-                # First try Hounslow-specific sources
-                local_results = self.vector_store.search(
-                    enhanced_query, 
-                    n_results=max_results // 2,
-                    hounslow_specific=True
-                )
-                
-                # Then get general results
-                general_results = self.vector_store.search(
-                    enhanced_query,
-                    n_results=max_results - len(local_results),
-                    hounslow_specific=False
-                )
-                
-                # Combine with local results prioritized
-                results = local_results + general_results
-            else:
-                # Standard search with authority ranking
-                results = self.vector_store.search(
-                    enhanced_query,
-                    n_results=max_results,
-                    authority_boost=True
-                )
-            
-            # Apply additional filtering and ranking
+            # First pass with the (LLM-)enhanced query
+            results = self._vector_search(enhanced_query, hounslow_specific, max_results)
             filtered_results = self._filter_and_rank_results(results, user_question)
-            
+
+            # Query-expansion fallback: if nothing cleared the relevance bar, retry
+            # with UK acronyms spelled out in full. Abbreviations like "EHCP" embed
+            # far from the seed wording ("Education, Health and Care Plan"), so
+            # expanding them recovers answers that would otherwise be silently
+            # dropped (see MIN_RELEVANCE_THRESHOLD notes above).
+            expansion_used = False
+            if not filtered_results:
+                expanded_query = expand_query_with_synonyms(enhanced_query)
+                if expanded_query != enhanced_query:
+                    expansion_used = True
+                    logger.info(f"No results below threshold; retrying with expanded query: '{expanded_query}'")
+                    results = self._vector_search(expanded_query, hounslow_specific, max_results)
+                    filtered_results = self._filter_and_rank_results(results, user_question)
+
             return {
                 "results": filtered_results,
                 "enhanced_query": enhanced_query,
+                "expansion_used": expansion_used,
                 "hounslow_specific": hounslow_specific,
                 "total_found": len(results),
                 "total_returned": len(filtered_results)
@@ -70,12 +132,41 @@ class UKAutismRetriever:
             return {
                 "results": [],
                 "enhanced_query": user_question,
+                "expansion_used": False,
                 "hounslow_specific": False,
                 "total_found": 0,
                 "total_returned": 0,
                 "error": str(e)
             }
-    
+
+    def _vector_search(self, query: str, hounslow_specific: bool,
+                       max_results: int) -> List[Dict[str, Any]]:
+        """Run the vector search, prioritising local sources for Hounslow queries."""
+        if hounslow_specific:
+            # First try Hounslow-specific sources
+            local_results = self.vector_store.search(
+                query,
+                n_results=max_results // 2,
+                hounslow_specific=True
+            )
+
+            # Then get general results
+            general_results = self.vector_store.search(
+                query,
+                n_results=max_results - len(local_results),
+                hounslow_specific=False
+            )
+
+            # Combine with local results prioritized
+            return local_results + general_results
+
+        # Standard search with authority ranking
+        return self.vector_store.search(
+            query,
+            n_results=max_results,
+            authority_boost=True
+        )
+
     def _is_hounslow_query(self, question: str) -> bool:
         """Check if question specifically asks about Hounslow"""
         hounslow_terms = [
@@ -92,12 +183,10 @@ class UKAutismRetriever:
         if not results:
             return results
         
-        # Filter out very low quality matches.
-        # Threshold is intentionally strict: if nothing meaningful matches, we return
-        # an empty list so the RAG system can emit the "not in knowledge base" response
-        # rather than hallucinating from irrelevant chunks.
-        min_relevance_threshold = 0.8  # ChromaDB cosine distance: lower = more similar
-        filtered = [r for r in results if r['distance'] < min_relevance_threshold]
+        # Filter out very low quality matches using the module-level
+        # MIN_RELEVANCE_THRESHOLD (see the detailed rationale and tuning notes
+        # next to its definition at the top of this file).
+        filtered = [r for r in results if r['distance'] < MIN_RELEVANCE_THRESHOLD]
 
         # Do NOT fall back to unfiltered results — an empty list signals "no match"
         # and triggers the explicit out-of-scope message in rag_system.py.

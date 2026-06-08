@@ -1,3 +1,4 @@
 - [LLM provider selection](llm-provider.md) — priority order: explicit LLM_PROVIDER env var → auto-detect from API keys/base URL → Ollama/Qwen default
 - [Structured answer format](structured-answer-format.md) — system prompt enforces ## sections; JS parses them for colour-coded rendering; /chat endpoint returns field "answer" (not "response")
 - [Seed schema normalisation](seed-schema.md) — importer normalises date_added/last_reviewed/content from legacy field names; ChromaDB metadata must be scalar (tags serialised as JSON string)
+- [Retrieval threshold & coverage gap](retrieval-threshold.md) — 0.8 cosine cut-off silently drops short natural questions for in-seed topics; acronym expansion + coverage test guard it
