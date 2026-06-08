@@ -635,20 +635,27 @@ async def _run_crawl_and_reindex_background(source: str = "manual-crawl"):
 
     try:
         # Step 1: crawl live web sources
-        from rag.crawler import crawl_and_chunk_all
+        from rag.crawler import (
+            crawl_and_chunk_all,
+            save_crawled_chunks,
+            dedupe_crawled_chunks,
+        )
         from rag.vector_store import UKAutismVectorStore
         from rag.structured_importer import StructuredKnowledgeImporter
 
         try:
             crawled_chunks = await crawl_and_chunk_all()
             docs_crawled = len(crawled_chunks)
-            chunks_from_crawl = len(crawled_chunks)
             logger.info(f"✅ Crawled {docs_crawled} chunks from live sources")
+            # Persist the raw crawl output to data/raw/ alongside ChromaDB.
+            if crawled_chunks:
+                await asyncio.to_thread(save_crawled_chunks, crawled_chunks)
         except Exception as crawl_err:
             logger.warning(f"⚠️ Web crawl failed or partially failed: {crawl_err} — continuing with seed data only")
             crawled_chunks = []
 
-        # Step 2: load seed JSONL data
+        # Step 2: load seed JSONL data, then add crawled chunks (skipping any URL
+        # already present in the curated seed data so it is never stored twice).
         def _rebuild_index():
             vs = UKAutismVectorStore()
             vs.initialize()
@@ -656,12 +663,18 @@ async def _run_crawl_and_reindex_background(source: str = "manual-crawl"):
 
             importer = StructuredKnowledgeImporter()
             seed_chunks = importer.import_file("data/maya_hounslow_knowledge_seed.jsonl")
-            all_chunks = seed_chunks + crawled_chunks
+            seed_urls = {
+                c["metadata"].get("url")
+                for c in seed_chunks
+                if c.get("metadata", {}).get("url")
+            }
+            unique_crawled = dedupe_crawled_chunks(crawled_chunks, seed_urls)
+            all_chunks = seed_chunks + unique_crawled
             vs.add_documents(all_chunks)
             stats = vs.get_collection_stats()
-            return stats.get("total_chunks", len(all_chunks)), len(seed_chunks)
+            return stats.get("total_chunks", len(all_chunks)), len(seed_chunks), len(unique_crawled)
 
-        total_chunks, seed_count = await asyncio.to_thread(_rebuild_index)
+        total_chunks, seed_count, chunks_from_crawl = await asyncio.to_thread(_rebuild_index)
         reindex_success = True
         elapsed = (datetime.utcnow() - start).total_seconds()
         logger.info(f"✅ Crawl+reindex complete in {elapsed:.1f}s — {total_chunks} chunks total — reloading RAG...")

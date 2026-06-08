@@ -7,8 +7,10 @@ import httpx
 import trafilatura
 from bs4 import BeautifulSoup
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Iterable, Set
 import asyncio
+import json
+import os
 from urllib.parse import urljoin, urlparse
 import time
 import logging
@@ -228,3 +230,54 @@ async def crawl_and_chunk_all() -> List[Dict[str, Any]]:
     
     logger.info(f"Created {len(all_chunks)} chunks from {len(documents)} documents")
     return all_chunks
+
+
+def save_crawled_chunks(chunks: List[Dict[str, Any]], raw_dir: str = "data/raw") -> Optional[str]:
+    """
+    Persist crawled chunks to a timestamped JSONL file in data/raw/ so the raw
+    crawl output is retained alongside ChromaDB. Returns the path written, or
+    None if there was nothing to save.
+    """
+    if not chunks:
+        logger.info("No crawled chunks to save to data/raw/")
+        return None
+
+    os.makedirs(raw_dir, exist_ok=True)
+    timestamp = datetime.now(pytz.timezone("Europe/London")).strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(raw_dir, f"crawled_{timestamp}.jsonl")
+
+    with open(path, "w", encoding="utf-8") as f:
+        for chunk in chunks:
+            f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
+
+    logger.info(f"Saved {len(chunks)} crawled chunks to {path}")
+    return path
+
+
+def dedupe_crawled_chunks(
+    crawled_chunks: List[Dict[str, Any]],
+    existing_urls: Iterable[str],
+) -> List[Dict[str, Any]]:
+    """
+    Drop crawled chunks whose URL is already represented in `existing_urls`
+    (e.g. URLs from the curated seed data). All chunks belonging to a genuinely
+    new URL are kept — only documents whose URL already exists are skipped, so
+    the same URL is never stored twice.
+    """
+    existing: Set[str] = {u for u in existing_urls if u}
+    kept: List[Dict[str, Any]] = []
+    skipped = 0
+
+    for chunk in crawled_chunks:
+        url = chunk.get("metadata", {}).get("url")
+        if url and url in existing:
+            skipped += 1
+            continue
+        kept.append(chunk)
+
+    if skipped:
+        logger.info(
+            f"Duplicate detection: skipped {skipped} crawled chunk(s) whose URL "
+            f"already exists in the knowledge base."
+        )
+    return kept

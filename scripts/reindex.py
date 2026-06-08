@@ -3,17 +3,21 @@
 Re-index script for Maya's knowledge base.
 
 Usage:
-    python scripts/reindex.py [--seed-file PATH]
+    python scripts/reindex.py [--seed-file PATH] [--crawl]
 
 Clears the existing ChromaDB collection and repopulates it from:
   1. The structured JSONL seed file (data/maya_hounslow_knowledge_seed.jsonl by default)
   2. Any additional JSONL/CSV files in the data/ directory
+  3. (with --crawl) freshly crawled pages from the trusted UK sources in
+     rag/sources.py — saved to data/raw/ and added alongside the seed entries
 
-Run this whenever the seed data is updated.
+Run this whenever the seed data is updated, or with --crawl to also pull fresh
+web content.
 """
 
 import sys
 import os
+import asyncio
 import argparse
 import logging
 from pathlib import Path
@@ -42,6 +46,13 @@ def main():
         action="store_true",
         help="Skip resetting the collection (add only, do not delete existing chunks)"
     )
+    parser.add_argument(
+        "--crawl",
+        action="store_true",
+        help="Also crawl the trusted UK web sources (rag/sources.py) before importing "
+             "seed data. Crawled pages are saved to data/raw/ and added to ChromaDB "
+             "alongside the seed entries (duplicate URLs are skipped)."
+    )
     args = parser.parse_args()
 
     seed_path = Path(args.seed_file)
@@ -62,6 +73,25 @@ def main():
         logger.info("Resetting existing collection...")
         vector_store.reset_collection()
         logger.info("Collection cleared.")
+
+    # ------------------------------------------------------------------ #
+    # 1b. (optional) Crawl live UK web sources before importing seed data
+    # ------------------------------------------------------------------ #
+    crawled_chunks = []
+    if args.crawl:
+        from rag.crawler import crawl_and_chunk_all, save_crawled_chunks
+
+        logger.info("Crawling trusted UK web sources (this may take a minute)...")
+        try:
+            crawled_chunks = asyncio.run(crawl_and_chunk_all())
+            logger.info(f"Crawled {len(crawled_chunks)} chunks from live sources.")
+            if crawled_chunks:
+                saved_path = save_crawled_chunks(crawled_chunks)
+                if saved_path:
+                    logger.info(f"Raw crawl output saved to {saved_path}")
+        except Exception as e:
+            logger.warning(f"Web crawl failed: {e} — continuing with seed data only.")
+            crawled_chunks = []
 
     # ------------------------------------------------------------------ #
     # 2. Load structured seed data
@@ -105,6 +135,25 @@ def main():
             logger.info(f"  → {len(extra_chunks)} chunks loaded")
         except Exception as e:
             logger.warning(f"  Skipping {extra_file}: {e}")
+
+    # ------------------------------------------------------------------ #
+    # 3b. Merge crawled chunks, skipping URLs already present in the seed data
+    # ------------------------------------------------------------------ #
+    if crawled_chunks:
+        from rag.crawler import dedupe_crawled_chunks
+
+        existing_urls = {
+            c["metadata"].get("url")
+            for c in all_chunks
+            if c.get("metadata", {}).get("url")
+        }
+        deduped = dedupe_crawled_chunks(crawled_chunks, existing_urls)
+        all_chunks.extend(deduped)
+        category_counts["web_crawl"] += len(deduped)
+        logger.info(
+            f"Added {len(deduped)} crawled chunks "
+            f"({len(crawled_chunks) - len(deduped)} skipped as duplicates)."
+        )
 
     # ------------------------------------------------------------------ #
     # 4. Add all chunks to vector store
