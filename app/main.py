@@ -1,16 +1,18 @@
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Query as QueryParam
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from enum import Enum
 import pytz
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import logging
 import json
 import os
 import asyncio
+import secrets
 from pathlib import Path
+from collections import Counter
 
 # Configure logging
 logging.basicConfig(
@@ -21,6 +23,16 @@ logger = logging.getLogger(__name__)
 
 # Ensure log directory exists
 Path("logs").mkdir(exist_ok=True)
+
+# ── Admin token ────────────────────────────────────────────────────────────
+# Use ADMIN_TOKEN env var; if not set, generate a random one and log it once.
+_ADMIN_TOKEN: str = os.environ.get("ADMIN_TOKEN", "").strip() or secrets.token_urlsafe(32)
+if not os.environ.get("ADMIN_TOKEN", "").strip():
+    logger.warning(
+        "⚠️  ADMIN_TOKEN env var not set. "
+        f"Auto-generated token for this session: {_ADMIN_TOKEN}  "
+        "(Set ADMIN_TOKEN to make this permanent.)"
+    )
 
 app = FastAPI(title="Maya – Autism Hounslow Assistant", version="2.0.0")
 
@@ -280,6 +292,221 @@ async def feedback(payload: FeedbackPayload):
     _log_feedback(payload)
     logger.info(f"Feedback received: type={payload.issue_type!r}")
     return {"status": "received", "message": "Thank you for your feedback."}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Admin dashboard  GET /admin
+# Protected by ADMIN_TOKEN (query param ?token= or header X-Admin-Token)
+# ──────────────────────────────────────────────────────────────────────
+
+def _check_admin_token(token_param: str | None, token_header: str | None):
+    """Raise 401/403 if neither the query param nor the header matches ADMIN_TOKEN."""
+    provided = (token_param or token_header or "").strip()
+    if not provided:
+        raise HTTPException(status_code=401, detail="Admin token required (?token= or X-Admin-Token header).")
+    if not secrets.compare_digest(provided, _ADMIN_TOKEN):
+        raise HTTPException(status_code=403, detail="Invalid admin token.")
+
+
+def _read_feedback_log(limit: int = 50) -> list[dict]:
+    """Return the last `limit` entries from logs/feedback.log, newest first."""
+    path = Path("logs/feedback.log")
+    if not path.exists():
+        return []
+    entries = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    except Exception:
+        pass
+    return list(reversed(entries))[:limit]
+
+
+def _read_questions_stats() -> dict:
+    """
+    Parse logs/questions.log and return:
+      - top_sources: list of (url, count) — top 10 most-retrieved source URLs
+      - questions_7d: count of questions logged in the last 7 days
+      - total_questions: total question entries in the log
+    """
+    path = Path("logs/questions.log")
+    if not path.exists():
+        return {"top_sources": [], "questions_7d": 0, "total_questions": 0}
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    url_counter: Counter = Counter()
+    questions_7d = 0
+    total = 0
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            total += 1
+            ts_str = entry.get("ts", "")
+            try:
+                ts = datetime.fromisoformat(ts_str)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if ts >= cutoff:
+                    questions_7d += 1
+            except (ValueError, TypeError):
+                pass
+            for url in entry.get("source_ids", []):
+                if url:
+                    url_counter[url] += 1
+    except Exception:
+        pass
+
+    top_sources = url_counter.most_common(10)
+    return {
+        "top_sources": top_sources,
+        "questions_7d": questions_7d,
+        "total_questions": total,
+    }
+
+
+def _render_admin_html(feedback: list[dict], stats: dict) -> str:
+    """Build and return the admin dashboard as a self-contained HTML string."""
+
+    def _esc(s: str) -> str:
+        return (
+            str(s)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+        )
+
+    feedback_rows = ""
+    for entry in feedback:
+        ts = _esc(entry.get("ts", "—"))
+        issue = _esc(entry.get("issue_type", "—") or "—")
+        has_comment = "Yes" if entry.get("has_comment") else "No"
+        q_len = _esc(str(entry.get("q_len", "—")))
+        feedback_rows += (
+            f"<tr><td>{ts}</td><td>{issue}</td>"
+            f"<td>{q_len}</td><td>{has_comment}</td></tr>\n"
+        )
+    if not feedback_rows:
+        feedback_rows = '<tr><td colspan="4" class="empty">No feedback entries yet.</td></tr>'
+
+    source_rows = ""
+    for url, count in stats["top_sources"]:
+        url_esc = _esc(url)
+        source_rows += (
+            f'<tr><td><a href="{url_esc}" target="_blank" rel="noopener">{url_esc}</a></td>'
+            f"<td>{count}</td></tr>\n"
+        )
+    if not source_rows:
+        source_rows = '<tr><td colspan="2" class="empty">No source data yet.</td></tr>'
+
+    generated_at = datetime.now(pytz.timezone("Europe/London")).strftime("%d %b %Y %H:%M %Z")
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maya Admin Dashboard</title>
+<style>
+  *, *::before, *::after {{ box-sizing: border-box; }}
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f5f7fa; color: #1a1a2e; margin: 0; padding: 1.5rem;
+  }}
+  h1 {{ font-size: 1.5rem; margin: 0 0 0.25rem; }}
+  .meta {{ color: #666; font-size: 0.85rem; margin-bottom: 2rem; }}
+  .cards {{ display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 2rem; }}
+  .card {{
+    background: #fff; border-radius: 8px; padding: 1.25rem 1.75rem;
+    box-shadow: 0 1px 4px rgba(0,0,0,.08); min-width: 160px;
+  }}
+  .card .num {{ font-size: 2.5rem; font-weight: 700; color: #5b3fa6; line-height: 1; }}
+  .card .label {{ font-size: 0.8rem; color: #666; margin-top: 0.3rem; }}
+  h2 {{ font-size: 1.1rem; margin: 0 0 0.75rem; border-bottom: 2px solid #ede9f9; padding-bottom: 0.4rem; }}
+  section {{ background: #fff; border-radius: 8px; padding: 1.25rem 1.5rem;
+             box-shadow: 0 1px 4px rgba(0,0,0,.08); margin-bottom: 1.5rem; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
+  th {{ text-align: left; padding: 0.4rem 0.6rem; background: #f0ecfc;
+        font-weight: 600; color: #4a3580; }}
+  td {{ padding: 0.4rem 0.6rem; border-bottom: 1px solid #f0f0f0; vertical-align: top; }}
+  tr:last-child td {{ border-bottom: none; }}
+  td.empty {{ color: #999; font-style: italic; }}
+  a {{ color: #5b3fa6; word-break: break-all; }}
+  .footer {{ font-size: 0.75rem; color: #aaa; text-align: center; margin-top: 2rem; }}
+</style>
+</head>
+<body>
+<h1>Maya Admin Dashboard</h1>
+<p class="meta">Generated: {generated_at} &nbsp;·&nbsp; Data is anonymised — no personal information is stored.</p>
+
+<div class="cards">
+  <div class="card">
+    <div class="num">{stats['questions_7d']}</div>
+    <div class="label">Questions (last 7 days)</div>
+  </div>
+  <div class="card">
+    <div class="num">{stats['total_questions']}</div>
+    <div class="label">Total questions logged</div>
+  </div>
+  <div class="card">
+    <div class="num">{len(feedback)}</div>
+    <div class="label">Feedback entries shown</div>
+  </div>
+</div>
+
+<section>
+  <h2>Top 10 Most-Retrieved Sources</h2>
+  <table>
+    <thead><tr><th>Source URL</th><th>Retrievals</th></tr></thead>
+    <tbody>{source_rows}</tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Last 50 Feedback Submissions</h2>
+  <table>
+    <thead><tr><th>Timestamp (UTC)</th><th>Issue Type</th><th>Q Length</th><th>Has Comment</th></tr></thead>
+    <tbody>{feedback_rows}</tbody>
+  </table>
+</section>
+
+<p class="footer">Maya Admin &mdash; Autism Hounslow &mdash; For internal use only</p>
+</body>
+</html>"""
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_dashboard(
+    token: str | None = QueryParam(default=None),
+    x_admin_token: str | None = Header(default=None),
+):
+    """
+    Admin dashboard — shows feedback reports and question trends.
+
+    Pass the ADMIN_TOKEN as a query parameter or HTTP header:
+      GET /admin?token=<ADMIN_TOKEN>
+      GET /admin  (with header X-Admin-Token: <ADMIN_TOKEN>)
+    """
+    _check_admin_token(token, x_admin_token)
+    feedback = _read_feedback_log(limit=50)
+    stats = _read_questions_stats()
+    html = _render_admin_html(feedback, stats)
+    return HTMLResponse(content=html)
 
 
 # ──────────────────────────────────────────────────────────────────────
