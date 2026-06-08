@@ -1,0 +1,173 @@
+Rebuild the existing Maya app as a public web app for Autism Hounslow.
+
+Maya is an autism-friendly AI guide for residents, carers and families in the London Borough of Hounslow. The app should provide clear, calm, structured signposting using a structured knowledge base and RAG. It must not provide medical, legal, safeguarding or emergency advice. It should always signpost users to appropriate official services when needed.
+
+Core requirements:
+
+1. Build Maya as a Replit-hosted public web app.
+
+2. The app should have:
+
+* A simple chat interface
+* Autism-friendly design
+* Clear language
+* Low visual clutter
+* Large readable text
+* Calm colours
+* Step-by-step answers
+* No flashing, animations or unnecessary distractions
+* A “What Maya can and cannot do” section
+* A disclaimer at the start and footer
+* A feedback button for users to report wrong or unclear answers
+
+3. Use an external Ollama-compatible LLM provider as the model backend.
+
+* Default model: Qwen
+* Provider should be configurable using environment variables
+* Do not hard-code the model
+* Allow easy switching between Qwen, Gemma, Llama or another OpenAI-compatible model endpoint
+* Use environment variables such as:
+
+  * LLM_PROVIDER
+  * LLM_BASE_URL
+  * LLM_API_KEY
+  * LLM_MODEL
+  * EMBEDDING_MODEL
+  * TEMPERATURE
+  * TOP_P
+
+4. Use deterministic settings where possible:
+
+* Temperature should default to 0
+* Top-p should be low or controlled
+* The same user query should return broadly consistent answers when the retrieved knowledge base context is the same
+* The answer must be grounded in the retrieved knowledge base
+* If the answer is not in the knowledge base, Maya should say so clearly and suggest where the user can check
+
+5. Add RAG functionality:
+
+* Create a structured knowledge base system
+* Store documents/chunks with:
+
+  * title
+  * category
+  * source URL
+  * source organisation
+  * date added
+  * last reviewed date
+  * content
+  * tags
+* Use a vector database or lightweight local equivalent suitable for Replit
+* Allow the knowledge base to include structured topics such as:
+
+  * EHCP
+  * PIP
+  * Blue Badge
+  * Universal Credit migration
+  * Carer’s Allowance
+  * DLA for children
+  * Adult Social Care assessment
+  * Carers assessment
+  * Hounslow Local Offer
+  * SEND support
+  * Autism Hounslow services
+  * NHS autism pathway
+  * Housing support
+  * Safeguarding signposting
+  * Crisis and emergency contacts
+
+6. Create an admin-friendly way to add/update knowledge:
+
+* Start with a simple JSON, Markdown or database seed file
+* Make it easy to add new knowledge items later
+* Include example entries for EHCP, PIP, Blue Badge and Autism Hounslow support
+* Include scripts or admin functions to re-index the knowledge base
+
+7. Answer format:
+   Maya should answer in a consistent structure:
+
+* Short answer
+* Step-by-step guidance
+* Who to contact
+* Useful links or source names
+* Important note / disclaimer
+* “Would you like this in simpler language?” option where appropriate
+
+8. System prompt for Maya:
+   Create a strong system prompt that tells Maya:
+
+* You are Maya, an autism-friendly guide for Hounslow residents
+* Use calm, respectful and plain English
+* Do not overwhelm users
+* Give step-by-step answers
+* Use only the provided knowledge base context
+* Do not guess
+* If information is missing, say that Maya does not currently have that information
+* Do not provide legal, medical, financial, emergency or safeguarding advice
+* For emergencies, tell users to contact 999
+* For urgent mental health crisis, signpost to NHS 111 or local crisis support where included in the knowledge base
+* Always distinguish between official information and general signposting
+* Always provide sources from the knowledge base where available
+
+9. Public deployment:
+
+* Make the app deployable through Replit Deployments
+* Include instructions for setting environment variables
+* Include instructions for testing locally
+* Include instructions for public deployment
+* Include instructions for connecting a custom subdomain such as:
+  maya.autismhounslow.org.uk
+
+10. Wix integration:
+    Add a short deployment guide explaining how Autism Hounslow can add Maya to Wix:
+
+* Add a new Wix page called “Ask Maya”
+* Add a button linking to the deployed Replit app
+* Optional iframe embed if compatible
+* Recommended option: use a subdomain such as maya.autismhounslow.org.uk
+* Add a clear button on the homepage: “Ask Maya”
+
+11. Safety and trust:
+
+* Add a visible disclaimer:
+  “Maya provides general information and signposting only. Maya does not replace professional advice. If someone is in immediate danger, call 999.”
+* Add a “report an issue” feedback form
+* Add basic logging of user questions and retrieved source IDs, but do not store sensitive personal information
+* Do not ask users to enter private medical, financial or legal details
+* Include a privacy notice placeholder
+
+12. Technical preference:
+    Use a clean, maintainable stack suitable for Replit. Prefer:
+
+* Python FastAPI or Node/Express backend
+* Simple React or HTML/CSS frontend
+* Lightweight vector store suitable for Replit
+* Clear folder structure
+* Good comments
+* README with setup instructions
+
+13. Deliverables:
+    Please create:
+
+* Full working app
+* Frontend chat interface
+* Backend API
+* RAG retrieval pipeline
+* Knowledge base seed file
+* Model provider abstraction layer
+* Environment variable configuration
+* Safety/system prompt
+* README
+* Wix integration instructions
+* Deployment instructions
+* Basic test questions
+
+14. Example test questions:
+
+* “How do I apply for a Blue Badge in Hounslow?”
+* “My child may need an EHCP. What should I do?”
+* “Can Maya help me appeal a PIP decision?”
+* “What autism support is available locally?”
+* “I am in immediate danger. What should I do?”
+
+Build the app in a way that allows the model, knowledge base and hosting setup to be changed later without rewriting the whole app.
