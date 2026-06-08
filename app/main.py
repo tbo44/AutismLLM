@@ -9,6 +9,7 @@ from datetime import datetime, timezone, timedelta
 import logging
 import json
 import os
+import re
 import asyncio
 import secrets
 from pathlib import Path
@@ -417,7 +418,105 @@ def _read_questions_stats() -> dict:
     }
 
 
-def _render_admin_html(feedback: list[dict], stats: dict) -> str:
+def _read_reindex_history(limit: int = 15) -> list[dict]:
+    """
+    Parse logs/reindex.log and return the most recent `limit` runs, newest first.
+
+    Each line is written by `_record_reindex_result` via `_reindex_logger` in the
+    format: "<asctime>  <LEVEL>  [<source>] SUCCESS|FAILURE — <detail>".
+    Returns a list of dicts: {"ts", "level", "source", "outcome", "detail"}.
+    """
+    path = Path("logs/reindex.log")
+    if not path.exists():
+        return []
+
+    line_re = re.compile(
+        r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d+)?)\s+"
+        r"(?P<level>\w+)\s+(?P<msg>.*)$"
+    )
+    msg_re = re.compile(r"^\[(?P<source>[^\]]*)\]\s+(?P<outcome>\S+)\s+(?:—|-)?\s*(?P<detail>.*)$")
+
+    entries: list[dict] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            m = line_re.match(line)
+            if not m:
+                continue
+            ts = m.group("ts")
+            level = m.group("level")
+            msg = m.group("msg").strip()
+            source = "—"
+            outcome = "—"
+            detail = msg
+            mm = msg_re.match(msg)
+            if mm:
+                source = mm.group("source") or "—"
+                outcome = mm.group("outcome") or "—"
+                detail = (mm.group("detail") or "").strip()
+            entries.append(
+                {"ts": ts, "level": level, "source": source, "outcome": outcome, "detail": detail}
+            )
+    except Exception:
+        pass
+
+    return list(reversed(entries))[:limit]
+
+
+def _read_kb_health() -> dict:
+    """
+    Collect knowledge-base health for the admin dashboard:
+      - total_chunks: current chunk count from the live vector store (or None)
+      - running / last_run / last_result / alert / schedule: from _crawl_status
+      - history: recent re-index runs parsed from logs/reindex.log
+    """
+    total_chunks = None
+    try:
+        if _rag_system is not None and getattr(_rag_system, "vector_store", None):
+            cs = _rag_system.vector_store.get_collection_stats()
+            if isinstance(cs, dict):
+                total_chunks = cs.get("total_chunks")
+    except Exception:
+        total_chunks = None
+
+    next_run = (
+        _next_scheduled_run().isoformat() if _SCHEDULED_REINDEX_ENABLED else None
+    )
+
+    return {
+        "total_chunks": total_chunks,
+        "running": _crawl_status["running"],
+        "last_run": _crawl_status["last_run"],
+        "last_result": _crawl_status["last_result"],
+        "alert": _crawl_status["alert"],
+        "schedule": {
+            "enabled": _SCHEDULED_REINDEX_ENABLED,
+            "hour_uk": _REINDEX_SCHEDULE_HOUR,
+            "mode": _SCHEDULED_REINDEX_MODE,
+            "next_run": next_run,
+        },
+        "history": _read_reindex_history(),
+    }
+
+
+def _fmt_uk_time(iso_str: str | None) -> str:
+    """Format a UTC ISO timestamp (e.g. '2026-06-08T16:11:00Z') in UK local time."""
+    if not iso_str:
+        return "Never"
+    try:
+        s = iso_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(_UK_TZ).strftime("%d %b %Y %H:%M %Z")
+    except (ValueError, TypeError):
+        return str(iso_str)
+
+
+def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
     """Build and return the admin dashboard as a self-contained HTML string."""
 
     def _esc(s: str) -> str:
@@ -452,6 +551,76 @@ def _render_admin_html(feedback: list[dict], stats: dict) -> str:
     if not source_rows:
         source_rows = '<tr><td colspan="2" class="empty">No source data yet.</td></tr>'
 
+    # ── Knowledge Base health ──────────────────────────────────────────────
+    last_result = kb.get("last_result") or {}
+    last_run_uk = _fmt_uk_time(kb.get("last_run"))
+
+    total_chunks = kb.get("total_chunks")
+    chunks_display = "—" if total_chunks is None else str(total_chunks)
+
+    if kb.get("running"):
+        kb_status_html = '<span class="badge badge-run">Re-indexing now…</span>'
+        last_outcome = "In progress"
+        last_detail = ""
+    elif last_result.get("success"):
+        kb_status_html = '<span class="badge badge-ok">Success</span>'
+        last_outcome = "Success"
+        parts = []
+        if last_result.get("total_chunks") is not None:
+            parts.append(f"{last_result['total_chunks']} chunks")
+        if last_result.get("seed_chunks") is not None:
+            parts.append(f"seed {last_result['seed_chunks']}")
+        if last_result.get("crawled_chunks") is not None:
+            parts.append(f"crawled {last_result['crawled_chunks']}")
+        last_detail = _esc(", ".join(parts))
+    elif last_result.get("success") is False:
+        kb_status_html = '<span class="badge badge-err">Failed</span>'
+        last_outcome = "Failed"
+        err = (
+            last_result.get("error")
+            or last_result.get("stderr_tail")
+            or (f"exit code {last_result['exit_code']}" if last_result.get("exit_code") is not None else "Unknown error")
+        )
+        last_detail = _esc(str(err))
+    else:
+        kb_status_html = '<span class="badge badge-none">No runs yet</span>'
+        last_outcome = "—"
+        last_detail = ""
+
+    elapsed = last_result.get("elapsed_seconds")
+    duration_display = f"{elapsed}s" if elapsed is not None else "—"
+
+    schedule = kb.get("schedule") or {}
+    if schedule.get("enabled"):
+        sched_text = (
+            f"Daily at {schedule.get('hour_uk', '?'):02d}:00 UK "
+            f"(mode: {_esc(str(schedule.get('mode', '?')))}) · "
+            f"next: {_fmt_uk_time(schedule.get('next_run'))}"
+        )
+    else:
+        sched_text = "Disabled"
+
+    alert = kb.get("alert") or {}
+    kb_alert_html = ""
+    if alert.get("message"):
+        kb_alert_html = (
+            f'<div class="alert">⚠️ {_esc(alert["message"])} '
+            f'<span class="alert-at">({_fmt_uk_time(alert.get("at"))})</span></div>'
+        )
+
+    history_rows = ""
+    for h in kb.get("history", []):
+        outcome = h.get("outcome", "—")
+        oc_cls = "ok" if outcome.upper() == "SUCCESS" else ("err" if outcome.upper() == "FAILURE" else "")
+        history_rows += (
+            f"<tr><td>{_esc(h.get('ts', '—'))}</td>"
+            f"<td>{_esc(h.get('source', '—'))}</td>"
+            f'<td class="{oc_cls}">{_esc(outcome)}</td>'
+            f"<td>{_esc(h.get('detail', ''))}</td></tr>\n"
+        )
+    if not history_rows:
+        history_rows = '<tr><td colspan="4" class="empty">No re-index history yet.</td></tr>'
+
     generated_at = datetime.now(pytz.timezone("Europe/London")).strftime("%d %b %Y %H:%M %Z")
 
     return f"""<!DOCTYPE html>
@@ -484,8 +653,32 @@ def _render_admin_html(feedback: list[dict], stats: dict) -> str:
   td {{ padding: 0.4rem 0.6rem; border-bottom: 1px solid #f0f0f0; vertical-align: top; }}
   tr:last-child td {{ border-bottom: none; }}
   td.empty {{ color: #999; font-style: italic; }}
+  td.ok {{ color: #1b7a3d; font-weight: 600; }}
+  td.err {{ color: #b00020; font-weight: 600; }}
   a {{ color: #5b3fa6; word-break: break-all; }}
   .footer {{ font-size: 0.75rem; color: #aaa; text-align: center; margin-top: 2rem; }}
+  .kb-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+              gap: 0.75rem 1.5rem; margin-bottom: 1rem; }}
+  .kb-item .kb-label {{ font-size: 0.75rem; color: #666; text-transform: uppercase;
+                        letter-spacing: 0.03em; }}
+  .kb-item .kb-val {{ font-size: 1.05rem; font-weight: 600; margin-top: 0.15rem; }}
+  .badge {{ display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px;
+            font-size: 0.8rem; font-weight: 600; }}
+  .badge-ok {{ background: #e3f5ea; color: #1b7a3d; }}
+  .badge-err {{ background: #fde3e6; color: #b00020; }}
+  .badge-run {{ background: #e7eefc; color: #2a52b5; }}
+  .badge-none {{ background: #eee; color: #777; }}
+  .alert {{ background: #fff6e6; border: 1px solid #f3d28a; color: #8a5a00;
+            border-radius: 6px; padding: 0.6rem 0.8rem; font-size: 0.85rem;
+            margin-bottom: 1rem; }}
+  .alert .alert-at {{ color: #b08a3a; font-size: 0.8rem; }}
+  .kb-actions {{ margin: 0.5rem 0 1rem; }}
+  button.reindex-btn {{ background: #5b3fa6; color: #fff; border: none; cursor: pointer;
+                        border-radius: 6px; padding: 0.55rem 1.1rem; font-size: 0.9rem;
+                        font-weight: 600; }}
+  button.reindex-btn:hover {{ background: #4a3185; }}
+  button.reindex-btn:disabled {{ background: #b9a9dd; cursor: not-allowed; }}
+  .reindex-msg {{ font-size: 0.85rem; margin-left: 0.75rem; color: #444; }}
 </style>
 </head>
 <body>
@@ -508,6 +701,43 @@ def _render_admin_html(feedback: list[dict], stats: dict) -> str:
 </div>
 
 <section>
+  <h2>Knowledge Base</h2>
+  {kb_alert_html}
+  <div class="kb-grid">
+    <div class="kb-item">
+      <div class="kb-label">Total chunks stored</div>
+      <div class="kb-val">{chunks_display}</div>
+    </div>
+    <div class="kb-item">
+      <div class="kb-label">Last re-index</div>
+      <div class="kb-val">{last_run_uk}</div>
+    </div>
+    <div class="kb-item">
+      <div class="kb-label">Duration</div>
+      <div class="kb-val">{duration_display}</div>
+    </div>
+    <div class="kb-item">
+      <div class="kb-label">Last result</div>
+      <div class="kb-val">{kb_status_html}</div>
+    </div>
+    <div class="kb-item">
+      <div class="kb-label">Schedule</div>
+      <div class="kb-val" style="font-size:0.9rem;font-weight:500;">{sched_text}</div>
+    </div>
+  </div>
+  {f'<p style="font-size:0.85rem;color:#555;margin:0 0 1rem;">Details: {last_detail}</p>' if last_detail else ''}
+  <div class="kb-actions">
+    <button id="reindexBtn" class="reindex-btn" onclick="triggerReindex()">Re-index now</button>
+    <span id="reindexMsg" class="reindex-msg"></span>
+  </div>
+  <h2 style="font-size:1rem;margin-top:1.25rem;">Re-index history</h2>
+  <table>
+    <thead><tr><th>Timestamp (UTC)</th><th>Source</th><th>Outcome</th><th>Details</th></tr></thead>
+    <tbody>{history_rows}</tbody>
+  </table>
+</section>
+
+<section>
   <h2>Top 10 Most-Retrieved Sources</h2>
   <table>
     <thead><tr><th>Source URL</th><th>Retrievals</th></tr></thead>
@@ -524,6 +754,37 @@ def _render_admin_html(feedback: list[dict], stats: dict) -> str:
 </section>
 
 <p class="footer">Maya Admin &mdash; Autism Hounslow &mdash; For internal use only</p>
+<script>
+function triggerReindex() {{
+  var btn = document.getElementById('reindexBtn');
+  var msg = document.getElementById('reindexMsg');
+  var token = window.prompt('Enter the crawl admin token (ADMIN_CRAWL_TOKEN) to start a full re-index:');
+  if (!token) {{ return; }}
+  btn.disabled = true;
+  msg.style.color = '#444';
+  msg.textContent = 'Starting re-index…';
+  fetch('/admin/crawl', {{
+    method: 'POST',
+    headers: {{ 'Authorization': 'Bearer ' + token.trim() }}
+  }})
+  .then(function (r) {{ return r.json().then(function (d) {{ return {{ ok: r.ok, body: d }}; }}); }})
+  .then(function (res) {{
+    if (res.ok) {{
+      msg.style.color = '#1b7a3d';
+      msg.textContent = (res.body && res.body.message) || 'Re-index started. Refresh in a minute to see progress.';
+    }} else {{
+      btn.disabled = false;
+      msg.style.color = '#b00020';
+      msg.textContent = (res.body && res.body.detail) || 'Failed to start re-index.';
+    }}
+  }})
+  .catch(function (e) {{
+    btn.disabled = false;
+    msg.style.color = '#b00020';
+    msg.textContent = 'Error: ' + e;
+  }});
+}}
+</script>
 </body>
 </html>"""
 
@@ -543,7 +804,8 @@ async def admin_dashboard(
     _check_admin_token(token, x_admin_token)
     feedback = _read_feedback_log(limit=50)
     stats = _read_questions_stats()
-    html = _render_admin_html(feedback, stats)
+    kb = _read_kb_health()
+    html = _render_admin_html(feedback, stats, kb)
     return HTMLResponse(content=html)
 
 
