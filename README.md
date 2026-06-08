@@ -285,5 +285,7 @@ Page: "Get Information" or "Maya Assistant"
 
 ## Privacy
 
-Maya does not store question text, IP addresses, or personal information.
-See the **Privacy notice** link inside the chat interface for details.
+Maya logs question text and retrieved source IDs to `logs/questions.log` to help
+improve the service. No user identity (IP address, name, session ID) is ever stored.
+Feedback submissions record only the issue type — not free-text comments or identity.
+See the **Privacy notice** link inside the chat interface for full details.

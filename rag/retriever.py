@@ -92,13 +92,15 @@ class UKAutismRetriever:
         if not results:
             return results
         
-        # Filter out very low quality matches
-        min_relevance_threshold = 0.8  # Adjust based on testing
+        # Filter out very low quality matches.
+        # Threshold is intentionally strict: if nothing meaningful matches, we return
+        # an empty list so the RAG system can emit the "not in knowledge base" response
+        # rather than hallucinating from irrelevant chunks.
+        min_relevance_threshold = 0.8  # ChromaDB cosine distance: lower = more similar
         filtered = [r for r in results if r['distance'] < min_relevance_threshold]
-        
-        # If too few results after filtering, include more
-        if len(filtered) < 3 and len(results) > 0:
-            filtered = results[:6]  # Take top 6 regardless of threshold
+
+        # Do NOT fall back to unfiltered results — an empty list signals "no match"
+        # and triggers the explicit out-of-scope message in rag_system.py.
         
         # Apply query-specific ranking adjustments
         for result in filtered:
