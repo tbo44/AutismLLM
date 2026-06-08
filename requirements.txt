@@ -13,3 +13,4 @@ lxml
 sentence-transformers
 trafilatura
 groq
+openai>=1.0.0

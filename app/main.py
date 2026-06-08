@@ -1,26 +1,31 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from enum import Enum
 import pytz
 from datetime import datetime
 import logging
+import json
+import os
+from pathlib import Path
 
-# Configure logging to ensure startup events are visible
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Maya Autism Facts Assistant", version="0.2.0")
+# Ensure log directory exists
+Path("logs").mkdir(exist_ok=True)
 
-# Global RAG system instance (pre-loaded at startup for faster responses)
+app = FastAPI(title="Maya – Autism Hounslow Assistant", version="2.0.0")
+
 _rag_system = None
 _startup_complete = False
 
-# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,95 +34,151 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+
+# ──────────────────────────────────────────────────────────────────────
+# Startup / background RAG initialisation
+# ──────────────────────────────────────────────────────────────────────
+
 async def initialize_rag_background():
-    """Background task to initialize RAG system without blocking server startup"""
     global _rag_system, _startup_complete
-    
-    # Add small delay to ensure server fully starts before heavy initialization
     import asyncio
     await asyncio.sleep(0.1)
-    
-    logger.info("🚀 Maya background initialization starting...")
+    logger.info("🚀 Maya background initialisation starting...")
     start_time = datetime.now()
-    
     try:
-        # Run initialization in thread pool to avoid blocking event loop
-        # Import RAG module ONLY inside this background task to avoid blocking server startup
         _rag_system = await asyncio.to_thread(_initialize_rag_sync)
-        
         elapsed = (datetime.now() - start_time).total_seconds()
         _startup_complete = True
-        logger.info(f"✅ Maya ready! Background initialization completed in {elapsed:.1f}s")
-        
+        logger.info(f"✅ Maya ready! Background initialisation completed in {elapsed:.1f}s")
     except Exception as e:
-        logger.error(f"❌ Background initialization failed: {str(e)}", exc_info=True)
+        logger.error(f"❌ Background initialisation failed: {str(e)}", exc_info=True)
         _startup_complete = False
 
+
 def _initialize_rag_sync():
-    """Synchronous RAG initialization - runs in thread pool"""
-    # Import heavy dependencies ONLY when needed (not at module level)
     from rag.rag_system import get_rag_system
-    
     logger.info("📦 Loading RAG system...")
     rag_system = get_rag_system()
     rag_system.initialize()
-    
-    # Warm up the system with test queries
     logger.info("🔥 Warming up RAG components...")
     try:
-        # Warm embedder (most critical for fast response)
         rag_system.vector_store.embedder.encode(["warmup"])
         logger.info("✅ SentenceTransformer warmed")
     except Exception as e:
         logger.warning(f"Embedder warmup failed (non-critical): {e}")
-    
     try:
-        # Warm ChromaDB with actual search
         rag_system.vector_store.search("warmup test", n_results=1)
         logger.info("✅ ChromaDB warmed")
     except Exception as e:
         logger.warning(f"ChromaDB warmup failed (non-critical): {e}")
-    
     return rag_system
+
 
 @app.on_event("startup")
 async def startup_event():
-    """Start background initialization without blocking server startup"""
     import asyncio
-    logger.info("🚀 Maya server starting - spawning background RAG initialization task...")
-    # Create fire-and-forget background task - server startup completes immediately
+    logger.info("🚀 Maya server starting – spawning background RAG initialisation task...")
     asyncio.create_task(initialize_rag_background())
-    logger.info("✅ Server startup event complete - background task spawned")
+    logger.info("✅ Server startup event complete – background task spawned")
+
+
+def _load_rag_system():
+    global _rag_system
+    if _rag_system is not None:
+        return _rag_system
+    logger.warning("⚠️ RAG system not pre-loaded – loading now (slower first response)...")
+    start_time = datetime.now()
+    from rag.rag_system import get_rag_system
+    _rag_system = get_rag_system()
+    _rag_system.initialize()
+    elapsed = (datetime.now() - start_time).total_seconds()
+    logger.info(f"✅ RAG system loaded in {elapsed:.1f}s")
+    return _rag_system
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Data models
+# ──────────────────────────────────────────────────────────────────────
 
 class ComprehensionLevel(str, Enum):
-    clear = "clear"
+    clear    = "clear"
     standard = "standard"
-    complex = "complex"
+    complex  = "complex"
+
 
 class Query(BaseModel):
     question: str
     comprehension_level: ComprehensionLevel = ComprehensionLevel.standard
+
 
 class Source(BaseModel):
     title: str
     url: str
     publisher: str
 
+
 class Answer(BaseModel):
     answer: str
     timestamp: str
     sources: list[Source] = []
-    disclaimer: str = "Information only — not a diagnosis or treatment plan. For medical concerns contact your GP or NHS 111; emergencies: call 999. For legal advice, contact a qualified professional."
+    disclaimer: str = (
+        "Maya provides general guidance only — not medical, legal, or financial advice. "
+        "For medical concerns contact your GP or NHS 111. Emergencies: call 999. "
+        "For SEND/legal advice: IPSEA or Citizens Advice."
+    )
+
+
+class FeedbackPayload(BaseModel):
+    question: str = ""
+    response_id: str = ""
+    issue_type: str = ""
+    comment: str = ""
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Logging helpers
+# ──────────────────────────────────────────────────────────────────────
+
+def _log_question(question: str, source_ids: list):
+    """Append question + retrieved source IDs to logs/questions.log (no PII)."""
+    try:
+        entry = {
+            "ts": datetime.utcnow().isoformat(),
+            "q_len": len(question),
+            "source_ids": source_ids[:6]
+        }
+        with open("logs/questions.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        logger.warning(f"Question log write failed: {e}")
+
+
+def _log_feedback(payload: FeedbackPayload):
+    """Append feedback submission to logs/feedback.log (no PII)."""
+    try:
+        entry = {
+            "ts": datetime.utcnow().isoformat(),
+            "issue_type": payload.issue_type,
+            "response_id": payload.response_id,
+            "q_len": len(payload.question),
+            "has_comment": bool(payload.comment.strip())
+        }
+        with open("logs/feedback.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        logger.warning(f"Feedback log write failed: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Routes
+# ──────────────────────────────────────────────────────────────────────
 
 @app.get("/")
 async def root():
-    """Serve the main chat interface"""
-    from fastapi.responses import FileResponse
     return FileResponse(
-        'static/index.html',
+        "static/index.html",
         headers={
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
@@ -125,124 +186,95 @@ async def root():
         }
     )
 
+
 @app.get("/health")
 async def health():
-    """Ultra-lightweight health check endpoint - responds immediately without dependencies"""
+    """Ultra-lightweight health check — responds immediately."""
     return {"status": "ok"}
+
 
 @app.get("/status")
 async def status():
-    """Extended status endpoint with RAG readiness info (for frontend)"""
     return {
         "status": "ok",
-        "service": "maya-autism-assistant",
+        "service": "maya-autism-hounslow",
         "rag_ready": _startup_complete
     }
 
+
 @app.get("/warmup")
 async def warmup():
-    """Warmup endpoint for keep-alive pings - exercises all critical components"""
     global _rag_system
-    
-    status = {
-        "ok": True,
-        "startup_complete": _startup_complete,
-        "components": {}
-    }
-    
-    # If RAG system not loaded, try to load it
+    result = {"ok": True, "startup_complete": _startup_complete, "components": {}}
     if _rag_system is None:
         try:
             _rag_system = _load_rag_system()
-            status["components"]["rag_loaded"] = True
+            result["components"]["rag_loaded"] = True
         except Exception as e:
-            status["ok"] = False
-            status["components"]["rag_loaded"] = False
-            status["error"] = str(e)
-            return status
-    
-    # Warm embedder
+            result["ok"] = False
+            result["error"] = str(e)
+            return result
     try:
         _rag_system.vector_store.embedder.encode(["hello"])
-        status["components"]["embedder"] = "ok"
+        result["components"]["embedder"] = "ok"
     except Exception as e:
-        status["components"]["embedder"] = f"error: {str(e)}"
-        status["ok"] = False
-    
-    # Warm ChromaDB
+        result["components"]["embedder"] = f"error: {e}"
+        result["ok"] = False
     try:
         _rag_system.vector_store.search("hello", n_results=1)
-        status["components"]["chromadb"] = "ok"
+        result["components"]["chromadb"] = "ok"
     except Exception as e:
-        status["components"]["chromadb"] = f"error: {str(e)}"
-        status["ok"] = False
-    
-    return status
+        result["components"]["chromadb"] = f"error: {e}"
+        result["ok"] = False
+    return result
 
-def _load_rag_system():
-    """Load and initialize RAG system (fallback if startup failed)"""
-    global _rag_system
-    
-    if _rag_system is not None:
-        return _rag_system
-    
-    logger.warning("⚠️ RAG system not pre-loaded - loading now (slower first response)...")
-    start_time = datetime.now()
-    
-    try:
-        from rag.rag_system import get_rag_system
-        _rag_system = get_rag_system()
-        _rag_system.initialize()
-        
-        elapsed = (datetime.now() - start_time).total_seconds()
-        logger.info(f"✅ RAG system loaded in {elapsed:.1f}s")
-        return _rag_system
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to load RAG system: {str(e)}", exc_info=True)
-        raise
 
 @app.post("/chat", response_model=Answer)
 async def chat(query: Query):
-    """Answer questions using RAG system with safety guardrails"""
-    
-    # Generate timestamp in Europe/London timezone
-    london_tz = pytz.timezone('Europe/London')
+    """Answer questions using the RAG pipeline with safety guardrails."""
+    london_tz = pytz.timezone("Europe/London")
     timestamp = datetime.now(london_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
-    
-    # Log comprehension level for debugging
-    logger.info(f"📖 Comprehension level requested: {query.comprehension_level.value}")
-    
+    logger.info(f"📖 Comprehension: {query.comprehension_level.value}  Q-len: {len(query.question)}")
+
     try:
-        # Ensure RAG system is loaded (handles both background init and lazy loading)
         global _rag_system
         if _rag_system is None:
-            logger.info("RAG system not ready, initializing now...")
+            logger.info("RAG system not ready, initialising now...")
             _rag_system = _load_rag_system()
-        
-        # Double-check the RAG system is actually initialized
+
         if not _rag_system.initialized:
-            logger.warning("RAG system exists but not initialized, initializing now...")
+            logger.warning("RAG system exists but not initialised, initialising now...")
             _rag_system.initialize()
-        
-        # Answer the question with comprehension level (convert enum to string value)
-        result = _rag_system.answer_question(query.question, comprehension_level=query.comprehension_level.value)
-        
-        # Extract answer and sources from result dictionary
-        answer_text = result.get("answer", "")
+
+        result = _rag_system.answer_question(
+            query.question,
+            comprehension_level=query.comprehension_level.value
+        )
+
+        answer_text  = result.get("answer", "")
         sources_list = result.get("sources", [])
-        
-        # Convert sources to Source objects
+        source_ids   = [s.get("url", "") for s in sources_list]
+
+        _log_question(query.question, source_ids)
+
         sources = [Source(**src) for src in sources_list]
-        
         return Answer(answer=answer_text, timestamp=f"Last checked: {timestamp}", sources=sources)
-        
+
     except Exception as e:
         logger.error(f"Error processing question: {str(e)}", exc_info=True)
-        
-        # Fallback to guardrails only
         from rag import answerer
         text = answerer.apply_guardrails(query.question) or (
             "Sorry, I encountered an error. Please try your question again."
         )
         return Answer(answer=text, timestamp=f"Last checked: {timestamp}", sources=[])
+
+
+@app.post("/feedback")
+async def feedback(payload: FeedbackPayload):
+    """
+    Accept a feedback or issue report from the UI.
+    Logs the submission to logs/feedback.log — no personal information stored.
+    """
+    _log_feedback(payload)
+    logger.info(f"Feedback received: type={payload.issue_type!r}")
+    return {"status": "received", "message": "Thank you for your feedback."}

@@ -1,10 +1,15 @@
+/* Maya – Autism Hounslow  script.js  v12 */
+
 class MayaApp {
     constructor() {
-        this.messages = [];
-        this.lowStimMode = localStorage.getItem('maya-low-stim') === 'true';
-        this.layoutMode = localStorage.getItem('maya-layout') || 'focus';
+        this.messages          = [];
+        this.lowStimMode       = localStorage.getItem('maya-low-stim') !== 'false'; // default ON
+        this.layoutMode        = localStorage.getItem('maya-layout') || 'focus';
         this.comprehensionLevel = localStorage.getItem('maya-comprehension') || 'standard';
-        this.initializeElements();
+        this.lastQuestion      = '';
+        this.lastResponseId    = '';
+
+        this.initElements();
         this.bindEvents();
         this.applyLowStimMode();
         this.applyLayoutMode();
@@ -12,44 +17,50 @@ class MayaApp {
         this.addWelcomeMessage();
     }
 
-    initializeElements() {
-        this.chatArea = document.getElementById('chatArea');
-        this.messageInput = document.getElementById('messageInput');
-        this.sendButton = document.getElementById('sendButton');
-        this.lowStimToggle = document.getElementById('lowStimToggle');
-        this.layoutToggle = document.getElementById('layoutToggle');
+    // ── DOM wiring ────────────────────────────────────────────────────
+
+    initElements() {
+        this.chatArea           = document.getElementById('chatArea');
+        this.messageInput       = document.getElementById('messageInput');
+        this.sendButton         = document.getElementById('sendButton');
+        this.lowStimToggle      = document.getElementById('lowStimToggle');
+        this.layoutToggle       = document.getElementById('layoutToggle');
         this.comprehensionSelect = document.getElementById('comprehensionLevel');
-        this.suggestions = document.getElementById('suggestions');
-        this.appContainer = document.querySelector('.app-container');
+        this.suggestions        = document.getElementById('suggestions');
+        this.appContainer       = document.querySelector('.app-container');
+        this.infoToggle         = document.getElementById('infoToggle');
+        this.infoPanel          = document.getElementById('infoPanel');
+        this.reportBtn          = document.getElementById('reportBtn');
+        this.privacyBtn         = document.getElementById('privacyBtn');
+        this.feedbackOverlay    = document.getElementById('feedbackOverlay');
+        this.privacyOverlay     = document.getElementById('privacyOverlay');
+        this.feedbackForm       = document.getElementById('feedbackForm');
+        this.feedbackThanks     = document.getElementById('feedbackThanks');
+        this.closeFeedback      = document.getElementById('closeFeedback');
+        this.closeFeedbackDone  = document.getElementById('closeFeedbackDone');
+        this.closePrivacy       = document.getElementById('closePrivacy');
     }
 
     bindEvents() {
-        // Send message events
+        // Send message
         this.sendButton.addEventListener('click', () => this.sendMessage());
         this.messageInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                this.sendMessage();
-            }
+            if (e.key === 'Enter') { e.preventDefault(); this.sendMessage(); }
         });
 
-        // Low-stimulation mode toggle
+        // Low-stim toggle
         this.lowStimToggle.addEventListener('click', () => {
             this.lowStimMode = !this.lowStimMode;
-            localStorage.setItem('maya-low-stim', this.lowStimMode.toString());
+            localStorage.setItem('maya-low-stim', String(this.lowStimMode));
             this.applyLowStimMode();
         });
 
         // Layout toggle
-        this.layoutToggle.addEventListener('click', () => this.toggleLayout());
-        this.layoutToggle.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                this.toggleLayout();
-            }
-        });
+        if (this.layoutToggle) {
+            this.layoutToggle.addEventListener('click', () => this.toggleLayout());
+        }
 
-        // Comprehension level selector
+        // Comprehension level
         this.comprehensionSelect.addEventListener('change', (e) => {
             this.comprehensionLevel = e.target.value;
             localStorage.setItem('maya-comprehension', this.comprehensionLevel);
@@ -57,22 +68,50 @@ class MayaApp {
 
         // Suggestion buttons
         this.suggestions.addEventListener('click', (e) => {
-            if (e.target.classList.contains('suggestion-btn')) {
-                this.handleSuggestion(e.target.dataset.action);
+            const btn = e.target.closest('.suggestion-btn');
+            if (btn) this.handleSuggestion(btn.dataset.action);
+        });
+
+        // Info panel toggle
+        this.infoToggle.addEventListener('click', () => {
+            const isHidden = this.infoPanel.hidden;
+            this.infoPanel.hidden = !isHidden;
+            this.infoToggle.setAttribute('aria-expanded', String(isHidden));
+        });
+
+        // Feedback modal
+        this.reportBtn.addEventListener('click', () => this.openFeedback());
+        this.closeFeedback.addEventListener('click', () => this.closeFeedbackModal());
+        this.closeFeedbackDone.addEventListener('click', () => this.closeFeedbackModal());
+        this.feedbackForm.addEventListener('submit', (e) => { e.preventDefault(); this.submitFeedback(); });
+
+        // Privacy modal
+        this.privacyBtn.addEventListener('click', () => { this.privacyOverlay.hidden = false; });
+        this.closePrivacy.addEventListener('click', () => { this.privacyOverlay.hidden = true; });
+
+        // Close modals on overlay click
+        this.feedbackOverlay.addEventListener('click', (e) => {
+            if (e.target === this.feedbackOverlay) this.closeFeedbackModal();
+        });
+        this.privacyOverlay.addEventListener('click', (e) => {
+            if (e.target === this.privacyOverlay) this.privacyOverlay.hidden = true;
+        });
+
+        // Close modals on Escape
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                this.closeFeedbackModal();
+                this.privacyOverlay.hidden = true;
             }
         });
     }
 
+    // ── UI state ──────────────────────────────────────────────────────
+
     applyLowStimMode() {
-        if (this.lowStimMode) {
-            document.body.classList.add('low-stim');
-            this.lowStimToggle.classList.add('active');
-            this.lowStimToggle.textContent = 'LOW-STIMULATION MODE';
-        } else {
-            document.body.classList.remove('low-stim');
-            this.lowStimToggle.classList.remove('active');
-            this.lowStimToggle.textContent = 'NEUROTYPICAL MODE';
-        }
+        document.body.classList.toggle('low-stim', this.lowStimMode);
+        this.lowStimToggle.classList.toggle('active', this.lowStimMode);
+        this.lowStimToggle.textContent = this.lowStimMode ? 'Low-stimulation mode' : 'Standard mode';
     }
 
     toggleLayout() {
@@ -83,11 +122,11 @@ class MayaApp {
 
     applyLayoutMode() {
         this.appContainer.setAttribute('data-layout', this.layoutMode);
-        const isExpanded = this.layoutMode === 'expanded';
-        this.layoutToggle.setAttribute('aria-pressed', String(isExpanded));
-        const textSpan = this.layoutToggle.querySelector('span');
-        if (textSpan) {
-            textSpan.textContent = isExpanded ? 'Narrow width' : 'Expand width';
+        const expanded = this.layoutMode === 'expanded';
+        if (this.layoutToggle) {
+            this.layoutToggle.setAttribute('aria-pressed', String(expanded));
+            const lbl = this.layoutToggle.querySelector('.layout-label');
+            if (lbl) lbl.textContent = expanded ? 'Narrow' : 'Expand';
         }
     }
 
@@ -95,191 +134,333 @@ class MayaApp {
         this.comprehensionSelect.value = this.comprehensionLevel;
     }
 
+    // ── Welcome message ───────────────────────────────────────────────
+
     addWelcomeMessage() {
-        const welcomeMessage = {
+        this.addMessage({
             role: 'assistant',
-            content: "Hello! I'm here to help autistic people and their carers."
-        };
-        this.addMessage(welcomeMessage);
+            content: 'Hello! I\'m Maya, the Autism Hounslow information assistant.\n\nI can help with questions about autism, benefits (DLA, PIP, Universal Credit), education (EHCP, SEND), local Hounslow services, and more.\n\nUse the buttons below or type your question.'
+        });
     }
 
+    // ── Suggestion buttons ────────────────────────────────────────────
+
     handleSuggestion(action) {
-        let message = '';
-        switch (action) {
-            case 'autism-info':
-                message = 'What is autism?';
-                break;
-            case 'support-services':
-                message = 'What support services are available?';
-                break;
-            case 'benefits':
-                message = 'Help me understand autism benefits';
-                break;
-        }
-        
-        if (message) {
-            this.messageInput.value = message;
-            this.sendMessage();
-        }
+        const questions = {
+            ehcp:     'What is an EHCP and how do I apply for one?',
+            pip:      'How do I apply for PIP for someone with autism?',
+            local:    'What autism support services are available in Hounslow?',
+            dla:      'How do I apply for DLA for my autistic child?'
+        };
+        const q = questions[action];
+        if (q) { this.messageInput.value = q; this.sendMessage(); }
     }
+
+    // ── Send message ──────────────────────────────────────────────────
 
     async sendMessage() {
         const content = this.messageInput.value.trim();
         if (!content) return;
 
-        // Check if this is the first user message
-        const isFirstMessage = this.messages.length === 1; // Only welcome message so far
-        
-        // Hide suggestions after first message
-        if (isFirstMessage) {
-            this.suggestions.style.display = 'none';
-        }
+        const isFirst = this.messages.length === 1;
+        if (isFirst) this.suggestions.style.display = 'none';
 
-        // Add user message
-        this.addMessage({
-            role: 'user',
-            content: content
-        });
+        this.lastQuestion = content;
+        this.lastResponseId = `r-${Date.now()}`;
 
-        // For first message, show instant initialization notice
-        let initMessageElement = null;
-        if (isFirstMessage) {
-            const initMessage = {
-                role: 'assistant',
-                content: '**Please wait. Initializing server. This may take up to 2 minutes...**\n\nI am loading my knowledge base with information from NHS, National Autistic Society, Gov.UK and other trusted UK sources. Your answer will appear below once ready.'
-            };
-            this.addMessage(initMessage);
-            // Get reference to the message element we just added
-            initMessageElement = this.chatArea.lastChild;
-        }
-
-        // Clear input and show loading
+        this.addMessage({ role: 'user', content });
         this.messageInput.value = '';
         this.setLoading(true);
 
+        // Show initialising notice on first message
+        let initEl = null;
+        if (isFirst) {
+            this.addMessage({
+                role: 'assistant',
+                content: 'Loading knowledge base… this can take up to a minute on first use. Your answer will appear once ready.'
+            });
+            initEl = this.chatArea.lastElementChild;
+        }
+
         try {
-            const response = await fetch('/chat', {
+            const res = await fetch('/chat', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ 
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
                     question: content,
                     comprehension_level: this.comprehensionLevel
                 })
             });
 
-            if (!response.ok) {
-                throw new Error(`Server error: ${response.status}`);
-            }
+            if (!res.ok) throw new Error(`Server error ${res.status}`);
+            const data = await res.json();
 
-            const data = await response.json();
-            
-            // If we showed initialization message, remove it first
-            if (initMessageElement) {
-                initMessageElement.remove();
-                this.messages.pop(); // Remove from messages array
-            }
-            
-            // Add assistant response with sources
+            if (initEl) { initEl.remove(); this.messages.pop(); }
+
             this.addMessage({
                 role: 'assistant',
                 content: data.answer,
-                sources: data.sources || []
+                sources: data.sources || [],
+                responseId: this.lastResponseId
             });
 
-        } catch (error) {
-            console.error('Error sending message:', error);
-            
-            // Remove initialization message if present
-            if (initMessageElement) {
-                initMessageElement.remove();
-                this.messages.pop();
-            }
-            
+        } catch (err) {
+            console.error('Chat error:', err);
+            if (initEl) { initEl.remove(); this.messages.pop(); }
             this.addMessage({
                 role: 'assistant',
-                content: 'Sorry, I encountered an error. Please try again.',
-                sources: []
+                content: 'Sorry, I encountered an error. Please try again.\n\nIf the problem continues, you can find reliable information at:\n• NHS: nhs.uk/conditions/autism\n• National Autistic Society: autism.org.uk\n• Gov.UK SEND: gov.uk/children-with-special-educational-needs'
             });
         } finally {
             this.setLoading(false);
         }
     }
 
-    setLoading(loading) {
-        this.sendButton.disabled = loading;
-        if (loading) {
-            this.sendButton.innerHTML = `
-                <div class="loading-dots">
-                    <span></span>
-                    <span></span>
-                    <span></span>
-                </div>
-            `;
+    // ── Loading state ─────────────────────────────────────────────────
+
+    setLoading(on) {
+        this.sendButton.disabled = on;
+        if (on) {
+            this.sendButton.innerHTML = '<div class="loading-dots"><span></span><span></span><span></span></div>';
         } else {
-            this.sendButton.innerHTML = `
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M22 2L11 13"/>
-                    <path d="M22 2L15 22L11 13L2 9L22 2Z"/>
-                </svg>
-            `;
+            this.sendButton.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>';
         }
     }
 
-    addMessage(message) {
-        const messageElement = document.createElement('div');
-        messageElement.className = `message ${message.role}`;
-        
-        if (message.role === 'assistant') {
-            // Build sources section if sources exist
-            let sourcesHTML = '';
-            if (message.sources && message.sources.length > 0) {
-                const sourcesList = message.sources.map(src => `<li><a href="${src.url}" target="_blank" rel="noopener noreferrer">${src.publisher ? `<strong>${src.publisher}</strong> – ` : ''}${src.title}</a></li>`).join('');
-                
-                sourcesHTML = `
-                    <details class="sources">
-                        <summary>📚 <strong>Sources &amp; disclaimer</strong></summary>
-                        <ul class="sources-list">${sourcesList}</ul>
-                        <div class="disclaimer-expanded">
-                            This response was generated by Maya. Please verify key details with the original sources.<br>
-                            <strong>For medical questions:</strong> contact your GP or call NHS 111.<br>
-                            <strong>For legal/SEND issues:</strong> contact IPSEA, Citizens Advice, or a qualified solicitor.<br>
-                            <strong>In a crisis:</strong> call 999, contact Samaritans (116 123), or go to A&amp;E.
-                        </div>
-                    </details>
-                `;
-            }
-            
-            messageElement.innerHTML = `
-                <div class="avatar">M</div>
-                <div class="message-bubble">
-                    ${this.formatMessage(message.content)}
-                    ${sourcesHTML}
-                </div>
-            `;
+    // ── Add message ───────────────────────────────────────────────────
+
+    addMessage(msg) {
+        const el = document.createElement('div');
+        el.className = `message ${msg.role}`;
+
+        if (msg.role === 'assistant') {
+            const sourcesHTML = this.buildSourcesHTML(msg.sources);
+            el.innerHTML = `<div class="avatar" aria-hidden="true">M</div><div class="message-bubble">${this.renderAnswer(msg.content, msg)}${sourcesHTML}</div>`;
         } else {
-            messageElement.innerHTML = `
-                <div class="message-bubble">${this.formatMessage(message.content)}</div>
-            `;
+            el.innerHTML = `<div class="message-bubble">${this.escapeHtml(msg.content)}</div>`;
         }
-        
-        this.chatArea.appendChild(messageElement);
+
+        this.chatArea.appendChild(el);
         this.scrollToBottom();
-        this.messages.push(message);
+        this.messages.push(msg);
     }
 
-    formatMessage(content) {
-        // Simple formatting - preserve line breaks
-        return content.replace(/\n/g, '<br>');
+    // ── Answer renderer ───────────────────────────────────────────────
+
+    renderAnswer(raw, msg) {
+        if (!raw) return '';
+
+        // Detect structured sections from LLM output
+        const sections = this.parseStructuredSections(raw);
+        if (sections.length > 0) {
+            return this.renderStructuredSections(sections, msg);
+        }
+
+        // Fallback: plain markdown-style rendering
+        return `<div class="section-body">${this.renderMarkdown(raw)}</div>`;
     }
+
+    parseStructuredSections(text) {
+        // Match ## Section Heading patterns
+        const headerRe = /^##\s+(.+)$/gm;
+        const matches = [];
+        let m;
+        while ((m = headerRe.exec(text)) !== null) {
+            matches.push({ title: m[1].trim(), index: m.index, end: m.index + m[0].length });
+        }
+        if (matches.length === 0) return [];
+
+        const sections = [];
+        for (let i = 0; i < matches.length; i++) {
+            const start = matches[i].end;
+            const end   = i + 1 < matches.length ? matches[i + 1].index : text.length;
+            const body  = text.slice(start, end).trim();
+            sections.push({ title: matches[i].title, body });
+        }
+        return sections;
+    }
+
+    renderStructuredSections(sections, msg) {
+        const sectionClass = {
+            'Short Answer': 'section-short-answer',
+            'Steps':        'section-steps',
+            'Who to Contact': 'section-contact',
+            'Useful Links': 'section-links',
+            'Important Note': 'section-note'
+        };
+
+        let html = '';
+        let hasSimpler = false;
+
+        for (const s of sections) {
+            // Skip the "simpler language" cue line — we render it as a button
+            if (/would you like this in simpler language/i.test(s.title) ||
+                /would you like this in simpler language/i.test(s.body)) {
+                hasSimpler = true;
+                continue;
+            }
+
+            const cssClass = sectionClass[s.title] || 'section-short-answer';
+            const bodyHtml = this.renderMarkdown(s.body);
+
+            html += `<div class="answer-section ${cssClass}"><span class="section-heading">${this.escapeHtml(s.title)}</span><div class="section-body">${bodyHtml}</div></div>`;
+        }
+
+        // Also check the raw text for the "simpler" cue line (after the last section)
+        if (!hasSimpler && /would you like this in simpler language/i.test(msg.content)) {
+            hasSimpler = true;
+        }
+
+        if (hasSimpler && this.comprehensionLevel !== 'clear') {
+            html += `<button class="simpler-btn" type="button" data-action="simpler">Simpler language ↩</button>`;
+        }
+
+        return html;
+    }
+
+    // ── Markdown-style renderer ───────────────────────────────────────
+
+    renderMarkdown(text) {
+        if (!text) return '';
+
+        // Escape HTML first
+        let out = this.escapeHtml(text);
+
+        // Bold: **text**
+        out = out.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+        // Italic: *text* or _text_ (single)
+        out = out.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
+
+        // Links: [text](url)
+        out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+        // Numbered lists
+        const lines = out.split('\n');
+        const result = [];
+        let inOl = false;
+        let inUl = false;
+
+        for (const line of lines) {
+            const olMatch = line.match(/^(\d+)\.\s+(.+)$/);
+            const ulMatch = line.match(/^[-•]\s+(.+)$/);
+
+            if (olMatch) {
+                if (!inOl) { if (inUl) { result.push('</ul>'); inUl = false; } result.push('<ol>'); inOl = true; }
+                result.push(`<li>${olMatch[2]}</li>`);
+            } else if (ulMatch) {
+                if (!inUl) { if (inOl) { result.push('</ol>'); inOl = false; } result.push('<ul>'); inUl = true; }
+                result.push(`<li>${ulMatch[1]}</li>`);
+            } else {
+                if (inOl) { result.push('</ol>'); inOl = false; }
+                if (inUl) { result.push('</ul>'); inUl = false; }
+                result.push(line === '' ? '' : line);
+            }
+        }
+
+        if (inOl) result.push('</ol>');
+        if (inUl) result.push('</ul>');
+
+        // Join lines; collapse 3+ blank lines to 2
+        out = result.join('\n').replace(/\n{3,}/g, '\n\n');
+
+        // Convert newlines to <br> outside of list items
+        out = out.replace(/\n/g, '<br>');
+
+        // Fix <br> inside / between list elements
+        out = out.replace(/<br>\s*(<\/?[uo]l>|<li>)/g, '$1');
+        out = out.replace(/<\/li><br>/g, '</li>');
+
+        return out;
+    }
+
+    escapeHtml(str) {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    // ── Sources section ───────────────────────────────────────────────
+
+    buildSourcesHTML(sources) {
+        if (!sources || sources.length === 0) return '';
+        const items = sources.map(s => `<li><a href="${this.escapeHtml(s.url)}" target="_blank" rel="noopener noreferrer">${s.publisher ? `<strong>${this.escapeHtml(s.publisher)}</strong> – ` : ''}${this.escapeHtml(s.title)}</a></li>`).join('');
+        return `<details class="sources"><summary>Sources &amp; disclaimer</summary><ul class="sources-list">${items}</ul><div class="disclaimer-expanded">This response was generated by Maya using the sources listed above. Always verify important information with the original source before acting on it.<br><strong>Medical questions:</strong> contact your GP or call NHS 111.<br><strong>SEND/legal issues:</strong> contact IPSEA or Citizens Advice.<br><strong>In a crisis:</strong> call 999 or Samaritans 116 123.</div></details>`;
+    }
+
+    // ── Simpler language button (event delegation) ────────────────────
+
+    handleSimplerBtn(question) {
+        this.messageInput.value = question;
+        const prev = this.comprehensionLevel;
+        this.comprehensionLevel = 'clear';
+        this.comprehensionSelect.value = 'clear';
+        localStorage.setItem('maya-comprehension', 'clear');
+        this.sendMessage().finally(() => {
+            // Keep 'clear' selected after request
+        });
+        void prev;
+    }
+
+    // ── Feedback ──────────────────────────────────────────────────────
+
+    openFeedback() {
+        this.feedbackForm.hidden       = false;
+        this.feedbackThanks.hidden     = true;
+        document.getElementById('issueType').value     = '';
+        document.getElementById('feedbackComment').value = '';
+        this.feedbackOverlay.hidden = false;
+    }
+
+    closeFeedbackModal() {
+        this.feedbackOverlay.hidden = true;
+    }
+
+    async submitFeedback() {
+        const issueType = document.getElementById('issueType').value;
+        const comment   = document.getElementById('feedbackComment').value;
+        if (!issueType) return;
+
+        try {
+            await fetch('/feedback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    question:    this.lastQuestion,
+                    response_id: this.lastResponseId,
+                    issue_type:  issueType,
+                    comment:     comment
+                })
+            });
+        } catch (e) {
+            console.warn('Feedback submit error:', e);
+        }
+
+        this.feedbackForm.hidden   = true;
+        this.feedbackThanks.hidden = false;
+    }
+
+    // ── Scroll ────────────────────────────────────────────────────────
 
     scrollToBottom() {
         this.chatArea.scrollTop = this.chatArea.scrollHeight;
     }
 }
 
-// Initialize the app when DOM is loaded
+// ── Boot ──────────────────────────────────────────────────────────────
+
 document.addEventListener('DOMContentLoaded', () => {
-    new MayaApp();
+    const app = new MayaApp();
+
+    // Global click handler for "simpler language" buttons (event delegation)
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('.simpler-btn[data-action="simpler"]');
+        if (btn) {
+            e.preventDefault();
+            app.handleSimplerBtn(app.lastQuestion);
+        }
+    });
 });

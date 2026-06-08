@@ -1,45 +1,94 @@
 """
-Groq LLM Client for UK Autism Assistant
-Handles natural language generation with safety guardrails using open-source models
+Configurable LLM Client for UK Autism Assistant
+Uses OpenAI-compatible API - works with Groq, Ollama, OpenAI, or any compatible endpoint
 """
 
 import os
 import json
 import logging
 from typing import List, Dict, Any, Optional
-from groq import Groq
+from openai import OpenAI
 
 from .structured_formatter import StructuredDataFormatter
 
 logger = logging.getLogger(__name__)
 
+def _build_openai_client() -> OpenAI:
+    """
+    Build an OpenAI-compatible client from environment variables.
+
+    Priority order:
+      1. LLM_BASE_URL + LLM_API_KEY  →  custom endpoint (Ollama, local, etc.)
+      2. LLM_API_KEY alone            →  standard OpenAI
+      3. GROQ_API_KEY present         →  Groq endpoint (default / legacy)
+      4. LLM_BASE_URL alone           →  local endpoint with no auth (Ollama default)
+    """
+    llm_base_url = os.environ.get("LLM_BASE_URL", "").strip()
+    llm_api_key  = os.environ.get("LLM_API_KEY", "").strip()
+    groq_api_key = os.environ.get("GROQ_API_KEY", "").strip()
+
+    if llm_base_url and llm_api_key:
+        logger.info(f"LLM: custom endpoint {llm_base_url}")
+        return OpenAI(base_url=llm_base_url, api_key=llm_api_key)
+
+    if llm_api_key:
+        logger.info("LLM: standard OpenAI endpoint")
+        return OpenAI(api_key=llm_api_key)
+
+    if groq_api_key:
+        logger.info("LLM: Groq endpoint (via GROQ_API_KEY)")
+        return OpenAI(
+            base_url="https://api.groq.com/openai/v1",
+            api_key=groq_api_key
+        )
+
+    if llm_base_url:
+        logger.info(f"LLM: local endpoint {llm_base_url} (no auth)")
+        return OpenAI(base_url=llm_base_url, api_key="ollama")
+
+    raise ValueError(
+        "No LLM credentials found. Set LLM_API_KEY, GROQ_API_KEY, or LLM_BASE_URL."
+    )
+
+
+def _default_model() -> str:
+    """Return model name from env, falling back to a sensible default."""
+    explicit = os.environ.get("LLM_MODEL", "").strip()
+    if explicit:
+        return explicit
+    if os.environ.get("GROQ_API_KEY") and not os.environ.get("LLM_BASE_URL"):
+        return "llama-3.3-70b-versatile"
+    return "qwen2.5:72b"
+
+
 class UKAutismLLMClient:
     def __init__(self):
         self.client = None
-        # Use configurable Groq model with stable default
-        self.model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-        self.formatter = StructuredDataFormatter()
+        self.model       = _default_model()
+        self.temperature = float(os.environ.get("TEMPERATURE", "0"))
+        self.top_p       = float(os.environ.get("TOP_P", "1.0"))
+        self.formatter   = StructuredDataFormatter()
         self._initialize_client()
-    
+
     def _initialize_client(self):
-        """Initialize Groq client"""
-        api_key = os.environ.get("GROQ_API_KEY")
-        if not api_key:
-            raise ValueError("GROQ_API_KEY environment variable not found")
-        
-        self.client = Groq(api_key=api_key)
-        logger.info("Groq client initialized successfully")
-    
-    def synthesize_response(self, user_question: str, retrieved_chunks: List[Dict[str, Any]], 
-                          context: Optional[str] = None, comprehension_level: str = "standard") -> Dict[str, Any]:
+        self.client = _build_openai_client()
+        logger.info(f"LLM client ready  model={self.model}  temp={self.temperature}  top_p={self.top_p}")
+
+    # ------------------------------------------------------------------
+    # Main response generation
+    # ------------------------------------------------------------------
+
+    def synthesize_response(
+        self,
+        user_question: str,
+        retrieved_chunks: List[Dict[str, Any]],
+        context: Optional[str] = None,
+        comprehension_level: str = "standard"
+    ) -> Dict[str, Any]:
         """
-        Generate response using retrieved information with UK autism focus
-        
-        Args:
-            user_question: The user's question
-            retrieved_chunks: Retrieved context chunks from the vector store
-            context: Optional additional context
-            comprehension_level: Reading complexity - "clear" (simple), "standard", or "complex" (detailed)
+        Generate a structured response using retrieved context.
+
+        Returns dict with keys: response, sources_used, chunks_used, model_used, success
         """
         if not self.client:
             return {
@@ -50,130 +99,91 @@ class UKAutismLLMClient:
                 "success": False,
                 "error": "Client not initialized"
             }
-        
+
         try:
-            # Build context from retrieved chunks using structured formatter
             sources_used = set()
-            
-            # Format context with rich structured data presentation
             context_text = self.formatter.format_results_for_synthesis(retrieved_chunks)
-            
-            # Collect sources
+
             for chunk in retrieved_chunks:
-                metadata = chunk['metadata']
-                sources_used.add((metadata['source_name'], metadata['url'], metadata['title']))
-            
-            # Define language complexity guidelines based on comprehension level
+                meta = chunk["metadata"]
+                sources_used.add((meta["source_name"], meta["url"], meta["title"]))
+
             language_guidelines = {
-                "clear": """
-🚨 CRITICAL: CLEAR LEVEL = VERY SIMPLE LANGUAGE FOR CHILDREN 🚨
+                "clear": """LANGUAGE LEVEL — CLEAR (Simple):
+Write for someone who finds reading difficult. Use very short sentences (under 10 words each).
+Use only simple everyday words. No acronyms — write "autism" not "ASD", "doctor" not "GP", "school plan" not "EHCP".
+Use bullet points. Keep the whole answer brief. One idea per sentence.""",
 
-YOU MUST write for an 8-10 year old child. This is EXTREMELY important for accessibility.
+                "standard": """LANGUAGE LEVEL — STANDARD:
+Use clear, plain English suitable for a general UK audience.
+Explain jargon the first time you use it. Keep sentences reasonably short.
+Aim for a reading age of about 14–16.""",
 
-ABSOLUTE RULES - FOLLOW STRICTLY:
-1. TINY sentences: 4-7 words MAXIMUM per sentence
-2. SIMPLE words ONLY - pretend fancy words don't exist
-3. ONE tiny idea per sentence
-4. NO compound sentences with "and", "but", "because" 
-5. Start new sentences instead of using commas
-6. NO acronyms (write "Autism" not "ASD", never use "SEND", "NHS", "GP")
-7. NO formal words like "provided", "individuals", "obtain", "assistance"
-
-WORD REPLACEMENT RULES (MANDATORY):
-✓ "help" ✗ "support", "assistance", "provision", "aid", "services"
-✓ "doctor" ✗ "physician", "GP", "practitioner", "clinician"
-✓ "get" ✗ "obtain", "receive", "acquire"
-✓ "talk" ✗ "communicate", "interact", "converse"
-✓ "play" ✗ "engage", "participate"
-✓ "think" ✗ "perceive", "process", "cognitively"
-✓ "feel" ✗ "experience", "sense"
-✓ "different" ✗ "diverse", "varied", "distinct", "spectrum"
-✓ "money help" ✗ "benefits", "financial assistance", "allowance"
-✓ "school help" ✗ "educational support", "SEND"
-✓ "affects" ✗ "impacts", "influences"
-
-STRUCTURE:
-- Write in tiny bite-sized pieces
-- Use LOTS of bullet points  
-- Each bullet = one simple idea
-- Keep answers SHORT (3-5 simple sentences max)
-
-REMEMBER: If an adult with learning disabilities can't understand it easily, you failed.""",
-                
-                "standard": """
-LANGUAGE LEVEL - STANDARD:
-- Use clear, accessible language suitable for general audiences
-- Keep sentences reasonably short but can include some complexity
-- Explain technical terms when first introduced
-- Balance detail with readability
-- Reading level target: GCSE/A-Level (ages 14-18)""",
-                
-                "complex": """
-LANGUAGE LEVEL - COMPLEX (Detailed):
-- Use precise, detailed language with technical accuracy
-- Include comprehensive explanations and context
-- Use proper legal, medical, and bureaucratic terminology
-- Provide in-depth information with nuanced explanations
-- Reading level target: Adult / Professional"""
+                "complex": """LANGUAGE LEVEL — COMPLEX (Detailed):
+Use precise language including legal, medical, and bureaucratic terminology where appropriate.
+Provide comprehensive detail with nuanced explanations for a professional or highly-informed audience."""
             }
-            
-            # Build system prompt for UK autism assistant with comprehension level
-            system_prompt = """You are Maya, a UK autism facts assistant. You provide helpful, accurate information about autism in the UK context.
 
-IMPORTANT GUIDELINES:
-1. Focus specifically on UK information, services, and legislation
-2. Use the provided context information to answer questions
-3. Always cite your sources clearly
-4. If asked about Hounslow specifically, prioritize local information
-5. Be supportive and use person-first or identity-first language as appropriate
-6. Never provide medical diagnoses, treatment plans, or medication advice
-7. Never provide specific legal advice for individual cases
-8. If someone appears in crisis, direct them to appropriate services
+            system_prompt = """You are Maya, a UK autism facts assistant for Autism Hounslow.
+You provide helpful, accurate information about autism in the UK — especially Hounslow and the London Borough of Hounslow.
+
+RULES:
+1. Answer only from the provided context. Do not invent facts.
+2. Focus on UK-specific information, services, and legislation.
+3. If the context does not contain enough information, say so clearly.
+4. Never give medical diagnoses, treatment plans, or medication advice.
+5. Never give specific legal advice for individual cases.
+6. If someone appears to be in crisis, direct them to 999 / Samaritans 116 123.
+7. For Hounslow-specific questions, prioritise local information.
 
 {language_instruction}
 
-WHEN CONTEXT INCLUDES STRUCTURED GUIDANCE (steps, deadlines, contacts):
-- Present the step-by-step instructions clearly
-- Emphasize important deadlines prominently
-- Include contact details (phone, email, address, opening hours)
-- List evidence requirements
-- Explain legal basis when relevant
-- Guide the user through the process systematically
+ANSWER FORMAT — use these exact section headings in your response:
 
-RESPONSE FORMAT:
-- Provide a clear, helpful answer based on the context
-- Include inline citations like [NHS] or [National Autistic Society]
-- For bureaucratic processes, structure your answer with clear steps
-- End with a "Sources:" section listing the references used
-- Keep language accessible and supportive
+## Short Answer
+(2–3 sentences answering the core question directly)
+
+## Steps
+(Numbered list of practical steps, if applicable. Omit section if no process is involved.)
+
+## Who to Contact
+(Relevant UK services, phone numbers, addresses. Omit if not applicable.)
+
+## Useful Links
+(List source names used. Use the format: Source Name — brief description)
+
+## Important Note
+(One short sentence reminding the user this is general guidance, not personal advice.)
+
+---
+Would you like this in simpler language? (tap the button below)
 
 CONTEXT INFORMATION:
-{context}
-"""
+{context}"""
 
-            user_prompt = f"""Question: {user_question}
+            user_prompt = f"Question: {user_question}\n\nPlease answer using the context above."
 
-Please provide a helpful response based on the context information above. Remember to focus on UK-specific information and cite your sources."""
-
-            # Get language instruction based on comprehension level
             language_instruction = language_guidelines.get(comprehension_level, language_guidelines["standard"])
-            
-            # Generate response
+
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": system_prompt.format(
-                        language_instruction=language_instruction,
-                        context=context_text
-                    )},
+                    {
+                        "role": "system",
+                        "content": system_prompt.format(
+                            language_instruction=language_instruction,
+                            context=context_text
+                        )
+                    },
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.3,  # Lower temperature for more factual responses
-                max_tokens=1000
+                temperature=self.temperature,
+                top_p=self.top_p,
+                max_tokens=1200
             )
-            
-            generated_text = response.choices[0].message.content
-            
+
+            generated_text = response.choices[0].message.content or ""
+
             return {
                 "response": generated_text,
                 "sources_used": list(sources_used),
@@ -181,7 +191,7 @@ Please provide a helpful response based on the context information above. Rememb
                 "model_used": self.model,
                 "success": True
             }
-            
+
         except Exception as e:
             logger.error(f"Error generating response: {str(e)}")
             return {
@@ -192,91 +202,68 @@ Please provide a helpful response based on the context information above. Rememb
                 "success": False,
                 "error": str(e)
             }
-    
+
+    # ------------------------------------------------------------------
+    # Query enhancement
+    # ------------------------------------------------------------------
+
     def enhance_query(self, user_question: str) -> str:
-        """
-        Enhance user query for better retrieval
-        """
         if not self.client:
             return user_question
-            
         try:
-            enhancement_prompt = """You are helping to improve search queries for a UK autism information system.
-
-Given a user's question, rewrite it to be more specific and likely to find relevant information about autism in the UK context.
-
-Focus on:
-- UK-specific terms and services
-- Clear autism-related concepts
-- Government services, benefits, education terms
-- NHS and local authority services
-
-Original question: {question}
-
-Return only the enhanced query, nothing else."""
-
+            prompt = (
+                "Rewrite the following question as a concise search query for a UK autism information system. "
+                "Include UK-specific terms, service names, or benefit names where relevant. "
+                "Return only the rewritten query — nothing else.\n\n"
+                f"Original question: {user_question}"
+            )
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "user", "content": enhancement_prompt.format(question=user_question)}
-                ],
-                temperature=0.1,
-                max_tokens=100
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=80
             )
-            
-            enhanced_query = response.choices[0].message.content
-            if enhanced_query:
-                enhanced_query = enhanced_query.strip()
-                logger.info(f"Enhanced query: '{user_question}' -> '{enhanced_query}'")
-            return enhanced_query
-            
+            enhanced = (response.choices[0].message.content or "").strip()
+            if enhanced:
+                logger.info(f"Query enhanced: '{user_question}' → '{enhanced}'")
+                return enhanced
+            return user_question
         except Exception as e:
-            logger.error(f"Error enhancing query: {str(e)}")
-            return user_question  # Return original on error
-    
+            logger.error(f"Query enhancement error: {str(e)}")
+            return user_question
+
+    # ------------------------------------------------------------------
+    # Content appropriateness check
+    # ------------------------------------------------------------------
+
     def check_content_appropriateness(self, user_question: str) -> Dict[str, Any]:
-        """
-        Check if content is appropriate for the autism assistant
-        """
         if not self.client:
             return {"appropriate": True, "reason": "Moderation unavailable", "category": "unknown"}
-            
         try:
-            moderation_prompt = """You are checking if a question is appropriate for a UK autism facts assistant.
-
-The assistant should answer questions about:
-- Autism information and support
-- UK services and benefits
-- Education and EHCP processes
-- General autism characteristics and support strategies
-
-The assistant should NOT answer:
-- Questions completely unrelated to autism
-- Requests for entertainment (jokes, games, stories) unless autism-related
-- General medical questions not related to autism
-- Technical questions about other topics
-
-Question: {question}
-
-Respond with JSON in this format:
-{{"appropriate": true/false, "reason": "explanation", "category": "autism-related/off-topic/other"}}"""
-
+            prompt = (
+                "You are a content filter for a UK autism facts assistant. "
+                "Decide if the following question is appropriate for this assistant to answer.\n\n"
+                "Appropriate topics: autism information, UK support services, benefits (DLA, PIP, UC), "
+                "education (EHCP, SEND), NHS services, local authority services, Hounslow services, "
+                "carer support, transition to adulthood, social care.\n\n"
+                "Inappropriate: questions completely unrelated to autism or disability support; "
+                "requests for entertainment, gambling, violence, or explicit content.\n\n"
+                f"Question: {user_question}\n\n"
+                'Respond with JSON: {"appropriate": true/false, "reason": "brief explanation", "category": "autism-related|off-topic|other"}'
+            )
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "user", "content": moderation_prompt.format(question=user_question)}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.1
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=120
             )
-            
-            content = response.choices[0].message.content
+            content = (response.choices[0].message.content or "").strip()
             if content:
-                result = json.loads(content)
-                return result
-            else:
-                return {"appropriate": True, "reason": "No content returned", "category": "unknown"}
-            
+                try:
+                    return json.loads(content)
+                except json.JSONDecodeError:
+                    pass
+            return {"appropriate": True, "reason": "Parse error", "category": "unknown"}
         except Exception as e:
-            logger.error(f"Error checking content appropriateness: {str(e)}")
-            return {"appropriate": True, "reason": "Moderation check failed", "category": "unknown"}
+            logger.error(f"Appropriateness check error: {str(e)}")
+            return {"appropriate": True, "reason": "Check failed", "category": "unknown"}

@@ -38,9 +38,10 @@ class UKAutismVectorStore:
             )
         )
         
-        # Initialize sentence transformer for embeddings
-        # Using a model optimized for semantic search
-        self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
+        # Initialize sentence transformer - configurable via EMBEDDING_MODEL env var
+        embedding_model_name = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        logger.info(f"Loading embedding model: {embedding_model_name}")
+        self.embedder = SentenceTransformer(embedding_model_name)
         
         # Create ChromaDB embedding function class
         class SentenceTransformerEmbeddingFunction:

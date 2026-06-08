@@ -1,0 +1,2 @@
+- [LLM provider abstraction](llm-provider.md) — LLM client uses openai package against any compatible endpoint; GROQ_API_KEY triggers Groq base URL automatically
+- [Structured answer format](structured-answer-format.md) — system prompt enforces ## Short Answer / Steps / Who to Contact / Useful Links / Important Note; JS parses these sections for colour-coded rendering

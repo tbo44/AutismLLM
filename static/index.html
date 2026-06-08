@@ -6,17 +6,41 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>Maya - UK Autism Facts Assistant</title>
+    <title>Maya – Autism Hounslow Information Assistant</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/styles.css?v=11">
+    <link rel="stylesheet" href="/static/styles.css?v=12">
 </head>
 <body>
+    <!-- Top disclaimer banner -->
+    <div class="top-banner" role="note">
+        <strong>Maya gives general guidance only</strong> — not medical, legal, or financial advice.
+        Emergencies: call <strong>999</strong>. Mental health crisis: Samaritans <strong>116 123</strong>.
+    </div>
+
     <div class="app-container" data-layout="focus">
-        <!-- Simple Header -->
+
+        <!-- Header -->
         <div class="header">
-            <div class="app-title">MAYA</div>
+            <div class="header-top">
+                <div class="app-brand">
+                    <span class="app-title">MAYA</span>
+                    <span class="app-subtitle">Autism Hounslow</span>
+                </div>
+                <div class="header-actions">
+                    <button id="infoToggle" class="icon-btn" aria-expanded="false" aria-controls="infoPanel" title="What Maya can and cannot do">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="8" stroke-linecap="round" stroke-width="3"/><line x1="12" y1="12" x2="12" y2="16"/></svg>
+                        <span class="btn-label">About</span>
+                    </button>
+                    <button id="layoutToggle" class="icon-btn" aria-pressed="false" title="Expand or narrow the chat width">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+                        <span class="btn-label layout-label">Expand</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Controls row -->
             <div class="header-controls">
                 <div class="comprehension-selector">
                     <label for="comprehensionLevel" class="selector-label">Reading level:</label>
@@ -26,52 +50,132 @@
                         <option value="complex">Complex (detailed)</option>
                     </select>
                 </div>
-                <button id="layoutToggle" class="layout-toggle" aria-pressed="false" title="Expand or narrow the chat width">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 3H3v18h18V3z"/>
-                        <path d="M9 3v18"/>
-                        <path d="M15 3v18"/>
-                    </svg>
-                    <span>Expand width</span>
-                </button>
-                <button id="lowStimToggle" class="mode-toggle active">
-                    LOW-STIMULATION MODE
+                <button id="lowStimToggle" class="mode-toggle active" title="Toggle low-stimulation display">
+                    Low-stimulation mode
                 </button>
             </div>
         </div>
-        
+
+        <!-- What Maya can / cannot do panel -->
+        <div class="info-panel" id="infoPanel" hidden>
+            <div class="info-panel-inner">
+                <h2 class="info-title">What Maya can and cannot do</h2>
+                <div class="info-columns">
+                    <div class="info-col info-can">
+                        <h3>Maya can help with</h3>
+                        <ul>
+                            <li>General information about autism in the UK</li>
+                            <li>Step-by-step guidance on EHCP, PIP, DLA, and other benefits</li>
+                            <li>Information about Hounslow and national support services</li>
+                            <li>Signposting to NHS, NAS, IPSEA, Gov.UK, and local services</li>
+                            <li>Transition to adulthood and adult social care information</li>
+                            <li>Carer support and assessments</li>
+                        </ul>
+                    </div>
+                    <div class="info-col info-cannot">
+                        <h3>Maya cannot provide</h3>
+                        <ul>
+                            <li>Medical diagnoses or treatment advice — speak to your GP or NHS 111</li>
+                            <li>Legal advice for individual cases — contact IPSEA or Citizens Advice</li>
+                            <li>Financial advice — contact a qualified adviser</li>
+                            <li>Safeguarding or social work decisions</li>
+                            <li>Emergency support — call 999 or Samaritans 116 123</li>
+                        </ul>
+                    </div>
+                </div>
+                <p class="info-note">
+                    Maya uses information from NHS, Gov.UK, National Autistic Society, IPSEA, and Hounslow Council.
+                    Always verify important information with the original source before acting on it.
+                </p>
+            </div>
+        </div>
+
         <!-- Chat Messages -->
-        <div class="chat-area" id="chatArea">
-            <!-- Messages will be inserted here -->
-        </div>
-        
+        <div class="chat-area" id="chatArea" role="log" aria-live="polite" aria-label="Chat messages"></div>
+
         <!-- Suggested Actions -->
-        <div class="suggestions" id="suggestions">
-            <button class="suggestion-btn" data-action="autism-info">What is autism?</button>
-            <button class="suggestion-btn" data-action="support-services">What support is available?</button>
-            <button class="suggestion-btn" data-action="benefits">Help with benefits</button>
+        <div class="suggestions" id="suggestions" aria-label="Suggested questions">
+            <button class="suggestion-btn" data-action="ehcp">What is an EHCP?</button>
+            <button class="suggestion-btn" data-action="pip">How do I apply for PIP?</button>
+            <button class="suggestion-btn" data-action="local">Hounslow support</button>
+            <button class="suggestion-btn" data-action="dla">DLA for my child</button>
         </div>
-        
+
         <!-- Message Input -->
         <div class="input-area">
             <div class="input-container">
-                <input type="text" id="messageInput" placeholder="Message" autocomplete="off">
+                <input type="text" id="messageInput" placeholder="Ask Maya a question…" autocomplete="off" aria-label="Type your question">
                 <button id="sendButton" type="button" aria-label="Send message">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M22 2L11 13"/>
-                        <path d="M22 2L15 22L11 13L2 9L22 2Z"/>
-                    </svg>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
                 </button>
             </div>
+            <div class="input-footer">
+                <button id="reportBtn" class="report-btn" type="button">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                    Report an issue
+                </button>
+                <button id="privacyBtn" class="privacy-link" type="button">Privacy notice</button>
+            </div>
         </div>
-        
-        <!-- Persistent Footer Disclaimer -->
-        <div class="footer-disclaimer" role="note" aria-live="polite">
-            <span>Maya provides general guidance only (not medical or legal advice).</span>
-            <a href="#about" class="footer-link">Learn more</a>
+
+        <!-- Footer Disclaimer -->
+        <div class="footer-disclaimer" role="contentinfo">
+            Maya gives <strong>general guidance only</strong> — not medical, legal, or financial advice. Verify key details with the original sources.
         </div>
     </div>
-    
-    <script src="/static/script.js?v=11"></script>
+
+    <!-- Feedback / Report modal -->
+    <div class="modal-overlay" id="feedbackOverlay" role="dialog" aria-modal="true" aria-labelledby="feedbackTitle" hidden>
+        <div class="modal">
+            <h2 class="modal-title" id="feedbackTitle">Report an issue</h2>
+            <p class="modal-desc">Help us improve Maya. No personal details are stored.</p>
+            <form id="feedbackForm">
+                <label class="form-label" for="issueType">Type of issue</label>
+                <select class="form-select" id="issueType" required>
+                    <option value="">— select —</option>
+                    <option value="wrong_info">Information seems wrong or out of date</option>
+                    <option value="missing_info">Important information is missing</option>
+                    <option value="unclear">Answer is hard to understand</option>
+                    <option value="off_topic">Answer is not relevant to my question</option>
+                    <option value="other">Other</option>
+                </select>
+                <label class="form-label" for="feedbackComment">Comments (optional)</label>
+                <textarea class="form-textarea" id="feedbackComment" rows="3" placeholder="Any extra details (do not include personal information)"></textarea>
+                <div class="modal-buttons">
+                    <button type="submit" class="btn-primary">Submit</button>
+                    <button type="button" class="btn-secondary" id="closeFeedback">Cancel</button>
+                </div>
+            </form>
+            <div id="feedbackThanks" class="feedback-thanks" hidden>
+                <p>Thank you — your feedback has been recorded.</p>
+                <button type="button" class="btn-secondary" id="closeFeedbackDone">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Privacy notice modal -->
+    <div class="modal-overlay" id="privacyOverlay" role="dialog" aria-modal="true" aria-labelledby="privacyTitle" hidden>
+        <div class="modal">
+            <h2 class="modal-title" id="privacyTitle">Privacy notice</h2>
+            <div class="privacy-body">
+                <h3>What information Maya collects</h3>
+                <p>Maya records the <strong>length</strong> of questions asked and the identifiers of knowledge sources retrieved. It does <strong>not</strong> store the text of your question, your name, IP address, or any other personal information.</p>
+                <p>Feedback submissions record only the issue type and whether a comment was provided — not the comment text itself.</p>
+                <h3>What Maya does not do</h3>
+                <ul>
+                    <li>Maya does not create user accounts or session histories.</li>
+                    <li>Maya does not share data with third parties.</li>
+                    <li>Maya does not use cookies or tracking technologies.</li>
+                </ul>
+                <h3>Operated by</h3>
+                <p>This assistant is provided by <strong>Autism Hounslow</strong> as a free community resource. For questions about this service, visit <a href="https://www.autismhounslow.org.uk" target="_blank" rel="noopener noreferrer">autismhounslow.org.uk</a>.</p>
+            </div>
+            <div class="modal-buttons">
+                <button type="button" class="btn-secondary" id="closePrivacy">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/script.js?v=12"></script>
 </body>
 </html>
