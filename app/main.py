@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -9,6 +9,7 @@ from datetime import datetime
 import logging
 import json
 import os
+import asyncio
 from pathlib import Path
 
 # Configure logging
@@ -279,3 +280,221 @@ async def feedback(payload: FeedbackPayload):
     _log_feedback(payload)
     logger.info(f"Feedback received: type={payload.issue_type!r}")
     return {"status": "received", "message": "Thank you for your feedback."}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Admin: /admin/crawl — web crawl trusted UK sources + re-index
+#        /admin/reindex — re-index from seed JSONL files only (faster)
+# Both protected by ADMIN_CRAWL_TOKEN env var (Bearer token).
+# ──────────────────────────────────────────────────────────────────────
+
+_crawl_task: asyncio.Task | None = None
+_crawl_status: dict = {"running": False, "last_run": None, "last_result": None}
+
+
+def _verify_admin_token(authorization: str | None):
+    """Raise 401/403 if the Authorization header doesn't match ADMIN_CRAWL_TOKEN."""
+    expected = os.environ.get("ADMIN_CRAWL_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="Admin endpoint not configured (ADMIN_CRAWL_TOKEN not set).")
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header required.")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or token.strip() != expected:
+        raise HTTPException(status_code=403, detail="Invalid admin token.")
+
+
+async def _run_crawl_and_reindex_background():
+    """
+    Full pipeline: crawl trusted UK autism sources → add to ChromaDB alongside
+    seed JSONL data → hot-reload RAG system.
+    """
+    global _rag_system, _startup_complete, _crawl_status
+    _crawl_status["running"] = True
+    _crawl_status["last_result"] = None
+    start = datetime.utcnow()
+    logger.info("🌐 Admin crawl+reindex starting — fetching live UK sources...")
+
+    docs_crawled = 0
+    chunks_from_crawl = 0
+    reindex_success = False
+
+    try:
+        # Step 1: crawl live web sources
+        from rag.crawler import crawl_and_chunk_all
+        from rag.vector_store import UKAutismVectorStore
+        from rag.structured_importer import StructuredKnowledgeImporter
+
+        try:
+            crawled_chunks = await crawl_and_chunk_all()
+            docs_crawled = len(crawled_chunks)
+            chunks_from_crawl = len(crawled_chunks)
+            logger.info(f"✅ Crawled {docs_crawled} chunks from live sources")
+        except Exception as crawl_err:
+            logger.warning(f"⚠️ Web crawl failed or partially failed: {crawl_err} — continuing with seed data only")
+            crawled_chunks = []
+
+        # Step 2: load seed JSONL data
+        def _rebuild_index():
+            vs = UKAutismVectorStore()
+            vs.initialize()
+            vs.reset_collection()
+
+            importer = StructuredKnowledgeImporter()
+            seed_chunks = importer.import_file("data/maya_hounslow_knowledge_seed.jsonl")
+            all_chunks = seed_chunks + crawled_chunks
+            vs.add_documents(all_chunks)
+            stats = vs.get_collection_stats()
+            return stats.get("total_chunks", len(all_chunks)), len(seed_chunks)
+
+        total_chunks, seed_count = await asyncio.to_thread(_rebuild_index)
+        reindex_success = True
+        elapsed = (datetime.utcnow() - start).total_seconds()
+        logger.info(f"✅ Crawl+reindex complete in {elapsed:.1f}s — {total_chunks} chunks total — reloading RAG...")
+
+        # Step 3: hot-reload the running RAG system
+        _rag_system = await asyncio.to_thread(_initialize_rag_sync)
+        _startup_complete = True
+
+        _crawl_status["last_result"] = {
+            "success": True,
+            "elapsed_seconds": round(elapsed, 1),
+            "total_chunks": total_chunks,
+            "seed_chunks": seed_count,
+            "crawled_chunks": chunks_from_crawl,
+        }
+        logger.info("✅ RAG system reloaded after crawl+reindex.")
+
+    except Exception as e:
+        elapsed = (datetime.utcnow() - start).total_seconds()
+        logger.error(f"❌ Crawl+reindex background task error: {e}", exc_info=True)
+        _crawl_status["last_result"] = {
+            "success": False,
+            "elapsed_seconds": round(elapsed, 1),
+            "error": str(e),
+        }
+    finally:
+        _crawl_status["running"] = False
+        _crawl_status["last_run"] = datetime.utcnow().isoformat() + "Z"
+
+
+async def _run_reindex_only_background():
+    """Seed-only re-index (no live crawling) — faster, used by /admin/reindex."""
+    global _rag_system, _startup_complete, _crawl_status
+    import subprocess
+    _crawl_status["running"] = True
+    _crawl_status["last_result"] = None
+    start = datetime.utcnow()
+    logger.info("🔄 Admin seed-only re-index starting...")
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            ["python", "scripts/reindex.py"],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        elapsed = (datetime.utcnow() - start).total_seconds()
+        if proc.returncode == 0:
+            logger.info(f"✅ Re-index complete in {elapsed:.1f}s — reloading RAG system...")
+            _rag_system = await asyncio.to_thread(_initialize_rag_sync)
+            _startup_complete = True
+            _crawl_status["last_result"] = {
+                "success": True,
+                "elapsed_seconds": round(elapsed, 1),
+                "stdout_tail": proc.stdout.strip()[-2000:],
+            }
+            logger.info("✅ RAG system reloaded after seed re-index.")
+        else:
+            logger.error(f"❌ Re-index script failed (exit {proc.returncode}): {proc.stderr[:500]}")
+            _crawl_status["last_result"] = {
+                "success": False,
+                "exit_code": proc.returncode,
+                "stderr_tail": proc.stderr.strip()[-2000:],
+            }
+    except Exception as e:
+        logger.error(f"❌ Re-index background task error: {e}", exc_info=True)
+        _crawl_status["last_result"] = {"success": False, "error": str(e)}
+    finally:
+        _crawl_status["running"] = False
+        _crawl_status["last_run"] = datetime.utcnow().isoformat() + "Z"
+
+
+@app.post("/admin/crawl")
+async def admin_crawl(authorization: str | None = Header(default=None)):
+    """
+    Trigger a full background re-crawl + re-index of Maya's knowledge base.
+
+    Pipeline:
+      1. Crawl trusted UK autism sources (NHS, NAS, Gov.UK, Hounslow Council, etc.)
+         defined in rag/sources.py
+      2. Load seed JSONL data (data/maya_hounslow_knowledge_seed.jsonl)
+      3. Reset ChromaDB and add all chunks (crawled + seed)
+      4. Hot-reload the running RAG system
+
+    If live crawling fails (network issues, site changes), the pipeline falls back
+    to seed-only data so the knowledge base is never left empty.
+
+    Requires Bearer token matching ADMIN_CRAWL_TOKEN environment variable.
+
+    Example:
+        curl -X POST https://<host>/admin/crawl \\
+             -H "Authorization: Bearer <your-token>"
+    """
+    _verify_admin_token(authorization)
+
+    global _crawl_task
+    if _crawl_status["running"]:
+        return {
+            "status": "already_running",
+            "message": "A crawl+reindex is already in progress. Check /admin/crawl/status for updates.",
+        }
+
+    _crawl_task = asyncio.create_task(_run_crawl_and_reindex_background())
+    logger.info("🚀 Admin crawl+reindex task spawned.")
+    return {
+        "status": "started",
+        "message": "Full crawl+reindex started in the background. Check /admin/crawl/status for progress.",
+    }
+
+
+@app.get("/admin/crawl/status")
+async def admin_crawl_status(authorization: str | None = Header(default=None)):
+    """Return the status of the last (or current) crawl+reindex run."""
+    _verify_admin_token(authorization)
+    return {
+        "running": _crawl_status["running"],
+        "last_run": _crawl_status["last_run"],
+        "last_result": _crawl_status["last_result"],
+    }
+
+
+@app.post("/admin/reindex")
+async def admin_reindex(authorization: str | None = Header(default=None)):
+    """
+    Trigger a fast seed-only re-index (no web crawling).
+
+    Rebuilds ChromaDB from data/maya_hounslow_knowledge_seed.jsonl only.
+    Use /admin/crawl for a full crawl+reindex.
+
+    Requires Bearer token matching ADMIN_CRAWL_TOKEN environment variable.
+
+    Example:
+        curl -X POST https://<host>/admin/reindex \\
+             -H "Authorization: Bearer <your-token>"
+    """
+    _verify_admin_token(authorization)
+
+    global _crawl_task
+    if _crawl_status["running"]:
+        return {
+            "status": "already_running",
+            "message": "A re-index is already in progress. Check /admin/crawl/status for updates.",
+        }
+
+    _crawl_task = asyncio.create_task(_run_reindex_only_background())
+    logger.info("🚀 Admin seed-only re-index task spawned.")
+    return {
+        "status": "started",
+        "message": "Seed-only re-index started in the background. Check /admin/crawl/status for progress.",
+    }
