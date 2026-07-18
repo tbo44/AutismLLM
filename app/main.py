@@ -898,6 +898,7 @@ async def admin_dashboard(
     token: str | None = QueryParam(default=None),
     x_admin_token: str | None = Header(default=None),
     token_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
+    accept: str | None = Header(default=None),
 ):
     """
     Admin dashboard — shows feedback reports and question trends.
@@ -907,10 +908,12 @@ async def admin_dashboard(
       GET /admin?token=<ADMIN_TOKEN>
       GET /admin  (with header X-Admin-Token: <ADMIN_TOKEN>)
     """
-    # If no valid credential is present, send browsers to the friendly login form
-    # instead of a bare 401/403 page.
     if not any(_token_is_valid(c) for c in (token, x_admin_token, token_cookie)):
-        return RedirectResponse(url="/admin/login", status_code=303)
+        # Browsers with no credentials get the friendly login form instead of
+        # a bare error page; API clients get proper 401/403 status codes.
+        if not any((token, x_admin_token, token_cookie)) and "text/html" in (accept or ""):
+            return RedirectResponse(url="/admin/login", status_code=303)
+        _check_admin_token(token, x_admin_token, token_cookie)
     feedback = _read_feedback_log(limit=50)
     stats = _read_questions_stats()
     kb = _read_kb_health()
