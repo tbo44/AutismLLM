@@ -45,6 +45,89 @@ logger = logging.getLogger(__name__)
 # the EHCP example from ~1.07 down to ~0.61, back under the threshold.
 MIN_RELEVANCE_THRESHOLD = 0.8
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Second-tier (relaxed) relevance gate
+# ─────────────────────────────────────────────────────────────────────────────
+# Short, casual questions ("How do I renew my Blue Badge?", "What is Access to
+# Work?") score 0.9–1.4 with all-MiniLM-L6-v2 even when the correct chunk is the
+# clear top hit, so they fall through the 0.8 bar and users get the "no
+# information" fallback for answerable questions.
+#
+# When NOTHING clears the strict 0.8 threshold, the second tier may return the
+# SINGLE best chunk — but only when it is clearly the right topic:
+#   • its distance is below SECOND_TIER_THRESHOLD (measured: genuinely off-topic
+#     questions like weather/pizza/football score >= ~1.48 against this seed),
+#     AND
+#   • it has a strong lexical anchor — distinctive words from the user's own
+#     question appear in the chunk TITLE. Two distinctive title matches are
+#     required at higher distances; one suffices only under
+#     SECOND_TIER_SINGLE_MATCH_MAX (e.g. "What benefits can I claim as a
+#     carer?" → "How to claim Carer's Allowance…" at 0.94).
+# This keeps precision: in-domain-but-wrong questions ("How do I apply for
+# housing benefit in Scotland?" best hit ≈ 1.09 with at most one generic title
+# word) are still rejected, and only ONE chunk is ever passed to the LLM from
+# this tier, keeping the hallucination surface minimal.
+SECOND_TIER_THRESHOLD = 1.45
+SECOND_TIER_SINGLE_MATCH_MAX = 1.0
+
+# Words too generic to anchor a topic match on their own — common across most
+# seed titles or questions, so they carry no topical signal.
+_GENERIC_TERMS = frozenset({
+    "what", "when", "where", "which", "how", "does", "do", "can", "could",
+    "should", "will", "the", "and", "for", "with", "about", "from", "this",
+    "that", "there", "have", "has", "get", "getting", "apply", "applying",
+    "claim", "claiming", "available", "help", "support", "service", "services",
+    "autism", "autistic", "child", "children", "adult", "adults", "need",
+    "needs", "want", "would", "your", "you", "may", "might", "more", "some",
+    "any", "who", "whom", "are", "is", "was",
+})
+
+
+def _distinctive_terms(question: str) -> List[str]:
+    """Content words from the user's question that can anchor a topic match."""
+    words = re.findall(r"[a-z']+", question.lower())
+    return [w for w in words if len(w) >= 4 and w not in _GENERIC_TERMS]
+
+
+def apply_relevance_gate(results: List[Dict[str, Any]],
+                         user_question: str) -> List[Dict[str, Any]]:
+    """Two-tier relevance gate shared by the retriever and the coverage tests.
+
+    Tier 1: keep everything under MIN_RELEVANCE_THRESHOLD (unchanged behaviour).
+    Tier 2: if tier 1 is empty, return the single best lexically-anchored chunk
+    under SECOND_TIER_THRESHOLD (see rationale above). Returns [] when neither
+    tier matches, which triggers the explicit "no information" fallback.
+    """
+    if not results:
+        return []
+
+    strict = [r for r in results if r["distance"] < MIN_RELEVANCE_THRESHOLD]
+    if strict:
+        return strict
+
+    terms = _distinctive_terms(user_question)
+    if not terms:
+        return []
+
+    candidates = []
+    for r in results:
+        if r["distance"] >= SECOND_TIER_THRESHOLD:
+            continue
+        title = r["metadata"].get("title", "").lower()
+        matches = sum(1 for t in terms if t in title)
+        if matches >= 2 or (matches >= 1 and r["distance"] < SECOND_TIER_SINGLE_MATCH_MAX):
+            candidates.append(r)
+
+    if not candidates:
+        return []
+
+    best = min(candidates, key=lambda r: r["distance"])
+    logger.info(
+        "Second-tier relevance gate matched a single chunk "
+        f"(distance={best['distance']:.3f}, title={best['metadata'].get('title', '')!r})"
+    )
+    return [best]
+
 
 # Common UK autism / SEND / benefits acronyms mapped to their full forms.
 # Abbreviations embed far from the spelled-out wording used in the seed text, so
@@ -183,10 +266,10 @@ class UKAutismRetriever:
         if not results:
             return results
         
-        # Filter out very low quality matches using the module-level
-        # MIN_RELEVANCE_THRESHOLD (see the detailed rationale and tuning notes
-        # next to its definition at the top of this file).
-        filtered = [r for r in results if r['distance'] < MIN_RELEVANCE_THRESHOLD]
+        # Two-tier relevance gate: strict MIN_RELEVANCE_THRESHOLD first, then a
+        # relaxed single-best-hit fallback for short natural questions (see the
+        # rationale next to apply_relevance_gate at the top of this file).
+        filtered = apply_relevance_gate(results, query)
 
         # Do NOT fall back to unfiltered results — an empty list signals "no match"
         # and triggers the explicit out-of-scope message in rag_system.py.

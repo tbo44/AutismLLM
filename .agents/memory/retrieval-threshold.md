@@ -34,6 +34,18 @@ raising it is in-domain-but-wrong answers.
 - The coverage test is deterministic (no LLM): embeddings are deterministic, so
   borderline distances near 0.8 are stable, not flaky.
 
+## Second-tier gate (July 2026)
+- Recall fix that closed all five original KNOWN_GAPS without touching 0.8: when
+  nothing clears the strict bar, `apply_relevance_gate` may return the SINGLE
+  best chunk if distance < 1.45 AND distinctive words from the raw user question
+  appear in the chunk TITLE (≥2 matches, or 1 match if distance < 1.0).
+- **Why:** measured against the seed, truly off-topic questions score ≥ ~1.48,
+  but in-domain-but-wrong ones ("housing benefit in Scotland") reach ~1.09 — a
+  pure distance tier can't separate them; the title lexical anchor can.
+- **How to apply:** the gate is shared by retriever and coverage tests; anchor on
+  the RAW user question (not the LLM-enhanced query). Precision is guarded by
+  off-topic tests in the coverage file — tune SECOND_TIER_* constants against them.
+
 ## Distance metric & seed wording
 - ChromaDB distances here are squared-L2 on normalised embeddings ≈ 2× cosine distance, so the 0.8 threshold ≈ 0.4 cosine.
 - **How to apply:** when a needed seed entry scores just above the bar, an FAQ-style title matching the natural question (e.g. "What is an EHCP and how do I apply for one? (…)") moves distance far more than rewording the body (~0.81 → ~0.69 in one case).
