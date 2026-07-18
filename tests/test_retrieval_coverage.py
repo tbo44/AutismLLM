@@ -95,6 +95,8 @@ CORE_TOPICS = [
     ("How do I get free school transport for my SEND child?", "school transport"),
     ("How do I appeal to the SEND tribunal?", "tribunal"),
     ("How do I appeal an EHCP decision?", "ehcp"),
+    ("What is an EHCP and how do I apply?", "education, health and care"),
+    ("How do I claim PIP?", "personal independence payment"),
 ]
 
 
@@ -117,7 +119,6 @@ def test_core_seed_topics_are_retrievable(seed_store, question, keyword):
 # ── KNOWN GAPS: tracked misses (strict xfail tripwire) ────────────────────────
 
 KNOWN_GAPS = [
-    ("What is an EHCP and how do I apply?", "education, health and care"),
     ("How do I renew my Blue Badge?", "blue badge"),
     ("What is Access to Work?", "access to work"),
     ("What is the Motability scheme?", "motability"),

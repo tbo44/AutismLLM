@@ -33,3 +33,7 @@ raising it is in-domain-but-wrong answers.
   tripwires — if one starts passing, promote it into CORE_TOPICS.
 - The coverage test is deterministic (no LLM): embeddings are deterministic, so
   borderline distances near 0.8 are stable, not flaky.
+
+## Distance metric & seed wording
+- ChromaDB distances here are squared-L2 on normalised embeddings ≈ 2× cosine distance, so the 0.8 threshold ≈ 0.4 cosine.
+- **How to apply:** when a needed seed entry scores just above the bar, an FAQ-style title matching the natural question (e.g. "What is an EHCP and how do I apply for one? (…)") moves distance far more than rewording the body (~0.81 → ~0.69 in one case).
