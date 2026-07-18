@@ -15,6 +15,8 @@ import secrets
 from pathlib import Path
 from collections import Counter
 
+from app import notifications
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -956,8 +958,10 @@ def _record_reindex_result(source: str, result: dict) -> None:
             f"[{source}] SUCCESS — {total} chunks "
             f"(seed={seed}, crawled={crawled}) in {elapsed}s"
         )
-        # A successful run clears any standing failure alert.
+        # A successful run clears any standing failure alert and resets the
+        # email-alert throttle so the *next* failure notifies immediately.
         _crawl_status["alert"] = None
+        notifications.reset_throttle()
     else:
         detail = (
             result.get("error")
@@ -975,6 +979,9 @@ def _record_reindex_result(source: str, result: dict) -> None:
             "message": f"Re-index failed ({source}): {detail}",
             "at": when,
         }
+        # Actively notify staff by email (fire-and-forget, throttled, no-op if
+        # REINDEX_ALERT_EMAIL_TO is not configured — see app/notifications.py).
+        notifications.notify_reindex_failure_async(source, str(detail), when)
 
 
 def _verify_admin_token(authorization: str | None):

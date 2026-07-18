@@ -46,6 +46,11 @@ Maya utilizes dual knowledge sources:
 - **Sign in**: Staff visit `/admin/login`, enter the `ADMIN_TOKEN`, and stay signed in via an HttpOnly session cookie (12-hour expiry) so they don't need to paste the token in the URL each visit. `/admin/logout` clears the session. The token may also still be passed via `?token=` query param or the `X-Admin-Token` header.
 - **ADMIN_CRAWL_TOKEN**: A separate Bearer token (set in Secrets) protects the crawl/re-index endpoints (`/admin/crawl`, `/admin/reindex`).
 
+## Failure Email Alerts
+- When a re-index (nightly or manual) fails, Maya emails staff with the error detail so a stale knowledge base doesn't go unnoticed.
+- **REINDEX_ALERT_EMAIL_TO**: comma-separated staff addresses (needs `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`), or the special value `replit` to use Replit's built-in mailer (sends to the Repl owner, no SMTP setup). Unset = alerts off (no-op).
+- **REINDEX_ALERT_THROTTLE_HOURS** (default 24): repeated failures send at most one email per window; a successful refresh resets the throttle. Implemented in `app/notifications.py`.
+
 ## Testing Architecture
 - **Test Coverage**: Comprehensive tests for endpoints, guardrails, and static assets.
 - **Policy Tests**: Parametrized tests for safety guardrail functionality.
