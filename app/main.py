@@ -1,7 +1,7 @@
-from fastapi import FastAPI, HTTPException, Header, Query as QueryParam
+from fastapi import FastAPI, HTTPException, Header, Query as QueryParam, Cookie, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from enum import Enum
 import pytz
@@ -61,12 +61,18 @@ _UK_TZ = pytz.timezone("Europe/London")
 
 # ── Admin token ────────────────────────────────────────────────────────────
 # Use ADMIN_TOKEN env var; if not set, generate a random one and log it once.
+# Staff should set ADMIN_TOKEN in the Replit Secrets panel so the password
+# stays the same across restarts and deployments (see replit.md).
 _ADMIN_TOKEN: str = os.environ.get("ADMIN_TOKEN", "").strip() or secrets.token_urlsafe(32)
-if not os.environ.get("ADMIN_TOKEN", "").strip():
+_ADMIN_TOKEN_IS_PERSISTENT: bool = bool(os.environ.get("ADMIN_TOKEN", "").strip())
+if not _ADMIN_TOKEN_IS_PERSISTENT:
     logger.warning(
-        "⚠️  ADMIN_TOKEN env var not set. "
-        f"Auto-generated token for this session: {_ADMIN_TOKEN}  "
-        "(Set ADMIN_TOKEN to make this permanent.)"
+        "⚠️  ADMIN_TOKEN is not set, so a temporary admin password was generated "
+        "for THIS session only and will change on the next restart:\n"
+        f"    {_ADMIN_TOKEN}\n"
+        "    To keep a permanent admin password, open the Replit Secrets panel "
+        "(Tools → Secrets), add a secret named ADMIN_TOKEN with a value of your "
+        "choosing, then restart. Staff can then sign in at /admin/login."
     )
 
 app = FastAPI(title="Maya – Autism Hounslow Assistant", version="2.0.0")
@@ -338,13 +344,29 @@ async def feedback(payload: FeedbackPayload):
 # Protected by ADMIN_TOKEN (query param ?token= or header X-Admin-Token)
 # ──────────────────────────────────────────────────────────────────────
 
-def _check_admin_token(token_param: str | None, token_header: str | None):
-    """Raise 401/403 if neither the query param nor the header matches ADMIN_TOKEN."""
-    provided = (token_param or token_header or "").strip()
-    if not provided:
-        raise HTTPException(status_code=401, detail="Admin token required (?token= or X-Admin-Token header).")
-    if not secrets.compare_digest(provided, _ADMIN_TOKEN):
-        raise HTTPException(status_code=403, detail="Invalid admin token.")
+# Name of the cookie used to keep staff signed in after /admin/login.
+_ADMIN_COOKIE_NAME = "maya_admin"
+
+
+def _token_is_valid(token: str | None) -> bool:
+    """Constant-time check of a candidate token against ADMIN_TOKEN."""
+    if not token:
+        return False
+    return secrets.compare_digest(token.strip(), _ADMIN_TOKEN)
+
+
+def _check_admin_token(
+    token_param: str | None,
+    token_header: str | None,
+    token_cookie: str | None = None,
+):
+    """Raise 401/403 unless the query param, header, or session cookie matches ADMIN_TOKEN."""
+    for candidate in (token_param, token_header, token_cookie):
+        if _token_is_valid(candidate):
+            return
+    if not any((token_param, token_header, token_cookie)):
+        raise HTTPException(status_code=401, detail="Admin token required (sign in at /admin/login).")
+    raise HTTPException(status_code=403, detail="Invalid admin token.")
 
 
 def _read_feedback_log(limit: int = 50) -> list[dict]:
@@ -683,7 +705,7 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
 </head>
 <body>
 <h1>Maya Admin Dashboard</h1>
-<p class="meta">Generated: {generated_at} &nbsp;·&nbsp; Data is anonymised — no personal information is stored.</p>
+<p class="meta">Generated: {generated_at} &nbsp;·&nbsp; Data is anonymised — no personal information is stored. &nbsp;·&nbsp; <a href="/admin/logout">Sign out</a></p>
 
 <div class="cards">
   <div class="card">
@@ -789,19 +811,106 @@ function triggerReindex() {{
 </html>"""
 
 
+def _render_login_html(error: str | None = None) -> str:
+    """Simple admin sign-in form. Posts the token to /admin/login."""
+    error_html = (
+        f'<p class="error" role="alert">{error}</p>' if error else ""
+    )
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maya Admin – Sign in</title>
+<style>
+  body {{ font-family: system-ui, -apple-system, sans-serif; background: #f4f7fa;
+         color: #1c2430; display: flex; min-height: 100vh; align-items: center;
+         justify-content: center; margin: 0; }}
+  .card {{ background: #fff; padding: 2rem; border-radius: 12px; max-width: 360px;
+          width: 100%; box-shadow: 0 6px 24px rgba(0,0,0,.08); }}
+  h1 {{ font-size: 1.25rem; margin: 0 0 .25rem; }}
+  p.sub {{ margin: 0 0 1.25rem; color: #5a6675; font-size: .9rem; }}
+  label {{ display: block; font-weight: 600; margin-bottom: .4rem; font-size: .9rem; }}
+  input[type=password] {{ width: 100%; padding: .7rem; font-size: 1rem;
+         border: 1px solid #c8d2dd; border-radius: 8px; box-sizing: border-box; }}
+  button {{ margin-top: 1rem; width: 100%; padding: .75rem; font-size: 1rem;
+           font-weight: 600; color: #fff; background: #2b6cb0; border: none;
+           border-radius: 8px; cursor: pointer; min-height: 44px; }}
+  button:hover {{ background: #245a94; }}
+  .error {{ color: #b42318; background: #fef3f2; border: 1px solid #fda29b;
+           padding: .6rem .75rem; border-radius: 8px; font-size: .9rem; }}
+</style>
+</head>
+<body>
+  <form class="card" method="post" action="/admin/login">
+    <h1>Maya Admin</h1>
+    <p class="sub">Enter the admin password to continue.</p>
+    {error_html}
+    <input type="text" name="username" value="admin" autocomplete="username" hidden aria-hidden="true">
+    <label for="token">Admin password</label>
+    <input id="token" name="token" type="password" autocomplete="current-password" autofocus required>
+    <button type="submit">Sign in</button>
+  </form>
+</body>
+</html>"""
+
+
+@app.get("/admin/login", response_class=HTMLResponse)
+async def admin_login_form(
+    token_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
+):
+    """Show the admin sign-in form (or go straight to the dashboard if already signed in)."""
+    if _token_is_valid(token_cookie):
+        return RedirectResponse(url="/admin", status_code=303)
+    return HTMLResponse(content=_render_login_html())
+
+
+@app.post("/admin/login")
+async def admin_login_submit(token: str = Form(default="")):
+    """Validate the submitted token and, on success, store it in a session cookie."""
+    if not _token_is_valid(token):
+        return HTMLResponse(
+            content=_render_login_html(error="Incorrect password. Please try again."),
+            status_code=401,
+        )
+    response = RedirectResponse(url="/admin", status_code=303)
+    response.set_cookie(
+        key=_ADMIN_COOKIE_NAME,
+        value=token.strip(),
+        max_age=60 * 60 * 12,  # 12 hours
+        httponly=True,
+        samesite="lax",
+        secure=True,
+    )
+    return response
+
+
+@app.get("/admin/logout")
+async def admin_logout():
+    """Clear the admin session cookie and return to the sign-in form."""
+    response = RedirectResponse(url="/admin/login", status_code=303)
+    response.delete_cookie(key=_ADMIN_COOKIE_NAME)
+    return response
+
+
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_dashboard(
     token: str | None = QueryParam(default=None),
     x_admin_token: str | None = Header(default=None),
+    token_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
 ):
     """
     Admin dashboard — shows feedback reports and question trends.
 
-    Pass the ADMIN_TOKEN as a query parameter or HTTP header:
+    Staff can sign in once at /admin/login (stores a session cookie), or pass the
+    ADMIN_TOKEN directly:
       GET /admin?token=<ADMIN_TOKEN>
       GET /admin  (with header X-Admin-Token: <ADMIN_TOKEN>)
     """
-    _check_admin_token(token, x_admin_token)
+    # If no valid credential is present, send browsers to the friendly login form
+    # instead of a bare 401/403 page.
+    if not any(_token_is_valid(c) for c in (token, x_admin_token, token_cookie)):
+        return RedirectResponse(url="/admin/login", status_code=303)
     feedback = _read_feedback_log(limit=50)
     stats = _read_questions_stats()
     kb = _read_kb_health()

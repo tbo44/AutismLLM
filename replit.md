@@ -40,6 +40,12 @@ Maya utilizes dual knowledge sources:
 - **Refusal Templates**: Professional redirects to appropriate UK services.
 - **Disclaimer**: Persistent banner emphasizing the information-only nature of the advice.
 
+## Admin Access
+- **Admin Dashboard**: `/admin` shows feedback reports, question trends, and knowledge-base health.
+- **ADMIN_TOKEN**: Set this in the Replit **Secrets** panel (Tools → Secrets) to create a permanent admin password. If it is not set, a temporary password is generated on each restart and printed once to the server log — staff would otherwise lose access after every restart or deployment.
+- **Sign in**: Staff visit `/admin/login`, enter the `ADMIN_TOKEN`, and stay signed in via an HttpOnly session cookie (12-hour expiry) so they don't need to paste the token in the URL each visit. `/admin/logout` clears the session. The token may also still be passed via `?token=` query param or the `X-Admin-Token` header.
+- **ADMIN_CRAWL_TOKEN**: A separate Bearer token (set in Secrets) protects the crawl/re-index endpoints (`/admin/crawl`, `/admin/reindex`).
+
 ## Testing Architecture
 - **Test Coverage**: Comprehensive tests for endpoints, guardrails, and static assets.
 - **Policy Tests**: Parametrized tests for safety guardrail functionality.
