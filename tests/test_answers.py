@@ -231,6 +231,81 @@ def test_comprehension_levels_change_answer_complexity():
     )
 
 
+# ── Answer quality: 'clear' level avoids unexplained acronyms ────────────────
+
+# Acronyms the 'clear' language guidelines explicitly tell the LLM to avoid,
+# plus common UK autism/benefits acronyms likely to surface for this topic.
+_ACRONYMS_TO_AVOID = ["EHCP", "ASD", "GP", "PIP", "SEND", "DLA", "SENCO"]
+
+# Plain-English expansion cues. If one of these appears within a short window
+# after the acronym, the LLM has explained it, which is acceptable.
+_EXPANSION_CUES = {
+    "EHCP": ["education, health and care", "school plan", "plan for your child",
+             "support plan", "stands for", "which means", "this means", "(a "],
+    "ASD": ["autism spectrum", "autism", "stands for", "which means", "(a "],
+    "GP": ["doctor", "general practitioner", "stands for", "which means", "(a ", "(your "],
+    "PIP": ["personal independence payment", "benefit", "money", "stands for",
+            "which means", "(a "],
+    "SEND": ["special educational needs", "stands for", "which means", "(a "],
+    "DLA": ["disability living allowance", "benefit", "money", "stands for",
+            "which means", "(a "],
+    "SENCO": ["special educational needs co", "teacher", "stands for",
+              "which means", "(a ", "(the "],
+}
+
+
+def _find_unexplained_acronyms(answer: str) -> list:
+    """Return acronyms that appear as standalone words in the answer without a
+    nearby plain-English expansion (checked in a window around each occurrence)."""
+    import re
+
+    offenders = []
+    for acronym in _ACRONYMS_TO_AVOID:
+        # Standalone word match only — avoids false hits like 'GP' inside 'GPS'
+        # or lowercase words that merely contain the letters.
+        matches = list(re.finditer(rf"\b{acronym}\b", answer))
+        if not matches:
+            continue
+
+        cues = _EXPANSION_CUES.get(acronym, [])
+        explained_somewhere = False
+        for m in matches:
+            # Look in a window around the occurrence (before and after) so both
+            # "Education, Health and Care plan (EHCP)" and "EHCP (a school plan)"
+            # count as explained.
+            window = answer[max(0, m.start() - 120): m.end() + 120].lower()
+            if any(cue in window for cue in cues):
+                explained_somewhere = True
+                break
+        if not explained_somewhere:
+            offenders.append(acronym)
+    return offenders
+
+
+def test_clear_level_avoids_unexplained_acronyms():
+    """
+    The 'clear' comprehension level instructs the LLM to avoid acronyms
+    (write "school plan" not "EHCP", "doctor" not "GP"). This test asks a
+    question that naturally surfaces acronym-heavy content and asserts the
+    clear-level answer either avoids common acronyms entirely or immediately
+    explains them in plain English. This guards the acronym-avoidance rule
+    that is central to accessibility for users with learning disabilities.
+    """
+    question = "How do I apply for an EHCP and PIP for my autistic child?"
+    answer = ask(question, comprehension_level="clear")["answer"]
+
+    assert answer.strip(), "Empty answer returned at 'clear' comprehension level."
+
+    offenders = _find_unexplained_acronyms(answer)
+
+    assert not offenders, (
+        f"The 'clear' answer uses acronym(s) {offenders} without a plain-English "
+        f"explanation nearby. The clear-level language guidelines require avoiding "
+        f"acronyms or expanding them immediately.\n"
+        f"Answer (first 600 chars): {answer[:600]}"
+    )
+
+
 # ── Answer quality: off-topic refusal ────────────────────────────────────────
 
 @pytest.mark.parametrize(
