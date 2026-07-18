@@ -22,7 +22,8 @@ This README is the developer playbook: full specification, setup, operations, an
 12. [Custom subdomain setup](#12-custom-subdomain-setup)
 13. [Wix integration instructions](#13-wix-integration-instructions)
 14. [Contributing](#14-contributing)
-15. [Privacy](#15-privacy)
+15. [Roadmap](#15-roadmap)
+16. [Privacy](#16-privacy)
 
 ---
 
@@ -328,7 +329,37 @@ Page: "Get Information"
 
 ---
 
-## 15. Privacy
+## 15. Roadmap
+
+The current app is live and stable; the following improvements are planned or in progress:
+
+### Knowledge base
+- ~~Add "how to apply" guides for EHCP and PIP~~ ✅ done (July 2026)
+- Close remaining answer gaps: Blue Badge, Access to Work, Motability, respite care, and carer benefits (currently tracked as expected-fail tests in `tests/test_retrieval_coverage.py`)
+- Handle short, casual questions (e.g. "pip?", "help with school") that currently miss the retrieval threshold
+- Show plain-English explanations of acronyms directly in the chat window
+
+### Operations & reliability
+- Email staff automatically when the nightly re-index fails
+- Verify crawl/re-index runs actually store fresh pages (freshness check)
+- Skip re-crawling unchanged pages to speed up nightly refreshes
+- Rotate `logs/reindex.log` so it does not grow forever
+- Keep the GitHub repository automatically in sync with the live app
+
+### Admin & security
+- Lock out repeated wrong admin password attempts (rate limiting)
+- Ensure staff at `/admin/login` cannot be silently locked out
+- Auto-refresh the Knowledge Base status panel while a re-index is running
+
+### Known issues
+- One static-asset test still checks the old homepage title (fix queued)
+- `tests/test_answers.py` requires an LLM key and can hit provider rate limits
+
+This list evolves — check the project task board (or ask the maintainer) for current status before starting work on any of these.
+
+---
+
+## 16. Privacy
 
 Maya logs question text and retrieved source IDs to `logs/questions.log` to help
 improve the service. No user identity (IP address, name, session ID) is ever stored.
