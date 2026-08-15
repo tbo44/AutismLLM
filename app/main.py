@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Header, Query as QueryParam, Cookie, Form
+from fastapi import FastAPI, HTTPException, Header, Query as QueryParam, Cookie, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -351,6 +351,34 @@ async def feedback(payload: FeedbackPayload):
 
 # Name of the cookie used to keep staff signed in after /admin/login.
 _ADMIN_COOKIE_NAME = "maya_admin"
+
+# ── Login rate limiting ────────────────────────────────────────────────
+# After LOGIN_MAX_ATTEMPTS failed attempts within LOGIN_LOCKOUT_SECONDS,
+# the client IP is locked out until the window expires.
+# Set LOGIN_MAX_ATTEMPTS=0 to disable (not recommended).
+try:
+    _LOGIN_MAX_ATTEMPTS: int = int(os.environ.get("LOGIN_MAX_ATTEMPTS", "5"))
+except ValueError:
+    _LOGIN_MAX_ATTEMPTS = 5
+
+try:
+    _LOGIN_LOCKOUT_SECONDS: int = int(os.environ.get("LOGIN_LOCKOUT_SECONDS", "900"))
+except ValueError:
+    _LOGIN_LOCKOUT_SECONDS = 900  # 15 minutes
+
+# In-memory store: {ip: {"count": int, "window_start": float, "locked_until": float}}
+import time as _time
+_login_attempts: dict[str, dict] = {}
+
+# Comma-separated list of trusted proxy IPs (e.g. a load-balancer or Replit's proxy).
+# When the immediate peer matches one of these, the rightmost non-trusted IP in
+# X-Forwarded-For is used instead of the raw socket address.  Leave unset (default)
+# to use the raw socket address only, which is safe and cannot be spoofed.
+_TRUSTED_PROXY_IPS: set[str] = {
+    ip.strip()
+    for ip in os.environ.get("TRUSTED_PROXY_IPS", "").split(",")
+    if ip.strip()
+}
 
 
 def _token_is_valid(token: str | None) -> bool:
@@ -1008,14 +1036,106 @@ async def admin_login_form(
     return HTMLResponse(content=_render_login_html())
 
 
+def _get_client_ip(request: Request) -> str:
+    """Return the client IP used for rate-limiting.
+
+    By default the raw socket address (request.client.host) is used — this
+    cannot be spoofed by the client.  If TRUSTED_PROXY_IPS is configured and
+    the immediate peer is in that set, we read the rightmost non-trusted IP
+    from X-Forwarded-For instead, which is what a properly configured reverse
+    proxy appends.  We deliberately never trust a client-supplied header from
+    an untrusted peer.
+    """
+    peer = request.client.host if request.client else "unknown"
+    if _TRUSTED_PROXY_IPS and peer in _TRUSTED_PROXY_IPS:
+        xff = request.headers.get("X-Forwarded-For", "")
+        hops = [h.strip() for h in xff.split(",") if h.strip()]
+        # Walk right-to-left and return the first hop that isn't a trusted proxy
+        for hop in reversed(hops):
+            if hop not in _TRUSTED_PROXY_IPS:
+                return hop
+    return peer
+
+
+def _is_locked_out(ip: str) -> tuple[bool, int]:
+    """Return (locked, seconds_remaining). Cleans up expired windows."""
+    now = _time.monotonic()
+    entry = _login_attempts.get(ip)
+    if not entry:
+        return False, 0
+    locked_until = entry.get("locked_until", 0)
+    if locked_until and now < locked_until:
+        return True, max(1, int(locked_until - now))
+    # Window expired — purge stale entry so memory doesn't grow forever
+    window_start = entry.get("window_start", 0)
+    if now - window_start > _LOGIN_LOCKOUT_SECONDS:
+        _login_attempts.pop(ip, None)
+    return False, 0
+
+
+def _record_failed_attempt(ip: str) -> bool:
+    """Increment the failure counter for *ip*; apply lockout if threshold reached.
+    Returns True if the IP is now locked out."""
+    if _LOGIN_MAX_ATTEMPTS <= 0:
+        return False  # rate limiting disabled
+    now = _time.monotonic()
+    entry = _login_attempts.setdefault(ip, {"count": 0, "window_start": now, "locked_until": 0})
+    # Reset count if the previous window has expired
+    if now - entry["window_start"] > _LOGIN_LOCKOUT_SECONDS:
+        entry["count"] = 0
+        entry["window_start"] = now
+        entry["locked_until"] = 0
+    entry["count"] += 1
+    if entry["count"] >= _LOGIN_MAX_ATTEMPTS:
+        entry["locked_until"] = now + _LOGIN_LOCKOUT_SECONDS
+        logger.warning(
+            f"🔒 Admin login locked out for IP {ip} after {entry['count']} failed attempts."
+        )
+        return True
+    return False
+
+
+def _clear_failed_attempts(ip: str) -> None:
+    """Reset the failure counter for *ip* after a successful login."""
+    _login_attempts.pop(ip, None)
+
+
 @app.post("/admin/login")
-async def admin_login_submit(token: str = Form(default="")):
+async def admin_login_submit(request: Request, token: str = Form(default="")):
     """Validate the submitted token and, on success, store it in a session cookie."""
-    if not _token_is_valid(token):
+    ip = _get_client_ip(request)
+
+    # Check lockout before doing anything else
+    locked, remaining = _is_locked_out(ip)
+    if locked:
+        mins = (remaining + 59) // 60
         return HTMLResponse(
-            content=_render_login_html(error="Incorrect password. Please try again."),
+            content=_render_login_html(
+                error=f"Too many failed attempts. Please try again in {mins} minute{'s' if mins != 1 else ''}."
+            ),
+            status_code=429,
+        )
+
+    if not _token_is_valid(token):
+        now_locked = _record_failed_attempt(ip)
+        if now_locked:
+            mins = (_LOGIN_LOCKOUT_SECONDS + 59) // 60
+            error_msg = f"Too many failed attempts. Please try again in {mins} minute{'s' if mins != 1 else ''}."
+        else:
+            entry = _login_attempts.get(ip, {})
+            attempts_so_far = entry.get("count", 0)
+            remaining_attempts = max(0, _LOGIN_MAX_ATTEMPTS - attempts_so_far)
+            if _LOGIN_MAX_ATTEMPTS > 0 and remaining_attempts <= 2:
+                error_msg = f"Incorrect password. {remaining_attempts} attempt{'s' if remaining_attempts != 1 else ''} remaining."
+            else:
+                error_msg = "Incorrect password. Please try again."
+        return HTMLResponse(
+            content=_render_login_html(error=error_msg),
             status_code=401,
         )
+
+    # Successful login — clear any failure record
+    _clear_failed_attempts(ip)
     response = RedirectResponse(url="/admin", status_code=303)
     response.set_cookie(
         key=_ADMIN_COOKIE_NAME,
