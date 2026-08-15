@@ -4,15 +4,21 @@ Tests for crawling and re-indexing pipeline.
 Covers:
   - dedupe_crawled_chunks(): URL already in seed is dropped; new URL chunks are kept.
   - save_crawled_chunks(): writes a JSONL file to data/raw/; no-ops on empty input.
+  - CrawlCache: persist, reload, and return cached chunks per URL.
+  - UKAutismCrawler.crawl_url(): 304 and content-hash-match paths skip fetch.
+  - crawl_and_chunk_all(): cache populated on first run; reused on second run.
   - scripts/reindex.py --crawl: crawled chunks are merged and counted (no real network).
 """
 
+import asyncio
+import hashlib
 import json
 import sys
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 # Ensure project root is on sys.path so both `rag` and `scripts` are importable.
@@ -20,7 +26,16 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from rag.crawler import dedupe_crawled_chunks, save_crawled_chunks
+from rag.crawler import (
+    CrawlCache,
+    CrawledDocument,
+    UKAutismCrawler,
+    _content_hash,
+    chunk_document,
+    crawl_and_chunk_all,
+    dedupe_crawled_chunks,
+    save_crawled_chunks,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -309,3 +324,314 @@ class TestReindexWithCrawl:
         submitted = mock_store.add_documents.call_args[0][0]
         assert len(submitted) == 1
         assert submitted[0]["metadata"]["url"] == "https://example.com/seed"
+
+
+# ── CrawlCache unit tests ──────────────────────────────────────────────────────
+
+
+class TestCrawlCache:
+    """Unit tests for the CrawlCache disk-backed per-URL cache."""
+
+    def _sample_chunks(self, url: str) -> list:
+        return [_make_chunk(url, 0), _make_chunk(url, 1)]
+
+    def test_get_returns_none_for_unknown_url(self, tmp_path):
+        cache = CrawlCache(raw_dir=str(tmp_path))
+        assert cache.get("https://example.com/missing") is None
+
+    def test_update_and_get_roundtrip(self, tmp_path):
+        cache = CrawlCache(raw_dir=str(tmp_path))
+        url = "https://example.com/page"
+        chunks = self._sample_chunks(url)
+
+        cache.update(
+            url,
+            etag='"abc123"',
+            last_modified="Wed, 01 Jan 2025 00:00:00 GMT",
+            content_hash="deadbeef",
+            chunks=chunks,
+        )
+
+        entry = cache.get(url)
+        assert entry is not None
+        assert entry["etag"] == '"abc123"'
+        assert entry["last_modified"] == "Wed, 01 Jan 2025 00:00:00 GMT"
+        assert entry["content_hash"] == "deadbeef"
+        assert len(entry["chunks"]) == 2
+        assert "cached_at" in entry
+
+    def test_cache_persists_across_instances(self, tmp_path):
+        """Data written by one instance should be readable by a fresh instance."""
+        url = "https://example.com/page"
+        chunks = self._sample_chunks(url)
+
+        cache1 = CrawlCache(raw_dir=str(tmp_path))
+        cache1.update(url, etag='"v1"', last_modified=None, content_hash="h1", chunks=chunks)
+
+        cache2 = CrawlCache(raw_dir=str(tmp_path))
+        entry = cache2.get(url)
+        assert entry is not None
+        assert entry["etag"] == '"v1"'
+        assert len(entry["chunks"]) == 2
+
+    def test_invalidate_removes_entry(self, tmp_path):
+        cache = CrawlCache(raw_dir=str(tmp_path))
+        url = "https://example.com/page"
+        cache.update(url, etag=None, last_modified=None, content_hash="h", chunks=[_make_chunk(url)])
+
+        cache.invalidate(url)
+        assert cache.get(url) is None
+
+    def test_cache_file_uses_atomic_write(self, tmp_path):
+        """After update(), a valid JSON file must exist at the expected path."""
+        cache = CrawlCache(raw_dir=str(tmp_path))
+        url = "https://example.com/page"
+        cache.update(url, etag=None, last_modified=None, content_hash="h", chunks=[])
+
+        cache_path = tmp_path / "crawl_cache.json"
+        assert cache_path.exists()
+        with open(cache_path) as f:
+            data = json.load(f)
+        assert url in data
+
+    def test_corrupt_cache_file_is_silently_ignored(self, tmp_path):
+        """A garbled cache file should not raise; the cache starts empty."""
+        cache_path = tmp_path / "crawl_cache.json"
+        cache_path.write_text("NOT VALID JSON", encoding="utf-8")
+
+        cache = CrawlCache(raw_dir=str(tmp_path))
+        assert cache.get("https://example.com/x") is None
+
+    def test_len_reflects_number_of_cached_urls(self, tmp_path):
+        cache = CrawlCache(raw_dir=str(tmp_path))
+        assert len(cache) == 0
+        cache.update("https://a.com", etag=None, last_modified=None, content_hash="h1", chunks=[])
+        cache.update("https://b.com", etag=None, last_modified=None, content_hash="h2", chunks=[])
+        assert len(cache) == 2
+
+
+# ── _content_hash helper ───────────────────────────────────────────────────────
+
+
+class TestContentHash:
+    def test_sha256_of_known_string(self):
+        text = "hello world"
+        expected = hashlib.sha256(b"hello world").hexdigest()
+        assert _content_hash(text) == expected
+
+    def test_different_content_gives_different_hash(self):
+        assert _content_hash("page A content") != _content_hash("page B content")
+
+    def test_identical_content_gives_same_hash(self):
+        assert _content_hash("stable content") == _content_hash("stable content")
+
+
+# ── UKAutismCrawler.crawl_url() caching paths ─────────────────────────────────
+
+
+def _make_httpx_response(status_code: int, text: str = "", headers: dict | None = None):
+    """Build a minimal httpx.Response suitable for mocking."""
+    h = httpx.Headers(headers or {})
+    request = httpx.Request("GET", "https://example.com/page")
+    response = httpx.Response(status_code=status_code, text=text, headers=h, request=request)
+    return response
+
+
+class TestCrawlUrlCachingPaths:
+    """
+    Test that crawl_url() correctly handles 304 and content-hash-match cases.
+    Network calls are replaced with MagicMock/AsyncMock so no real HTTP is needed.
+    Tests run synchronously via asyncio.run() to avoid needing pytest-asyncio.
+    """
+
+    def _make_source(self):
+        from rag.sources import Source, SourceAuthority
+        return Source(
+            name="Test Source",
+            base_url="https://example.com",
+            crawl_paths=["/page"],
+            description="Test",
+            authority=SourceAuthority.GOVERNMENT,
+            location_specific=False,
+        )
+
+    def _make_cache_entry(self, url, etag, content_hash, chunks):
+        return {
+            "etag": etag,
+            "last_modified": None,
+            "content_hash": content_hash,
+            "cached_at": "2026-08-15T00:00:00+01:00",
+            "chunks": chunks,
+        }
+
+    def test_304_returns_from_cache_flag(self, tmp_path):
+        """A 304 response should return (None, True) so the caller reuses cache."""
+        url = "https://example.com/page"
+        cached_chunks = [_make_chunk(url)]
+        cache = CrawlCache(raw_dir=str(tmp_path))
+        cache._data[url] = self._make_cache_entry(url, '"etag1"', "somehash", cached_chunks)
+
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock(return_value=_make_httpx_response(304))
+
+        source = self._make_source()
+        crawler = UKAutismCrawler(cache=cache)
+        crawler.session = mock_session
+
+        doc, from_cache = asyncio.run(crawler.crawl_url(url, source))
+        assert doc is None
+        assert from_cache is True
+
+    def test_content_hash_match_skips_chunking(self, tmp_path):
+        """When the 200 response body hashes to the same value, return from_cache=True."""
+        content = "A" * 200  # longer than 100 chars so extraction passes
+        url = "https://example.com/page"
+        existing_hash = _content_hash(content)
+        cached_chunks = [_make_chunk(url)]
+        cache = CrawlCache(raw_dir=str(tmp_path))
+        cache._data[url] = self._make_cache_entry(url, None, existing_hash, cached_chunks)
+
+        html = f"<html><head><title>Test</title></head><body><p>{content}</p></body></html>"
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock(return_value=_make_httpx_response(200, html))
+
+        source = self._make_source()
+        crawler = UKAutismCrawler(cache=cache)
+        crawler.session = mock_session
+
+        with patch("trafilatura.extract", return_value=content):
+            doc, from_cache = asyncio.run(crawler.crawl_url(url, source))
+
+        assert doc is None
+        assert from_cache is True
+
+    def test_changed_content_returns_fresh_doc(self, tmp_path):
+        """When content hash differs, a fresh CrawledDocument is returned."""
+        old_content = "old content " * 20
+        new_content = "new content " * 20
+        url = "https://example.com/page"
+        cache = CrawlCache(raw_dir=str(tmp_path))
+        cache._data[url] = self._make_cache_entry(url, None, _content_hash(old_content), [_make_chunk(url)])
+
+        html = f"<html><head><title>Test</title></head><body><p>{new_content}</p></body></html>"
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock(return_value=_make_httpx_response(200, html))
+
+        source = self._make_source()
+        crawler = UKAutismCrawler(cache=cache)
+        crawler.session = mock_session
+
+        with patch("trafilatura.extract", return_value=new_content):
+            doc, from_cache = asyncio.run(crawler.crawl_url(url, source))
+
+        assert from_cache is False
+        assert doc is not None
+        assert doc.url == url
+
+    def test_no_cache_always_fetches(self, tmp_path):
+        """Without a cache, crawl_url should always return a fresh document."""
+        content = "fresh content " * 20
+        url = "https://example.com/page"
+        html = f"<html><head><title>Test</title></head><body><p>{content}</p></body></html>"
+
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock(return_value=_make_httpx_response(200, html))
+
+        source = self._make_source()
+        crawler = UKAutismCrawler(cache=None)  # no cache
+        crawler.session = mock_session
+
+        with patch("trafilatura.extract", return_value=content):
+            doc, from_cache = asyncio.run(crawler.crawl_url(url, source))
+
+        assert from_cache is False
+        assert doc is not None
+
+
+# ── crawl_and_chunk_all() integration ─────────────────────────────────────────
+
+
+class TestCrawlAndChunkAllCache:
+    """
+    Verify that crawl_and_chunk_all() populates the on-disk cache after the
+    first run and reuses cached chunks on the second run (without re-fetching).
+    Tests run synchronously via asyncio.run() to avoid needing pytest-asyncio.
+    """
+
+    def _fake_html(self, content: str) -> str:
+        return f"<html><head><title>T</title></head><body><p>{content}</p></body></html>"
+
+    def _fake_source(self, url: str):
+        base, path = url.rsplit("/", 1)
+        src = MagicMock(
+            base_url=base,
+            crawl_paths=[f"/{path}"],
+            description="D",
+            authority=MagicMock(value="official"),
+            location_specific=False,
+        )
+        # `name` is a special MagicMock constructor arg (sets display name, not .name
+        # attribute), so set it separately to ensure source.name returns a plain string.
+        src.name = "S"
+        return src
+
+    def test_cache_populated_after_first_run(self, tmp_path):
+        """After crawl_and_chunk_all(), crawl_cache.json should exist and hold chunks."""
+        content = "page content " * 50
+        url = "https://example.com/path"
+        mock_response = _make_httpx_response(200, self._fake_html(content))
+
+        with (
+            patch("httpx.AsyncClient.get", new=AsyncMock(return_value=mock_response)),
+            patch("trafilatura.extract", return_value=content),
+            patch("rag.crawler.UK_SOURCES", [self._fake_source(url)]),
+        ):
+            chunks = asyncio.run(crawl_and_chunk_all(raw_dir=str(tmp_path), use_cache=True))
+
+        assert len(chunks) > 0
+        cache_path = tmp_path / "crawl_cache.json"
+        assert cache_path.exists()
+        with open(cache_path) as f:
+            data = json.load(f)
+        assert url in data
+
+    def test_use_cache_false_skips_cache(self, tmp_path):
+        """use_cache=False should not write a cache file."""
+        content = "page content " * 50
+        mock_response = _make_httpx_response(200, self._fake_html(content))
+
+        with (
+            patch("httpx.AsyncClient.get", new=AsyncMock(return_value=mock_response)),
+            patch("trafilatura.extract", return_value=content),
+            patch("rag.crawler.UK_SOURCES", [self._fake_source("https://example.com/path")]),
+        ):
+            asyncio.run(crawl_and_chunk_all(raw_dir=str(tmp_path), use_cache=False))
+
+        cache_path = tmp_path / "crawl_cache.json"
+        assert not cache_path.exists()
+
+    def test_second_run_reuses_cache_on_304(self, tmp_path):
+        """Second call with 304 response should return cached chunks without re-chunking."""
+        content = "stable content " * 50
+        url = "https://example.com/path"
+        fake_html = self._fake_html(content)
+
+        # Pre-populate cache as if the first run already ran
+        cache = CrawlCache(raw_dir=str(tmp_path))
+        cached_chunks = [_make_chunk(url, 0)]
+        cache.update(url, etag='"v1"', last_modified=None,
+                     content_hash=_content_hash(content), chunks=cached_chunks)
+
+        # Second run: server returns 304
+        mock_304 = _make_httpx_response(304)
+
+        with (
+            patch("httpx.AsyncClient.get", new=AsyncMock(return_value=mock_304)),
+            patch("trafilatura.extract", return_value=content),
+            patch("rag.crawler.UK_SOURCES", [self._fake_source(url)]),
+        ):
+            chunks = asyncio.run(crawl_and_chunk_all(raw_dir=str(tmp_path), use_cache=True))
+
+        # Should return the cached chunk without re-fetching content
+        urls_in_result = [c.get("metadata", {}).get("url") for c in chunks]
+        assert url in urls_in_result

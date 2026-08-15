@@ -53,6 +53,14 @@ def main():
              "seed data. Crawled pages are saved to data/raw/ and added to ChromaDB "
              "alongside the seed entries (duplicate URLs are skipped)."
     )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Force a full re-crawl even if a crawl cache exists in data/raw/. "
+             "By default, pages whose content hasn't changed since the last run "
+             "are skipped using HTTP caching signals (ETag/Last-Modified) or a "
+             "SHA-256 content hash."
+    )
     args = parser.parse_args()
 
     seed_path = Path(args.seed_file)
@@ -81,9 +89,13 @@ def main():
     if args.crawl:
         from rag.crawler import crawl_and_chunk_all, save_crawled_chunks
 
-        logger.info("Crawling trusted UK web sources (this may take a minute)...")
+        use_cache = not args.no_cache
+        if use_cache:
+            logger.info("Crawling trusted UK web sources (unchanged pages will be skipped via cache)...")
+        else:
+            logger.info("Crawling trusted UK web sources (full re-crawl, cache disabled)...")
         try:
-            crawled_chunks = asyncio.run(crawl_and_chunk_all())
+            crawled_chunks = asyncio.run(crawl_and_chunk_all(use_cache=use_cache))
             logger.info(f"Crawled {len(crawled_chunks)} chunks from live sources.")
             if crawled_chunks:
                 saved_path = save_crawled_chunks(crawled_chunks)
