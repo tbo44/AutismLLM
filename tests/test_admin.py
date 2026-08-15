@@ -186,3 +186,110 @@ def test_read_questions_stats_naive_timestamp_treated_as_utc(logs_dir):
     stats = _read_questions_stats()
     assert stats["total_questions"] == 1
     assert stats["questions_7d"] == 1
+
+
+# ── /admin/login  (GET) ───────────────────────────────────────────────
+
+
+def test_login_get_shows_form(admin_token):
+    """GET /admin/login with no cookie returns the sign-in form."""
+    resp = client.get("/admin/login", follow_redirects=False)
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    body = resp.text
+    assert "Sign in" in body
+    assert "Admin password" in body
+
+
+def test_login_get_already_signed_in_redirects_to_admin(admin_token):
+    """GET /admin/login with a valid session cookie goes straight to /admin."""
+    resp = client.get(
+        "/admin/login",
+        cookies={main._ADMIN_COOKIE_NAME: VALID_TOKEN},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/admin"
+
+
+# ── /admin/login  (POST) ──────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=False)
+def clear_login_attempts():
+    """Reset the in-memory login-attempts store before and after each test."""
+    main._login_attempts.clear()
+    yield
+    main._login_attempts.clear()
+
+
+def test_login_post_correct_token_redirects_and_sets_cookie(admin_token, clear_login_attempts):
+    """Submitting the correct token redirects to /admin and sets the session cookie."""
+    resp = client.post(
+        "/admin/login",
+        data={"token": VALID_TOKEN},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/admin"
+    # The session cookie must be present in the response
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert main._ADMIN_COOKIE_NAME in set_cookie
+
+
+def test_login_post_wrong_token_rerenders_form_with_error(admin_token, clear_login_attempts):
+    """Submitting a wrong token returns 401 and shows the form with an error message."""
+    resp = client.post(
+        "/admin/login",
+        data={"token": "definitely-wrong"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 401
+    assert "text/html" in resp.headers["content-type"]
+    assert "Incorrect password" in resp.text
+
+
+def test_login_post_empty_token_rerenders_form(admin_token, clear_login_attempts):
+    """Submitting an empty token also returns 401 with the sign-in form."""
+    resp = client.post(
+        "/admin/login",
+        data={"token": ""},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 401
+    assert "Sign in" in resp.text
+
+
+# ── /admin/logout ─────────────────────────────────────────────────────
+
+
+def test_logout_clears_cookie_and_redirects(admin_token):
+    """GET /admin/logout deletes the session cookie and redirects to /admin/login."""
+    resp = client.get("/admin/logout", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/admin/login"
+    # The cookie should be cleared (max-age=0 or expires in the past)
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert main._ADMIN_COOKIE_NAME in set_cookie
+    # FastAPI's delete_cookie sets max-age=0
+    assert "max-age=0" in set_cookie.lower()
+
+
+def test_logout_works_without_existing_cookie(admin_token):
+    """Logout with no cookie still redirects cleanly (no crash)."""
+    resp = client.get("/admin/logout", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/admin/login"
+
+
+# ── Cookie-based /admin access ────────────────────────────────────────
+
+
+def test_admin_valid_cookie_returns_dashboard(admin_token):
+    """A valid session cookie grants access to /admin without a query param."""
+    resp = client.get(
+        "/admin",
+        cookies={main._ADMIN_COOKIE_NAME: VALID_TOKEN},
+    )
+    assert resp.status_code == 200
+    assert "Knowledge Base" in resp.text
