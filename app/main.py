@@ -7,6 +7,7 @@ from enum import Enum
 import pytz
 from datetime import datetime, timezone, timedelta
 import logging
+import logging.handlers
 import json
 import os
 import re
@@ -34,7 +35,9 @@ _reindex_logger = logging.getLogger("maya.reindex_history")
 _reindex_logger.setLevel(logging.INFO)
 _reindex_logger.propagate = False
 if not _reindex_logger.handlers:
-    _reindex_fh = logging.FileHandler("logs/reindex.log")
+    _reindex_fh = logging.handlers.RotatingFileHandler(
+        "logs/reindex.log", maxBytes=512 * 1024, backupCount=3
+    )
     _reindex_fh.setFormatter(
         logging.Formatter("%(asctime)s  %(levelname)-7s  %(message)s")
     )
