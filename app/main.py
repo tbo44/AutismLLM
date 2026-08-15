@@ -584,6 +584,7 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
 
     total_chunks = kb.get("total_chunks")
     chunks_display = "—" if total_chunks is None else str(total_chunks)
+    kb_running_js = "true" if kb.get("running") else "false"
 
     if kb.get("running"):
         kb_status_html = '<span class="badge badge-run">Re-indexing now…</span>'
@@ -733,26 +734,26 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
   <div class="kb-grid">
     <div class="kb-item">
       <div class="kb-label">Total chunks stored</div>
-      <div class="kb-val">{chunks_display}</div>
+      <div class="kb-val" id="kbChunks">{chunks_display}</div>
     </div>
     <div class="kb-item">
       <div class="kb-label">Last re-index</div>
-      <div class="kb-val">{last_run_uk}</div>
+      <div class="kb-val" id="kbLastRun">{last_run_uk}</div>
     </div>
     <div class="kb-item">
       <div class="kb-label">Duration</div>
-      <div class="kb-val">{duration_display}</div>
+      <div class="kb-val" id="kbDuration">{duration_display}</div>
     </div>
     <div class="kb-item">
       <div class="kb-label">Last result</div>
-      <div class="kb-val">{kb_status_html}</div>
+      <div class="kb-val" id="kbStatusBadge">{kb_status_html}</div>
     </div>
     <div class="kb-item">
       <div class="kb-label">Schedule</div>
       <div class="kb-val" style="font-size:0.9rem;font-weight:500;">{sched_text}</div>
     </div>
   </div>
-  {f'<p style="font-size:0.85rem;color:#555;margin:0 0 1rem;">Details: {last_detail}</p>' if last_detail else ''}
+  <p id="kbDetails" style="font-size:0.85rem;color:#555;margin:0 0 1rem;">{f'Details: {last_detail}' if last_detail else ''}</p>
   <div class="kb-actions">
     <button id="reindexBtn" class="reindex-btn" onclick="triggerReindex()">Re-index now</button>
     <span id="reindexMsg" class="reindex-msg"></span>
@@ -782,23 +783,143 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
 
 <p class="footer">Maya Admin &mdash; Autism Hounslow &mdash; For internal use only</p>
 <script>
+/* ── Knowledge Base live-polling ─────────────────────────────────────────── */
+var _crawlToken = '';
+var _pollTimer  = null;
+var _pollInterval = 4000; // ms between status checks
+
+// Helpers to read / format UK time in the browser (mirrors server _fmt_uk_time).
+function _fmtUkTime(isoStr) {{
+  if (!isoStr) {{ return 'Never'; }}
+  try {{
+    var d = new Date(isoStr);
+    return d.toLocaleString('en-GB', {{
+      timeZone: 'Europe/London',
+      day: '2-digit', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit'
+    }}) + ' BST/GMT';
+  }} catch (e) {{ return isoStr; }}
+}}
+
+function _badgeHtml(running, lastResult) {{
+  if (running) {{
+    return '<span class="badge badge-run">Re-indexing now\u2026</span>';
+  }}
+  if (!lastResult) {{
+    return '<span class="badge badge-none">No runs yet</span>';
+  }}
+  if (lastResult.success) {{
+    return '<span class="badge badge-ok">Success</span>';
+  }}
+  return '<span class="badge badge-err">Failed</span>';
+}}
+
+function _detailText(running, lastResult) {{
+  if (running || !lastResult) {{ return ''; }}
+  if (lastResult.success) {{
+    var parts = [];
+    if (lastResult.total_chunks  != null) {{ parts.push(lastResult.total_chunks + ' chunks'); }}
+    if (lastResult.seed_chunks   != null) {{ parts.push('seed ' + lastResult.seed_chunks); }}
+    if (lastResult.crawled_chunks!= null) {{ parts.push('crawled ' + lastResult.crawled_chunks); }}
+    return parts.length ? 'Details: ' + parts.join(', ') : '';
+  }}
+  var err = lastResult.error || lastResult.stderr_tail ||
+            (lastResult.exit_code != null ? 'exit code ' + lastResult.exit_code : 'Unknown error');
+  return 'Details: ' + err;
+}}
+
+function _applyStatus(data) {{
+  var running    = data.running;
+  var lastResult = data.last_result || null;
+
+  document.getElementById('kbStatusBadge').innerHTML =
+    _badgeHtml(running, lastResult);
+
+  document.getElementById('kbLastRun').textContent =
+    _fmtUkTime(data.last_run) || 'Never';
+
+  var elapsed = lastResult && lastResult.elapsed_seconds != null
+                ? lastResult.elapsed_seconds + 's' : '\u2014';
+  document.getElementById('kbDuration').textContent = elapsed;
+
+  var chunks = lastResult && lastResult.total_chunks != null
+               ? String(lastResult.total_chunks) : '\u2014';
+  document.getElementById('kbChunks').textContent = chunks;
+
+  var det = document.getElementById('kbDetails');
+  det.textContent = _detailText(running, lastResult);
+
+  var msg = document.getElementById('reindexMsg');
+  var btn = document.getElementById('reindexBtn');
+
+  if (!running) {{
+    btn.disabled = false;
+    if (lastResult) {{
+      if (lastResult.success) {{
+        msg.style.color = '#1b7a3d';
+        msg.textContent = 'Re-index finished successfully.';
+      }} else {{
+        msg.style.color = '#b00020';
+        var errMsg = lastResult.error || lastResult.stderr_tail ||
+                     (lastResult.exit_code != null
+                       ? 'Script exited with code ' + lastResult.exit_code
+                       : 'Re-index failed — check server logs.');
+        msg.textContent = 'Re-index failed: ' + errMsg;
+      }}
+    }}
+    _stopPolling();
+  }}
+}}
+
+function _pollOnce() {{
+  fetch('/admin/crawl/status', {{
+    headers: {{ 'Authorization': 'Bearer ' + _crawlToken }}
+  }})
+  .then(function (r) {{
+    if (!r.ok) {{ _stopPolling(); return null; }}
+    return r.json();
+  }})
+  .then(function (data) {{
+    if (data) {{ _applyStatus(data); }}
+  }})
+  .catch(function () {{ /* network hiccup — keep trying */ }});
+}}
+
+function _startPolling(token) {{
+  _crawlToken = token;
+  if (_pollTimer) {{ return; }}   // already polling
+  document.getElementById('reindexBtn').disabled = true;
+  _pollOnce();                    // immediate first check
+  _pollTimer = setInterval(_pollOnce, _pollInterval);
+}}
+
+function _stopPolling() {{
+  if (_pollTimer) {{
+    clearInterval(_pollTimer);
+    _pollTimer = null;
+  }}
+}}
+
+/* ── Re-index button ─────────────────────────────────────────────────────── */
 function triggerReindex() {{
   var btn = document.getElementById('reindexBtn');
   var msg = document.getElementById('reindexMsg');
   var token = window.prompt('Enter the crawl admin token (ADMIN_CRAWL_TOKEN) to start a full re-index:');
   if (!token) {{ return; }}
+  token = token.trim();
   btn.disabled = true;
   msg.style.color = '#444';
-  msg.textContent = 'Starting re-index…';
+  msg.textContent = 'Starting re-index\u2026';
   fetch('/admin/crawl', {{
     method: 'POST',
-    headers: {{ 'Authorization': 'Bearer ' + token.trim() }}
+    headers: {{ 'Authorization': 'Bearer ' + token }}
   }})
   .then(function (r) {{ return r.json().then(function (d) {{ return {{ ok: r.ok, body: d }}; }}); }})
   .then(function (res) {{
     if (res.ok) {{
-      msg.style.color = '#1b7a3d';
-      msg.textContent = (res.body && res.body.message) || 'Re-index started. Refresh in a minute to see progress.';
+      msg.style.color = '#2a52b5';
+      msg.textContent = (res.body && res.body.message) || 'Re-index started — updating live\u2026';
+      _startPolling(token);
     }} else {{
       btn.disabled = false;
       msg.style.color = '#b00020';
@@ -811,6 +932,23 @@ function triggerReindex() {{
     msg.textContent = 'Error: ' + e;
   }});
 }}
+
+/* ── Auto-start polling if a run is already in progress on page load ─────── */
+(function () {{
+  var runningOnLoad = {kb_running_js};
+  if (runningOnLoad) {{
+    var token = window.prompt(
+      'A re-index is already in progress.\n' +
+      'Enter the crawl admin token (ADMIN_CRAWL_TOKEN) to watch live progress, ' +
+      'or press Cancel to continue without live updates:'
+    );
+    if (token && token.trim()) {{
+      document.getElementById('reindexMsg').textContent = 'Watching live progress\u2026';
+      document.getElementById('reindexMsg').style.color = '#2a52b5';
+      _startPolling(token.trim());
+    }}
+  }}
+}})();
 </script>
 </body>
 </html>"""
