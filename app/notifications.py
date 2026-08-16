@@ -66,6 +66,37 @@ def is_configured() -> bool:
     return bool(_recipients())
 
 
+def get_status() -> dict:
+    """
+    Return a safe summary of alert configuration for display in the admin
+    dashboard.  Never exposes SMTP credentials — only the recipient
+    address(es) and the last-sent timestamp.
+
+    Keys:
+      configured       (bool)        — True if REINDEX_ALERT_EMAIL_TO is set.
+      recipient_display (str | None) — Human-readable destination, e.g.
+                                       "staff@example.org" or
+                                       "Repl owner (Replit mail)".
+      last_sent_at     (str | None)  — ISO-8601 UTC timestamp of the most
+                                       recent alert, or None if never sent.
+    """
+    recipients = _recipients()
+    configured = bool(recipients)
+    if not configured:
+        recipient_display = None
+    elif recipients == ["replit"]:
+        recipient_display = "Repl owner (Replit mail)"
+    else:
+        recipient_display = ", ".join(recipients)
+
+    last = _last_sent_at()
+    return {
+        "configured": configured,
+        "recipient_display": recipient_display,
+        "last_sent_at": last.isoformat() if last else None,
+    }
+
+
 def _throttle_hours() -> float:
     try:
         return max(0.0, float(_env("REINDEX_ALERT_THROTTLE_HOURS", "24")))

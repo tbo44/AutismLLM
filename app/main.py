@@ -553,6 +553,7 @@ def _read_kb_health() -> dict:
             "mode": _SCHEDULED_REINDEX_MODE,
             "next_run": next_run,
         },
+        "email_alerts": notifications.get_status(),
         "history": _read_reindex_history(),
     }
 
@@ -663,6 +664,20 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
             f'<div class="alert">⚠️ {_esc(alert["message"])} '
             f'<span class="alert-at">({_fmt_uk_time(alert.get("at"))})</span></div>'
         )
+
+    # ── Email alert status ─────────────────────────────────────────────────
+    email_alerts = kb.get("email_alerts") or {}
+    if email_alerts.get("configured"):
+        recipient = _esc(email_alerts.get("recipient_display") or "unknown")
+        email_status_html = f'<span class="badge badge-ok">On</span> &nbsp;<span style="font-size:0.85rem;font-weight:400;color:#444">{recipient}</span>'
+        last_alert_str = _fmt_uk_time(email_alerts.get("last_sent_at"))
+    else:
+        email_status_html = (
+            '<span class="badge badge-none">Off</span>'
+            ' &nbsp;<span style="font-size:0.8rem;color:#777">'
+            'Set <code>REINDEX_ALERT_EMAIL_TO</code> in Secrets to enable</span>'
+        )
+        last_alert_str = "—"
 
     history_rows = ""
     for h in kb.get("history", []):
@@ -779,6 +794,14 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
     <div class="kb-item">
       <div class="kb-label">Schedule</div>
       <div class="kb-val" style="font-size:0.9rem;font-weight:500;">{sched_text}</div>
+    </div>
+    <div class="kb-item">
+      <div class="kb-label">Email alerts</div>
+      <div class="kb-val" style="font-size:0.9rem;">{email_status_html}</div>
+    </div>
+    <div class="kb-item">
+      <div class="kb-label">Last alert sent</div>
+      <div class="kb-val" style="font-size:0.9rem;font-weight:500;">{last_alert_str}</div>
     </div>
   </div>
   <p id="kbDetails" style="font-size:0.85rem;color:#555;margin:0 0 1rem;">{f'Details: {last_detail}' if last_detail else ''}</p>
@@ -1505,6 +1528,7 @@ async def admin_crawl_status(authorization: str | None = Header(default=None)):
             "mode": _SCHEDULED_REINDEX_MODE,
             "next_run": next_run,
         },
+        "email_alerts": notifications.get_status(),
     }
 
 
