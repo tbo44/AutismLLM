@@ -21,9 +21,10 @@ This README is the developer playbook: full specification, setup, operations, an
 11. [Deploying on Replit (Autoscale)](#11-deploying-on-replit-autoscale)
 12. [Custom subdomain setup](#12-custom-subdomain-setup)
 13. [Wix integration instructions](#13-wix-integration-instructions)
-14. [Contributing](#14-contributing)
-15. [Roadmap](#15-roadmap)
-16. [Privacy](#16-privacy)
+14. [Syncing to GitHub](#14-syncing-to-github)
+15. [Contributing](#15-contributing)
+16. [Roadmap](#16-roadmap)
+17. [Privacy](#17-privacy)
 
 ---
 
@@ -319,7 +320,41 @@ Page: "Get Information"
 
 ---
 
-## 14. Contributing
+## 14. Syncing to GitHub
+
+The live app is the source of truth; the GitHub repo at
+[github.com/tbo44/AutismLLM](https://github.com/tbo44/AutismLLM) is kept in sync
+with it so collaborators always see current code.
+
+### One-step sync
+
+Run this from inside the Replit shell after any round of changes:
+
+```bash
+python scripts/sync_to_github.py
+```
+
+The script:
+1. Fetches a short-lived OAuth token from the **Replit GitHub integration** (no
+   personal token or password needed — the integration must be connected to this
+   Repl via **Integrations → GitHub**).
+2. Clones the Replit workspace into a temporary directory.
+3. Pushes `main` to `github.com/tbo44/AutismLLM`.
+4. Deletes the temporary clone (and the embedded token) immediately afterwards.
+
+> **Prerequisite:** The GitHub integration must be connected. If it isn't, open
+> the Replit sidebar → **Integrations** → **GitHub** → **Connect** (one-time
+> OAuth flow, then it persists).
+
+### When to run it
+
+Push to GitHub after any session where you commit changes — at the end of a
+feature, a fix, or any content update. You do not need to push after every
+individual commit; once per work session is enough.
+
+---
+
+## 15. Contributing
 
 1. **Adding knowledge**: edit the seed JSONL (include all required fields, verify against official sources, set `reliability_score` honestly), then `python scripts/reindex.py` and run `pytest tests/test_retrieval_coverage.py`.
 2. **Changing answers/prompts**: the structured format and reading-level rules live in `rag/llm_client.py` (`synthesize_response`). Run `pytest tests/test_answers.py` after changes.
@@ -329,7 +364,7 @@ Page: "Get Information"
 
 ---
 
-## 15. Roadmap
+## 16. Roadmap
 
 The current app is live and stable; the following improvements are planned or in progress:
 
@@ -359,7 +394,7 @@ This list evolves — check the project task board (or ask the maintainer) for c
 
 ---
 
-## 16. Privacy
+## 17. Privacy
 
 Maya logs question text and retrieved source IDs to `logs/questions.log` to help
 improve the service. No user identity (IP address, name, session ID) is ever stored.
