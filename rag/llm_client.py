@@ -19,6 +19,7 @@ import json
 import logging
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
+import openai
 
 from .structured_formatter import StructuredDataFormatter
 
@@ -211,6 +212,9 @@ CONTEXT INFORMATION:
             generated_text = response.choices[0].message.content or ""
             return {"response": generated_text, "sources_used": list(sources_used), "chunks_used": len(retrieved_chunks), "model_used": self.model, "success": True}
 
+        except openai.RateLimitError as e:
+            logger.warning(f"LLM rate limit reached during response synthesis: {str(e)}")
+            return {"response": "", "sources_used": [], "chunks_used": 0, "model_used": self.model, "success": False, "rate_limited": True, "error": str(e)}
         except Exception as e:
             logger.error(f"Error generating response: {str(e)}")
             return {"response": "I'm sorry, I'm having trouble generating a response right now. Please try again in a moment.", "sources_used": [], "chunks_used": 0, "model_used": self.model, "success": False, "error": str(e)}
@@ -276,6 +280,9 @@ CONTEXT INFORMATION:
                 except json.JSONDecodeError:
                     pass
             return {"appropriate": True, "reason": "Parse error", "category": "unknown"}
+        except openai.RateLimitError as e:
+            logger.warning(f"LLM rate limit reached during appropriateness check: {str(e)}")
+            return {"appropriate": True, "reason": "Rate limited", "category": "unknown", "rate_limited": True}
         except Exception as e:
             logger.error(f"Appropriateness check error: {str(e)}")
             return {"appropriate": True, "reason": "Check failed", "category": "unknown"}

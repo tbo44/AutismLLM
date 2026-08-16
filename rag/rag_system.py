@@ -168,6 +168,15 @@ class UKAutismRAGSystem:
             
             # Check content appropriateness
             appropriateness = self.llm_client.check_content_appropriateness(user_question)
+            if appropriateness.get("rate_limited"):
+                return {
+                    "answer": (
+                        "The AI provider is temporarily unavailable due to a rate limit. "
+                        "Please try again in a few minutes."
+                    ),
+                    "sources": [],
+                    "rate_limited": True,
+                }
             if not appropriateness.get("appropriate", True):
                 off_topic_response = f"""I'm focused on providing information about autism in the UK. 
 
@@ -197,6 +206,15 @@ Please feel free to ask me about any of these topics!"""
             )
             
             if not llm_result["success"]:
+                if llm_result.get("rate_limited"):
+                    return {
+                        "answer": (
+                            "The AI provider is temporarily unavailable due to a rate limit. "
+                            "Please try again in a few minutes."
+                        ),
+                        "sources": [],
+                        "rate_limited": True,
+                    }
                 return self._handle_generation_error(user_question)
             
             # Extract sources from LLM result

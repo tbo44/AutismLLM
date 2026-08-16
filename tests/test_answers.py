@@ -19,7 +19,10 @@ from app.main import app
 client = TestClient(app)
 
 
-# ── helper ────────────────────────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+_RATE_LIMIT_SENTINEL = "AI provider is temporarily unavailable due to a rate limit"
+
 
 def ask(question: str, comprehension_level: str = "standard") -> dict:
     """POST /chat and return the parsed JSON response."""
@@ -33,6 +36,16 @@ def ask(question: str, comprehension_level: str = "standard") -> dict:
     return resp.json()
 
 
+def skip_if_rate_limited(data: dict) -> None:
+    """Skip the current test if the LLM provider hit its daily/minute rate limit.
+
+    Spurious 429 errors from the provider are not a regression in app code —
+    skipping keeps the suite green for real failures.
+    """
+    if _RATE_LIMIT_SENTINEL in data.get("answer", ""):
+        pytest.skip("LLM provider rate-limited (HTTP 429) — skipping to avoid false failure")
+
+
 # ── Topic 1: Blue Badge application ──────────────────────────────────────────
 
 def test_blue_badge_answer_contains_keyword_and_source():
@@ -42,6 +55,7 @@ def test_blue_badge_answer_contains_keyword_and_source():
       • return at least one source with a non-empty URL.
     """
     data = ask("How do I apply for a Blue Badge for my autistic child?")
+    skip_if_rate_limited(data)
     answer = data["answer"].lower()
     sources = data.get("sources", [])
 
@@ -66,6 +80,7 @@ def test_ehcp_answer_contains_structured_section():
     so that the retriever consistently returns relevant seed-data chunks.
     """
     data = ask("What is the EHCP annual review process for autism?")
+    skip_if_rate_limited(data)
     answer = data["answer"]
 
     ehcp_mentioned = (
@@ -100,6 +115,7 @@ def test_pip_appeal_does_not_trigger_guardrail(question):
     trigger the legal-advice or clinical-advice guardrail.
     """
     data = ask(question)
+    skip_if_rate_limited(data)
     answer = data["answer"]
 
     assert "I can't give case-specific legal advice" not in answer, (
@@ -123,6 +139,7 @@ def test_hounslow_question_cites_hounslow_source():
     Both would demonstrate that local Hounslow knowledge is being retrieved.
     """
     data = ask("What autism support services are available in Hounslow?")
+    skip_if_rate_limited(data)
     sources = data.get("sources", [])
     answer_lower = data["answer"].lower()
 
@@ -200,10 +217,13 @@ def test_comprehension_levels_change_answer_complexity():
     """
     question = "How do I apply for an EHCP for my autistic child?"
 
-    answers = {
-        level: ask(question, comprehension_level=level)["answer"]
+    level_data = {
+        level: ask(question, comprehension_level=level)
         for level in ("clear", "standard", "complex")
     }
+    for _d in level_data.values():
+        skip_if_rate_limited(_d)
+    answers = {level: d["answer"] for level, d in level_data.items()}
 
     for level, answer in answers.items():
         assert answer.strip(), f"Empty answer returned for comprehension level '{level}'."
@@ -292,7 +312,9 @@ def test_clear_level_avoids_unexplained_acronyms():
     that is central to accessibility for users with learning disabilities.
     """
     question = "How do I apply for an EHCP and PIP for my autistic child?"
-    answer = ask(question, comprehension_level="clear")["answer"]
+    data = ask(question, comprehension_level="clear")
+    skip_if_rate_limited(data)
+    answer = data["answer"]
 
     assert answer.strip(), "Empty answer returned at 'clear' comprehension level."
 
@@ -323,6 +345,7 @@ def test_off_topic_question_returns_redirect(off_topic_question):
     check_content_appropriateness path in the LLM client.
     """
     data = ask(off_topic_question)
+    skip_if_rate_limited(data)
     answer = data["answer"]
 
     assert "I'm focused on providing information about autism" in answer, (
