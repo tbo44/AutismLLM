@@ -1508,6 +1508,36 @@ async def admin_crawl_status(authorization: str | None = Header(default=None)):
     }
 
 
+@app.post("/admin/alerts/test")
+async def admin_test_alert(authorization: str | None = Header(default=None)):
+    """
+    Send a test alert email to verify that failure notifications are correctly
+    configured, without waiting for an actual re-index failure.
+
+    The test email is sent through exactly the same code path as a real failure
+    alert (SMTP or Replit mail), but it does NOT touch the throttle timestamp,
+    so no real failure alert will be suppressed as a result.
+
+    Requires Bearer token matching ADMIN_CRAWL_TOKEN environment variable.
+
+    Example:
+        curl -X POST https://<host>/admin/alerts/test \\
+             -H "Authorization: Bearer <your-token>"
+
+    Response:
+        200 — email sent (or not configured — see "configured"/"sent" fields).
+        {
+          "sent": true,
+          "configured": true,
+          "recipient": "staff@example.com",
+          "error": null
+        }
+    """
+    _verify_admin_token(authorization)
+    result = await asyncio.to_thread(notifications.send_test_alert)
+    return result
+
+
 @app.post("/admin/reindex")
 async def admin_reindex(authorization: str | None = Header(default=None)):
     """

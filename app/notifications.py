@@ -225,3 +225,60 @@ def notify_reindex_failure_async(source: str, detail: str, when: str) -> None:
         daemon=True,
         name="reindex-alert-email",
     ).start()
+
+
+def send_test_alert() -> dict:
+    """
+    Send a test alert email through the same code path as a real failure alert,
+    but WITHOUT touching the throttle timestamp so no real alert is suppressed.
+
+    Returns a dict with keys:
+      - sent (bool): True if the email was dispatched without error.
+      - recipient (str | None): Who it was sent to, or None if not configured.
+      - error (str | None): Error message if the send failed.
+      - configured (bool): Whether REINDEX_ALERT_EMAIL_TO is set at all.
+    """
+    recipients = _recipients()
+    if not recipients:
+        return {
+            "sent": False,
+            "configured": False,
+            "recipient": None,
+            "error": (
+                "REINDEX_ALERT_EMAIL_TO is not set. "
+                "Add it in Secrets to enable alert emails."
+            ),
+        }
+
+    when = datetime.now(timezone.utc).isoformat()
+    subject = "[Maya] Test alert — notification setup check"
+    body = (
+        "This is a test alert from Maya.\n\n"
+        "If you received this, Maya's re-index failure notifications are configured\n"
+        "correctly and will reach you when an automatic refresh fails.\n\n"
+        f"Sent at: {when}\n\n"
+        "No action is required. This test does not affect the failure alert throttle."
+    )
+
+    try:
+        if recipients == ["replit"]:
+            _send_replit_mail(subject, body)
+            sent_to = "Repl owner (Replit mail)"
+        else:
+            _send_smtp(recipients, subject, body)
+            sent_to = ", ".join(recipients)
+        logger.info(f"📧 Test alert email sent to {sent_to}.")
+        return {
+            "sent": True,
+            "configured": True,
+            "recipient": sent_to,
+            "error": None,
+        }
+    except Exception as e:
+        logger.error(f"❌ Test alert email failed: {e}")
+        return {
+            "sent": False,
+            "configured": True,
+            "recipient": ", ".join(recipients),
+            "error": str(e),
+        }

@@ -1,11 +1,17 @@
 """Tests for re-index failure email notifications (app/notifications.py)."""
 
+import os
 from unittest.mock import patch, MagicMock
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app import notifications
 from app import main as app_main
+from app.main import app
+
+_client = TestClient(app)
+_CRAWL_TOKEN = "test-crawl-token-abc"
 
 
 @pytest.fixture(autouse=True)
@@ -93,3 +99,147 @@ def test_record_reindex_result_success_resets_throttle():
         )
         reset.assert_called_once()
         notify.assert_not_called()
+
+
+# ── send_test_alert() unit tests ──────────────────────────────────────────────
+
+
+def test_send_test_alert_not_configured(monkeypatch):
+    """Returns not-sent + helpful error when REINDEX_ALERT_EMAIL_TO is absent."""
+    monkeypatch.delenv("REINDEX_ALERT_EMAIL_TO", raising=False)
+    with patch.object(notifications, "_send_smtp") as smtp, \
+         patch.object(notifications, "_send_replit_mail") as rmail:
+        result = notifications.send_test_alert()
+    assert result["sent"] is False
+    assert result["configured"] is False
+    assert result["recipient"] is None
+    assert "REINDEX_ALERT_EMAIL_TO" in result["error"]
+    smtp.assert_not_called()
+    rmail.assert_not_called()
+
+
+def test_send_test_alert_smtp_success(monkeypatch):
+    """Sends via SMTP and reports the recipients without raising."""
+    monkeypatch.setenv("REINDEX_ALERT_EMAIL_TO", "staff@example.com")
+    with patch.object(notifications, "_send_smtp") as smtp:
+        result = notifications.send_test_alert()
+    assert result["sent"] is True
+    assert result["configured"] is True
+    assert "staff@example.com" in result["recipient"]
+    assert result["error"] is None
+    smtp.assert_called_once()
+    _, subject, body = smtp.call_args[0]
+    assert "Test alert" in subject
+    assert "test" in body.lower()
+
+
+def test_send_test_alert_replit_mail(monkeypatch):
+    """Routes through Replit mailer when REINDEX_ALERT_EMAIL_TO=replit."""
+    monkeypatch.setenv("REINDEX_ALERT_EMAIL_TO", "replit")
+    with patch.object(notifications, "_send_replit_mail") as rmail, \
+         patch.object(notifications, "_send_smtp") as smtp:
+        result = notifications.send_test_alert()
+    assert result["sent"] is True
+    rmail.assert_called_once()
+    smtp.assert_not_called()
+
+
+def test_send_test_alert_transport_failure(monkeypatch):
+    """Returns sent=False with error string when the transport raises."""
+    monkeypatch.setenv("REINDEX_ALERT_EMAIL_TO", "staff@example.com")
+    with patch.object(notifications, "_send_smtp", side_effect=RuntimeError("bad creds")):
+        result = notifications.send_test_alert()
+    assert result["sent"] is False
+    assert result["configured"] is True
+    assert "bad creds" in result["error"]
+
+
+def test_send_test_alert_does_not_touch_throttle(monkeypatch, tmp_path):
+    """Test sends must never update the throttle timestamp."""
+    monkeypatch.setattr(notifications, "_THROTTLE_FILE", tmp_path / "last_sent")
+    monkeypatch.setenv("REINDEX_ALERT_EMAIL_TO", "staff@example.com")
+    with patch.object(notifications, "_send_smtp"):
+        notifications.send_test_alert()
+    # Throttle file must still not exist after a test send.
+    assert not (tmp_path / "last_sent").exists()
+
+
+def test_send_test_alert_does_not_suppress_real_failure(monkeypatch, tmp_path):
+    """A test send must not prevent the next real failure alert from going out."""
+    monkeypatch.setattr(notifications, "_THROTTLE_FILE", tmp_path / "last_sent")
+    monkeypatch.setenv("REINDEX_ALERT_EMAIL_TO", "staff@example.com")
+    monkeypatch.setenv("REINDEX_ALERT_THROTTLE_HOURS", "24")
+    with patch.object(notifications, "_send_smtp"):
+        notifications.send_test_alert()
+    # A real failure alert right after should still go out (throttle untouched).
+    with patch.object(notifications, "_send_smtp") as smtp:
+        sent = notifications.send_reindex_failure_alert("scheduled", "error", "now")
+    assert sent is True
+    smtp.assert_called_once()
+
+
+# ── POST /admin/alerts/test endpoint tests ────────────────────────────────────
+
+
+@pytest.fixture
+def crawl_token(monkeypatch):
+    monkeypatch.setenv("ADMIN_CRAWL_TOKEN", _CRAWL_TOKEN)
+    return _CRAWL_TOKEN
+
+
+def test_test_alert_endpoint_no_token(crawl_token):
+    """Missing Authorization header → 401."""
+    resp = _client.post("/admin/alerts/test")
+    assert resp.status_code == 401
+
+
+def test_test_alert_endpoint_wrong_token(crawl_token):
+    """Wrong token → 403."""
+    resp = _client.post(
+        "/admin/alerts/test",
+        headers={"Authorization": "Bearer wrong-token"},
+    )
+    assert resp.status_code == 403
+
+
+def test_test_alert_endpoint_not_configured(crawl_token, monkeypatch):
+    """Authorised call when email not configured → 200 with configured=False."""
+    monkeypatch.delenv("REINDEX_ALERT_EMAIL_TO", raising=False)
+    resp = _client.post(
+        "/admin/alerts/test",
+        headers={"Authorization": f"Bearer {_CRAWL_TOKEN}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sent"] is False
+    assert body["configured"] is False
+
+
+def test_test_alert_endpoint_sends_and_reports(crawl_token, monkeypatch):
+    """Authorised call with valid config → 200, sent=True, throttle unchanged."""
+    monkeypatch.setenv("REINDEX_ALERT_EMAIL_TO", "staff@example.com")
+    with patch.object(notifications, "_send_smtp") as smtp:
+        resp = _client.post(
+            "/admin/alerts/test",
+            headers={"Authorization": f"Bearer {_CRAWL_TOKEN}"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sent"] is True
+    assert "staff@example.com" in body["recipient"]
+    assert body["error"] is None
+    smtp.assert_called_once()
+
+
+def test_test_alert_endpoint_transport_failure(crawl_token, monkeypatch):
+    """Transport error → 200 with sent=False and error message."""
+    monkeypatch.setenv("REINDEX_ALERT_EMAIL_TO", "staff@example.com")
+    with patch.object(notifications, "_send_smtp", side_effect=RuntimeError("conn refused")):
+        resp = _client.post(
+            "/admin/alerts/test",
+            headers={"Authorization": f"Bearer {_CRAWL_TOKEN}"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sent"] is False
+    assert "conn refused" in body["error"]
