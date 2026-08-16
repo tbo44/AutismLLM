@@ -444,6 +444,25 @@ async def crawl_and_chunk_all(
     async with UKAutismCrawler(cache=cache) as crawler:
         fresh_documents, reused_chunks = await crawler.crawl_all_sources()
 
+    # Prune stale cache entries whose URLs are no longer in the active source list
+    if cache is not None:
+        active_urls: Set[str] = {
+            source.base_url + path
+            for source in UK_SOURCES
+            for path in source.crawl_paths
+        }
+        stale_urls = [url for url in list(cache._data.keys()) if url not in active_urls]
+        if stale_urls:
+            for url in stale_urls:
+                del cache._data[url]
+            cache._save()
+            logger.info(
+                f"Cache pruned: removed {len(stale_urls)} stale entry/entries "
+                f"for URL(s) no longer in the active source list."
+            )
+        else:
+            logger.debug("Cache pruning: no stale entries found.")
+
     # Chunk freshly fetched documents and persist to cache
     fresh_chunks: List[Dict[str, Any]] = []
     for doc in fresh_documents:
