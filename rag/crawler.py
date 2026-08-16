@@ -15,7 +15,7 @@ import os
 from urllib.parse import urljoin, urlparse
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import pytz
 
 from .sources import UK_SOURCES, Source, SourceAuthority
@@ -45,10 +45,25 @@ class CrawlCache:
     the crawl is interrupted.
     """
 
-    def __init__(self, raw_dir: str = "data/raw"):
+    #: Default maximum age (days) — overridden by the CRAWL_CACHE_MAX_AGE_DAYS env var.
+    DEFAULT_MAX_AGE_DAYS = 30
+
+    def __init__(self, raw_dir: str = "data/raw", max_age_days: Optional[int] = None):
         self.raw_dir = raw_dir
         self._path = os.path.join(raw_dir, CACHE_FILE_NAME)
         self._data: Dict[str, Dict[str, Any]] = {}
+        # Resolve max age: explicit argument → env var → built-in default
+        if max_age_days is None:
+            env_val = os.environ.get("CRAWL_CACHE_MAX_AGE_DAYS", "")
+            try:
+                max_age_days = int(env_val) if env_val.strip() else self.DEFAULT_MAX_AGE_DAYS
+            except ValueError:
+                logger.warning(
+                    f"CrawlCache: invalid CRAWL_CACHE_MAX_AGE_DAYS value {env_val!r}; "
+                    f"using default {self.DEFAULT_MAX_AGE_DAYS} days."
+                )
+                max_age_days = self.DEFAULT_MAX_AGE_DAYS
+        self.max_age_days: int = max_age_days
         self._load()
 
     # ------------------------------------------------------------------
@@ -80,8 +95,35 @@ class CrawlCache:
     # ------------------------------------------------------------------
 
     def get(self, url: str) -> Optional[Dict[str, Any]]:
-        """Return the cached entry for *url*, or None if not cached."""
-        return self._data.get(url)
+        """Return the cached entry for *url*, or None if not cached or too old.
+
+        An entry is considered expired when its ``cached_at`` timestamp is
+        older than ``self.max_age_days``.  Expired entries are treated exactly
+        like missing entries — the caller will perform a full re-fetch.
+        """
+        entry = self._data.get(url)
+        if entry is None:
+            return None
+        cached_at_str = entry.get("cached_at")
+        if cached_at_str:
+            try:
+                cached_at = datetime.fromisoformat(cached_at_str)
+                # Make timezone-aware if the stored value lacks tzinfo
+                if cached_at.tzinfo is None:
+                    cached_at = cached_at.replace(tzinfo=timezone.utc)
+                age = datetime.now(timezone.utc) - cached_at
+                if age > timedelta(days=self.max_age_days):
+                    logger.info(
+                        f"Cache expired ({age.days}d old, limit {self.max_age_days}d): {url}"
+                    )
+                    return None
+            except ValueError:
+                logger.warning(
+                    f"CrawlCache: could not parse cached_at for {url!r} ({cached_at_str!r}); "
+                    "treating as expired."
+                )
+                return None
+        return entry
 
     def update(
         self,
@@ -418,6 +460,7 @@ def chunk_document(doc: CrawledDocument, chunk_size: int = 1000, overlap: int = 
 async def crawl_and_chunk_all(
     raw_dir: str = "data/raw",
     use_cache: bool = True,
+    max_age_days: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Crawl all configured sources and return chunked documents.
 
@@ -427,6 +470,11 @@ async def crawl_and_chunk_all(
     again (304 Not Modified or SHA-256 content-hash match).  Pages that are
     new or changed are fetched, chunked, and the cache is updated.
 
+    Cache entries older than *max_age_days* (default: ``CRAWL_CACHE_MAX_AGE_DAYS``
+    env var, or 30 days) are treated as expired and will be re-fetched
+    regardless of content hash, ensuring pages are periodically re-indexed
+    even when the server never sends ETag/Last-Modified headers.
+
     Parameters
     ----------
     raw_dir:
@@ -434,12 +482,18 @@ async def crawl_and_chunk_all(
         :func:`save_crawled_chunks`).  Defaults to ``data/raw``.
     use_cache:
         Pass ``False`` to force a full re-crawl regardless of cache state.
+    max_age_days:
+        Maximum number of days a cache entry is considered fresh.  ``None``
+        (the default) reads ``CRAWL_CACHE_MAX_AGE_DAYS`` from the environment,
+        falling back to 30 days.  Ignored when *use_cache* is ``False``.
 
     Returns
     -------
     List of chunk dicts suitable for loading into the vector store.
     """
-    cache = CrawlCache(raw_dir=raw_dir) if use_cache else None
+    cache = CrawlCache(raw_dir=raw_dir, max_age_days=max_age_days) if use_cache else None
+    if cache is not None:
+        logger.info(f"Crawl cache: max age = {cache.max_age_days} day(s).")
 
     async with UKAutismCrawler(cache=cache) as crawler:
         fresh_documents, reused_chunks = await crawler.crawl_all_sources()

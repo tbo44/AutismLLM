@@ -61,6 +61,15 @@ def main():
              "are skipped using HTTP caching signals (ETag/Last-Modified) or a "
              "SHA-256 content hash."
     )
+    parser.add_argument(
+        "--max-cache-age",
+        type=int,
+        default=None,
+        metavar="DAYS",
+        help="Maximum age in days before a cached page is force-refreshed, even "
+             "if its content hash hasn't changed (default: CRAWL_CACHE_MAX_AGE_DAYS "
+             "env var, or 30 days).  Ignored when --no-cache is set."
+    )
     args = parser.parse_args()
 
     seed_path = Path(args.seed_file)
@@ -90,12 +99,13 @@ def main():
         from rag.crawler import crawl_and_chunk_all, save_crawled_chunks
 
         use_cache = not args.no_cache
+        max_age_days = args.max_cache_age  # None → reads CRAWL_CACHE_MAX_AGE_DAYS env var
         if use_cache:
             logger.info("Crawling trusted UK web sources (unchanged pages will be skipped via cache)...")
         else:
             logger.info("Crawling trusted UK web sources (full re-crawl, cache disabled)...")
         try:
-            crawled_chunks = asyncio.run(crawl_and_chunk_all(use_cache=use_cache))
+            crawled_chunks = asyncio.run(crawl_and_chunk_all(use_cache=use_cache, max_age_days=max_age_days))
             logger.info(f"Crawled {len(crawled_chunks)} chunks from live sources.")
             if crawled_chunks:
                 saved_path = save_crawled_chunks(crawled_chunks)
