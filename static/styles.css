@@ -805,6 +805,110 @@ body.low-stim .section-note .section-heading           { background: #DDD; color
 .privacy-body ul { padding-left: 20px; margin-bottom: 8px; }
 .privacy-body a { color: var(--col-accent); }
 
+/* ── Acronym tooltips ── */
+.maya-abbr {
+    /* Subtle visual cue: dotted underline matching the accent colour */
+    text-decoration: underline dotted var(--col-accent);
+    text-underline-offset: 3px;
+    cursor: help;
+    position: relative;
+    /* Remove default <abbr> styling in some browsers */
+    font-style: inherit;
+    /* Extended touch/click target via padding without disturbing text flow */
+    padding: 2px 1px;
+    border-radius: 2px;
+    outline: none;
+    display: inline;
+}
+
+/* Keyboard focus ring */
+.maya-abbr:focus-visible {
+    outline: 2px solid var(--col-accent);
+    outline-offset: 2px;
+    border-radius: 3px;
+}
+
+/* Tooltip bubble */
+.maya-abbr::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--col-accent-dk);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.4;
+    padding: 6px 10px;
+    border-radius: 6px;
+    white-space: nowrap;
+    max-width: min(260px, 80vw);
+    white-space: normal;
+    word-break: normal;
+    pointer-events: none;
+    z-index: 100;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.22);
+    /* Hidden by default */
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s ease, visibility 0.15s ease;
+}
+
+/* Tooltip arrow */
+.maya-abbr::before {
+    content: '';
+    position: absolute;
+    bottom: calc(100% + 2px);
+    left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: var(--col-accent-dk);
+    pointer-events: none;
+    z-index: 100;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s ease, visibility 0.15s ease;
+}
+
+/* Show on hover or focus (desktop/keyboard) */
+.maya-abbr:hover::after,
+.maya-abbr:hover::before,
+.maya-abbr:focus-visible::after,
+.maya-abbr:focus-visible::before {
+    opacity: 1;
+    visibility: visible;
+}
+
+/* Show when toggled open by tap/click (touch) */
+.maya-abbr.open::after,
+.maya-abbr.open::before {
+    opacity: 1;
+    visibility: visible;
+}
+
+/* Low-stimulation mode: muted tooltip colours */
+body.low-stim .maya-abbr {
+    text-decoration-color: #888;
+}
+
+body.low-stim .maya-abbr::after {
+    background: #444;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+}
+
+body.low-stim .maya-abbr::before {
+    border-top-color: #444;
+}
+
+/* Reduced-motion: skip fade transition */
+@media (prefers-reduced-motion: reduce) {
+    .maya-abbr::after,
+    .maya-abbr::before {
+        transition: none;
+    }
+}
+
 /* ── Reduced motion ── */
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {

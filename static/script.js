@@ -1,4 +1,37 @@
-/* Maya – Autism Hounslow  script.js  v12 */
+/* Maya – Autism Hounslow  script.js  v13 */
+
+/* ── Acronym glossary ── */
+const ACRONYM_GLOSSARY = {
+    'EHCP':   'Education, Health and Care Plan',
+    'SEND':   'Special Educational Needs and Disabilities',
+    'SEN':    'Special Educational Needs',
+    'SENCO':  'Special Educational Needs Co-ordinator',
+    'PIP':    'Personal Independence Payment',
+    'DLA':    'Disability Living Allowance',
+    'ESA':    'Employment and Support Allowance',
+    'UC':     'Universal Credit',
+    'ASD':    'Autism Spectrum Disorder',
+    'ADHD':   'Attention Deficit Hyperactivity Disorder',
+    'GP':     'General Practitioner (your family doctor)',
+    'CAMHS':  'Child and Adolescent Mental Health Services',
+    'OT':     'Occupational Therapist',
+    'IPSEA':  'Independent Provider of Special Education Advice',
+    'NHS':    'National Health Service',
+    'NAS':    'National Autistic Society',
+    'TAF':    'Team Around the Family',
+    'EHC':    'Education, Health and Care',
+    'LA':     'Local Authority',
+    'DWP':    'Department for Work and Pensions',
+    'SAR':    'Subject Access Request',
+    'CCG':    'Clinical Commissioning Group'
+};
+
+// Build a single regex from the glossary keys (longest first to avoid partial matches)
+const _acronymKeys = Object.keys(ACRONYM_GLOSSARY).sort((a, b) => b.length - a.length);
+const _acronymPattern = new RegExp(
+    `(<[^>]*>)|(\\b(${_acronymKeys.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b)`,
+    'g'
+);
 
 class MayaApp {
     constructor() {
@@ -245,19 +278,50 @@ class MayaApp {
         this.messages.push(msg);
     }
 
+    // ── Acronym annotation ────────────────────────────────────────────
+
+    /**
+     * Wrap the first occurrence of each known acronym in the message HTML
+     * with an interactive <abbr> that shows a plain-English tooltip.
+     * @param {string} html  - already-rendered HTML
+     * @param {Set}    seen  - set of acronyms already annotated in this message
+     * @returns {string}
+     */
+    annotateAcronyms(html, seen) {
+        // Reset the regex lastIndex before each use (global flag)
+        _acronymPattern.lastIndex = 0;
+        return html.replace(_acronymPattern, (match, tag, _full, acronym) => {
+            if (tag) return tag;          // inside an HTML tag — skip
+            if (!acronym) return match;
+            if (seen.has(acronym)) return match;  // already annotated this message
+            seen.add(acronym);
+            const def = ACRONYM_GLOSSARY[acronym];
+            const safedef = def.replace(/"/g, '&quot;');
+            return `<abbr class="maya-abbr" tabindex="0" role="term" ` +
+                   `data-tooltip="${safedef}" ` +
+                   `title="${safedef}" ` +
+                   `aria-label="${acronym}: ${safedef}">${acronym}</abbr>`;
+        });
+    }
+
     // ── Answer renderer ───────────────────────────────────────────────
 
     renderAnswer(raw, msg) {
         if (!raw) return '';
 
+        // Per-message set so only the first occurrence of each acronym is annotated
+        const seenAcronyms = new Set();
+
         // Detect structured sections from LLM output
         const sections = this.parseStructuredSections(raw);
         if (sections.length > 0) {
-            return this.renderStructuredSections(sections, msg);
+            const html = this.renderStructuredSections(sections, msg);
+            return this.annotateAcronyms(html, seenAcronyms);
         }
 
         // Fallback: plain markdown-style rendering
-        return `<div class="section-body">${this.renderMarkdown(raw)}</div>`;
+        const html = `<div class="section-body">${this.renderMarkdown(raw)}</div>`;
+        return this.annotateAcronyms(html, seenAcronyms);
     }
 
     parseStructuredSections(text) {
@@ -461,6 +525,36 @@ document.addEventListener('DOMContentLoaded', () => {
         if (btn) {
             e.preventDefault();
             app.handleSimplerBtn(app.lastQuestion);
+        }
+    });
+
+    // ── Acronym tooltip: tap/click to open, keyboard Enter/Space ──────
+    document.addEventListener('click', (e) => {
+        const abbr = e.target.closest('.maya-abbr');
+        if (abbr) {
+            // Toggle open on this one, close all others
+            const wasOpen = abbr.classList.contains('open');
+            document.querySelectorAll('.maya-abbr.open').forEach(el => el.classList.remove('open'));
+            if (!wasOpen) abbr.classList.add('open');
+            e.stopPropagation();
+            return;
+        }
+        // Click outside → close any open tooltips
+        document.querySelectorAll('.maya-abbr.open').forEach(el => el.classList.remove('open'));
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            const abbr = e.target.closest('.maya-abbr');
+            if (abbr) {
+                e.preventDefault();
+                const wasOpen = abbr.classList.contains('open');
+                document.querySelectorAll('.maya-abbr.open').forEach(el => el.classList.remove('open'));
+                if (!wasOpen) abbr.classList.add('open');
+            }
+        }
+        if (e.key === 'Escape') {
+            document.querySelectorAll('.maya-abbr.open').forEach(el => el.classList.remove('open'));
         }
     });
 });
