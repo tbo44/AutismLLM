@@ -43,6 +43,25 @@ if not _reindex_logger.handlers:
     )
     _reindex_logger.addHandler(_reindex_fh)
 
+# ── Questions / feedback loggers (logs/questions.log, logs/feedback.log) ────
+# Same size-based rotation as reindex.log so these JSON-lines files stay
+# bounded. Message-only format preserves the existing one-JSON-object-per-line
+# layout that the admin dashboard readers parse.
+def _make_jsonl_logger(name: str, path: str) -> logging.Logger:
+    lg = logging.getLogger(name)
+    lg.setLevel(logging.INFO)
+    lg.propagate = False
+    if not lg.handlers:
+        fh = logging.handlers.RotatingFileHandler(
+            path, maxBytes=512 * 1024, backupCount=3, encoding="utf-8"
+        )
+        fh.setFormatter(logging.Formatter("%(message)s"))
+        lg.addHandler(fh)
+    return lg
+
+_questions_logger = _make_jsonl_logger("maya.questions_log", "logs/questions.log")
+_feedback_logger = _make_jsonl_logger("maya.feedback_log", "logs/feedback.log")
+
 # ── Scheduled re-index configuration ────────────────────────────────────────
 # A lightweight async scheduler keeps Maya's knowledge base fresh without anyone
 # having to remember to hit /admin/crawl. All settings are env-configurable.
@@ -213,8 +232,7 @@ def _log_question(question: str, source_ids: list):
             "question": question,
             "source_ids": source_ids[:6]
         }
-        with open("logs/questions.log", "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
+        _questions_logger.info(json.dumps(entry))
     except Exception as e:
         logger.warning(f"Question log write failed: {e}")
 
@@ -229,8 +247,7 @@ def _log_feedback(payload: FeedbackPayload):
             "q_len": len(payload.question),
             "has_comment": bool(payload.comment.strip())
         }
-        with open("logs/feedback.log", "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
+        _feedback_logger.info(json.dumps(entry))
     except Exception as e:
         logger.warning(f"Feedback log write failed: {e}")
 
