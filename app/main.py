@@ -771,7 +771,7 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
 </head>
 <body>
 <h1>Maya Admin Dashboard</h1>
-<p class="meta">Generated: {generated_at} &nbsp;·&nbsp; Data is anonymised — no personal information is stored. &nbsp;·&nbsp; <a href="/admin/logout">Sign out</a></p>
+<p class="meta">Generated: {generated_at} &nbsp;·&nbsp; Data is anonymised — no personal information is stored. &nbsp;·&nbsp; <a href="/admin/logout" onclick="try{{sessionStorage.removeItem('maya_admin_crawl_token');}}catch(e){{}}">Sign out</a></p>
 
 <div class="cards">
   <div class="card">
@@ -856,6 +856,18 @@ var _crawlToken = '';
 var _pollTimer  = null;
 var _pollInterval = 4000; // ms between status checks
 
+/* Stable sessionStorage key — cleared automatically when the tab closes. */
+var _TOKEN_KEY = 'maya_admin_crawl_token';
+
+function _getSavedToken() {{
+  try {{ return sessionStorage.getItem(_TOKEN_KEY) || ''; }}
+  catch (e) {{ return ''; }}
+}}
+
+function _saveToken(t) {{
+  try {{ sessionStorage.setItem(_TOKEN_KEY, t); }} catch (e) {{ /* quota / private mode */ }}
+}}
+
 // Helpers to read / format UK time in the browser (mirrors server _fmt_uk_time).
 function _fmtUkTime(isoStr) {{
   if (!isoStr) {{ return 'Never'; }}
@@ -939,11 +951,31 @@ function _applyStatus(data) {{
   }}
 }}
 
+function _promptReplaceToken(reason) {{
+  /* Called when the saved token is rejected.  Clear it and ask for a fresh one. */
+  try {{ sessionStorage.removeItem(_TOKEN_KEY); }} catch (e) {{ }}
+  _crawlToken = '';
+  var fresh = window.prompt(reason + '\nEnter the current ADMIN_CRAWL_TOKEN to continue:');
+  if (fresh && fresh.trim()) {{
+    _crawlToken = fresh.trim();
+    _saveToken(_crawlToken);
+    return true;
+  }}
+  return false;
+}}
+
 function _pollOnce() {{
   fetch('/admin/crawl/status', {{
     headers: {{ 'Authorization': 'Bearer ' + _crawlToken }}
   }})
   .then(function (r) {{
+    if (r.status === 401 || r.status === 403) {{
+      _stopPolling();
+      if (_promptReplaceToken('The crawl token was rejected (it may have been rotated).')) {{
+        _startPolling(_crawlToken);
+      }}
+      return null;
+    }}
     if (!r.ok) {{ _stopPolling(); return null; }}
     return r.json();
   }})
@@ -955,6 +987,7 @@ function _pollOnce() {{
 
 function _startPolling(token) {{
   _crawlToken = token;
+  _saveToken(token);              // persist for this session
   if (_pollTimer) {{ return; }}   // already polling
   document.getElementById('reindexBtn').disabled = true;
   _pollOnce();                    // immediate first check
@@ -972,7 +1005,8 @@ function _stopPolling() {{
 function triggerReindex() {{
   var btn = document.getElementById('reindexBtn');
   var msg = document.getElementById('reindexMsg');
-  var token = window.prompt('Enter the crawl admin token (ADMIN_CRAWL_TOKEN) to start a full re-index:');
+  var saved = _getSavedToken();
+  var token = saved || window.prompt('Enter the crawl admin token (ADMIN_CRAWL_TOKEN) to start a full re-index:');
   if (!token) {{ return; }}
   token = token.trim();
   btn.disabled = true;
@@ -982,12 +1016,19 @@ function triggerReindex() {{
     method: 'POST',
     headers: {{ 'Authorization': 'Bearer ' + token }}
   }})
-  .then(function (r) {{ return r.json().then(function (d) {{ return {{ ok: r.ok, body: d }}; }}); }})
+  .then(function (r) {{ return r.json().then(function (d) {{ return {{ ok: r.ok, status: r.status, body: d }}; }}); }})
   .then(function (res) {{
     if (res.ok) {{
       msg.style.color = '#2a52b5';
       msg.textContent = (res.body && res.body.message) || 'Re-index started — updating live\u2026';
       _startPolling(token);
+    }} else if (res.status === 401 || res.status === 403) {{
+      /* Saved token rejected (may have been rotated) — clear it and re-prompt. */
+      try {{ sessionStorage.removeItem(_TOKEN_KEY); }} catch (e) {{ }}
+      _crawlToken = '';
+      btn.disabled = false;
+      msg.style.color = '#b00020';
+      msg.textContent = 'Token rejected — please click Re-index again and enter the current token.';
     }} else {{
       btn.disabled = false;
       msg.style.color = '#b00020';
@@ -1005,11 +1046,15 @@ function triggerReindex() {{
 (function () {{
   var runningOnLoad = {kb_running_js};
   if (runningOnLoad) {{
-    var token = window.prompt(
-      'A re-index is already in progress.\n' +
-      'Enter the crawl admin token (ADMIN_CRAWL_TOKEN) to watch live progress, ' +
-      'or press Cancel to continue without live updates:'
-    );
+    var saved = _getSavedToken();
+    var token = saved;
+    if (!token) {{
+      token = window.prompt(
+        'A re-index is already in progress.\n' +
+        'Enter the crawl admin token (ADMIN_CRAWL_TOKEN) to watch live progress, ' +
+        'or press Cancel to continue without live updates:'
+      );
+    }}
     if (token && token.trim()) {{
       document.getElementById('reindexMsg').textContent = 'Watching live progress\u2026';
       document.getElementById('reindexMsg').style.color = '#2a52b5';
