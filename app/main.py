@@ -163,6 +163,7 @@ async def startup_event():
         asyncio.create_task(_scheduled_reindex_loop())
     else:
         logger.info("⏰ Scheduled re-index disabled (SCHEDULED_REINDEX_ENABLED=false).")
+    asyncio.create_task(_login_attempts_pruner_loop())
     logger.info("✅ Server startup event complete – background task spawned")
 
 
@@ -386,6 +387,40 @@ except ValueError:
 # In-memory store: {ip: {"count": int, "window_start": float, "locked_until": float}}
 import time as _time
 _login_attempts: dict[str, dict] = {}
+
+
+def _prune_login_attempts() -> int:
+    """Remove _login_attempts entries whose lockout and tracking window have both expired.
+
+    An entry is safe to delete when:
+      - its locked_until timestamp has passed (or was never set), AND
+      - its window_start is older than LOGIN_LOCKOUT_SECONDS
+    Returns the number of entries pruned.
+    """
+    now = _time.monotonic()
+    stale = [
+        ip for ip, entry in _login_attempts.items()
+        if entry.get("locked_until", 0) <= now
+        and now - entry.get("window_start", 0) > _LOGIN_LOCKOUT_SECONDS
+    ]
+    for ip in stale:
+        _login_attempts.pop(ip, None)
+    if stale:
+        logger.debug(f"Login-attempt pruner removed {len(stale)} stale entries.")
+    return len(stale)
+
+
+async def _login_attempts_pruner_loop() -> None:
+    """Background task: prune expired lockout entries every 5 minutes."""
+    _PRUNE_INTERVAL_SECONDS = 300  # 5 minutes
+    while True:
+        await asyncio.sleep(_PRUNE_INTERVAL_SECONDS)
+        try:
+            pruned = _prune_login_attempts()
+            if pruned:
+                logger.info(f"Login-attempt pruner: removed {pruned} expired entries.")
+        except Exception:
+            logger.exception("Login-attempt pruner encountered an unexpected error.")
 
 # Comma-separated list of trusted proxy IPs (e.g. a load-balancer or Replit's proxy).
 # When the immediate peer matches one of these, the rightmost non-trusted IP in
