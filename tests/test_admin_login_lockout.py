@@ -1,4 +1,6 @@
-"""Tests for admin login rate-limiting / lockout (Task #20)."""
+"""Tests for admin login rate-limiting / lockout."""
+
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -170,3 +172,71 @@ def test_trusted_proxy_uses_xff_client_ip(monkeypatch):
     )
     assert resp2.status_code == 401  # not locked out
     assert "Too many failed attempts" not in resp2.text
+
+
+# ── Lockout expiry: correct password succeeds once window passes ───────
+
+def test_correct_password_after_lockout_expires_succeeds(monkeypatch):
+    """After the lockout window elapses, a correct password must be accepted (303)
+    and the attempt record must be cleared so the next wrong attempt is a plain 401."""
+    # Lock the IP out
+    _post_wrong()
+    _post_wrong()
+    _post_wrong()  # triggers lockout → 401
+
+    # Confirm locked
+    assert _post_wrong().status_code == 429
+
+    # Wind time forward past the lockout window by manipulating the stored entry
+    # directly (same effect as the lockout window expiring on the real clock).
+    for entry in main._login_attempts.values():
+        entry["locked_until"] = 0            # lockout expired
+        entry["window_start"] = 0            # tracking window also expired
+
+    # Correct password should now succeed
+    resp = _post_correct()
+    assert resp.status_code == 303, (
+        f"Expected 303 redirect after lockout expiry, got {resp.status_code}"
+    )
+
+    # Attempt record should be cleared — next wrong attempt is a fresh 401
+    resp2 = _post_wrong()
+    assert resp2.status_code == 401
+    assert "Too many failed attempts" not in resp2.text
+
+
+# ── Server-restart behaviour ───────────────────────────────────────────
+
+def test_lockout_cleared_after_simulated_server_restart(monkeypatch):
+    """Clearing _login_attempts (what a server restart does) removes the lockout.
+
+    This test documents the known in-memory limitation: a restart resets the
+    counter.  The test ensures the code behaves consistently with that design
+    (no stale state causes unexpected errors) and that the lockout logic
+    re-arms correctly after the restart.
+    """
+    # Lock the IP out
+    _post_wrong()
+    _post_wrong()
+    _post_wrong()  # triggers lockout
+    assert _post_wrong().status_code == 429, "IP should be locked out before restart"
+
+    # Simulate server restart: in-memory store is wiped
+    main._login_attempts.clear()
+
+    # After restart, the lockout is gone — a wrong attempt starts a fresh window
+    resp = _post_wrong()
+    assert resp.status_code == 401, (
+        "After simulated restart the attempt counter resets; "
+        "first wrong password should be 401, not 429"
+    )
+    assert "Too many failed attempts" not in resp.text
+
+    # And the lockout re-arms on a fresh sequence of failures
+    _post_wrong()  # 2nd wrong after restart
+    resp2 = _post_wrong()  # 3rd wrong — hits max=3 again
+    assert resp2.status_code == 401
+    assert "Too many failed attempts" in resp2.text
+
+    resp3 = _post_wrong()  # 4th — now 429 again
+    assert resp3.status_code == 429
