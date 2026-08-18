@@ -260,6 +260,70 @@ def test_login_post_empty_token_rerenders_form(admin_token, clear_login_attempts
     assert "Sign in" in resp.text
 
 
+def test_login_lockout_triggers_429_after_max_attempts(admin_token, monkeypatch, clear_login_attempts):
+    """After LOGIN_MAX_ATTEMPTS wrong passwords the next attempt returns 429."""
+    monkeypatch.setattr(main, "_LOGIN_MAX_ATTEMPTS", 3)
+
+    # Submit exactly _LOGIN_MAX_ATTEMPTS wrong passwords to exhaust the allowance.
+    for _ in range(3):
+        resp = client.post(
+            "/admin/login",
+            data={"token": "definitely-wrong"},
+            follow_redirects=False,
+        )
+        # Each of these fails but is not yet blocked (or triggers the lockout on
+        # the last one, which still returns 401 with the lockout message).
+        assert resp.status_code in (401, 429)
+
+    # The NEXT attempt must be rate-limited regardless of password.
+    resp = client.post(
+        "/admin/login",
+        data={"token": "definitely-wrong"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 429
+    assert "Too many failed attempts" in resp.text
+
+
+def test_login_lockout_blocks_correct_password(admin_token, monkeypatch, clear_login_attempts):
+    """A correct password submitted while locked out still returns 429, not 303."""
+    monkeypatch.setattr(main, "_LOGIN_MAX_ATTEMPTS", 3)
+
+    # Exhaust attempts so the IP is locked.
+    for _ in range(3):
+        client.post(
+            "/admin/login",
+            data={"token": "wrong"},
+            follow_redirects=False,
+        )
+
+    # Submit the correct password — must still be blocked.
+    resp = client.post(
+        "/admin/login",
+        data={"token": VALID_TOKEN},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 429
+    assert "Too many failed attempts" in resp.text
+
+
+def test_login_remaining_attempts_warning_shown(admin_token, monkeypatch, clear_login_attempts):
+    """When within 2 attempts of the limit, the form shows how many attempts remain."""
+    monkeypatch.setattr(main, "_LOGIN_MAX_ATTEMPTS", 5)
+
+    # Three wrong attempts → 2 remaining → warning should appear.
+    for _ in range(3):
+        resp = client.post(
+            "/admin/login",
+            data={"token": "wrong"},
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 401
+    assert "attempt" in resp.text.lower()
+    assert "remaining" in resp.text.lower()
+
+
 # ── /admin/logout ─────────────────────────────────────────────────────
 
 
