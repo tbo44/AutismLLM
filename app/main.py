@@ -829,7 +829,7 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
   <h2 style="font-size:1rem;margin-top:1.25rem;">Re-index history</h2>
   <table>
     <thead><tr><th>Timestamp (UTC)</th><th>Source</th><th>Outcome</th><th>Details</th></tr></thead>
-    <tbody>{history_rows}</tbody>
+    <tbody id="historyTbody">{history_rows}</tbody>
   </table>
 </section>
 
@@ -908,6 +908,37 @@ function _detailText(running, lastResult) {{
   return 'Details: ' + err;
 }}
 
+function _esc(s) {{
+  if (!s) {{ return ''; }}
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}}
+
+function _renderHistoryRows(history) {{
+  var tbody = document.getElementById('historyTbody');
+  if (!tbody) {{ return; }}
+  if (!history || !history.length) {{
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">No re-index history yet.</td></tr>';
+    return;
+  }}
+  var html = '';
+  for (var i = 0; i < history.length; i++) {{
+    var h   = history[i];
+    var oc  = (h.outcome || '').toUpperCase();
+    var cls = oc === 'SUCCESS' ? 'ok' : (oc === 'FAILURE' ? 'err' : '');
+    html += '<tr>'
+          + '<td>' + _esc(h.ts || '\u2014') + '</td>'
+          + '<td>' + _esc(h.source || '\u2014') + '</td>'
+          + '<td' + (cls ? ' class="' + cls + '"' : '') + '>' + _esc(h.outcome || '\u2014') + '</td>'
+          + '<td>' + _esc(h.detail || '') + '</td>'
+          + '</tr>\n';
+  }}
+  tbody.innerHTML = html;
+}}
+
 function _applyStatus(data) {{
   var running    = data.running;
   var lastResult = data.last_result || null;
@@ -928,6 +959,10 @@ function _applyStatus(data) {{
 
   var det = document.getElementById('kbDetails');
   det.textContent = _detailText(running, lastResult);
+
+  if (data.history) {{
+    _renderHistoryRows(data.history);
+  }}
 
   var msg = document.getElementById('reindexMsg');
   var btn = document.getElementById('reindexBtn');
@@ -1591,6 +1626,7 @@ async def admin_crawl_status(authorization: str | None = Header(default=None)):
             "next_run": next_run,
         },
         "email_alerts": notifications.get_status(),
+        "history": _read_reindex_history(),
     }
 
 
