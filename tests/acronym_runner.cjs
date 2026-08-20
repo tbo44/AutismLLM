@@ -3,6 +3,10 @@
  * a minimal mock DOM, then exposes MayaApp.annotateAcronyms() and
  * MayaApp.renderAnswer() for the pytest suite to exercise.
  *
+ * The glossary is now loaded from data/acronyms.json (not hardcoded in the
+ * script) so the runner reads that file directly and injects it via
+ * _setAcronymGlossary() before running any tests.
+ *
  * Stdin:  JSON  { op: "annotate"|"render", html?, raw?, seen? }
  * Stdout: JSON  { result, seen, glossary? }
  */
@@ -60,6 +64,11 @@ const mockLocalStorage = {
     setItem : () => {},
 };
 
+// ── Load the glossary from data/acronyms.json ─────────────────────────────────
+
+const glossaryPath = path.join(__dirname, '..', 'data', 'acronyms.json');
+const ACRONYM_GLOSSARY = JSON.parse(fs.readFileSync(glossaryPath, 'utf8'));
+
 // ── Load the real static/script.js ───────────────────────────────────────────
 
 const scriptPath = path.join(__dirname, '..', 'static', 'script.js');
@@ -72,10 +81,10 @@ scriptSrc = scriptSrc.replace(
     ''
 );
 
-// Wrap in an IIFE so block-scoped class/const are returned
+// Wrap in an IIFE so block-scoped class/const/let are returned
 const wrapped = `(function () {
     ${scriptSrc}
-    return { MayaApp: MayaApp, ACRONYM_GLOSSARY: ACRONYM_GLOSSARY };
+    return { MayaApp: MayaApp, _setAcronymGlossary: _setAcronymGlossary, _getGlossary: function() { return ACRONYM_GLOSSARY; } };
 })()`;
 
 const ctx = vm.createContext({
@@ -87,6 +96,10 @@ const ctx = vm.createContext({
 });
 
 const loaded = vm.runInContext(wrapped, ctx);
+
+// Inject the glossary from data/acronyms.json (mirrors what the browser
+// receives from GET /api/acronyms — no HTTP round-trip needed in tests).
+loaded._setAcronymGlossary(ACRONYM_GLOSSARY);
 
 // ── Boot a MayaApp instance ───────────────────────────────────────────────────
 
@@ -113,6 +126,6 @@ process.stdin.on('end', () => {
     process.stdout.write(JSON.stringify({
         result,
         seen     : [...seen],
-        glossary : loaded.ACRONYM_GLOSSARY,   // available for sync checks
+        glossary : ACRONYM_GLOSSARY,   // available for sync checks in tests
     }));
 });

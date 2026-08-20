@@ -351,6 +351,115 @@ async def chat(query: Query):
         return Answer(answer=text, timestamp=f"Last checked: {timestamp}", sources=[])
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Acronym glossary API
+# GET  /api/acronyms        — public; returns the current glossary as JSON
+# POST /api/acronyms        — admin; add or overwrite an entry
+# PUT  /api/acronyms/{key}  — admin; update an existing entry
+# DELETE /api/acronyms/{key}— admin; remove an entry
+# ──────────────────────────────────────────────────────────────────────
+# Forward-declare cookie name here so it's available to the acronym route
+# signatures below; the canonical definition is repeated in the admin
+# section further down (same value, harmless reassignment).
+_ADMIN_COOKIE_NAME = "maya_admin"
+
+_ACRONYMS_PATH = Path("data/acronyms.json")
+_acronyms_lock = asyncio.Lock()
+
+
+def _load_acronyms() -> dict:
+    """Read data/acronyms.json; return empty dict on any error."""
+    try:
+        return json.loads(_ACRONYMS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_acronyms(data: dict) -> None:
+    """Write data/acronyms.json, creating parent dirs as needed."""
+    _ACRONYMS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _ACRONYMS_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+class AcronymEntry(BaseModel):
+    key: str
+    definition: str
+
+
+@app.get("/api/acronyms")
+async def get_acronyms():
+    """Return the full acronym glossary as a JSON object. No authentication required."""
+    return _load_acronyms()
+
+
+@app.post("/api/acronyms", status_code=201)
+async def add_acronym(
+    entry: AcronymEntry,
+    token: str | None = QueryParam(default=None),
+    x_admin_token: str | None = Header(default=None),
+    token_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
+):
+    """Add or overwrite a glossary entry. Requires admin authentication."""
+    _check_admin_token(token, x_admin_token, token_cookie)
+    key = entry.key.strip().upper()
+    definition = entry.definition.strip()
+    if not key or not definition:
+        raise HTTPException(status_code=422, detail="Both 'key' and 'definition' are required.")
+    async with _acronyms_lock:
+        data = _load_acronyms()
+        data[key] = definition
+        _save_acronyms(data)
+    logger.info(f"Acronym added/updated: {key!r}")
+    return {"key": key, "definition": definition}
+
+
+@app.put("/api/acronyms/{key}")
+async def update_acronym(
+    key: str,
+    entry: AcronymEntry,
+    token: str | None = QueryParam(default=None),
+    x_admin_token: str | None = Header(default=None),
+    token_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
+):
+    """Update an existing glossary entry. Requires admin authentication."""
+    _check_admin_token(token, x_admin_token, token_cookie)
+    key = key.strip().upper()
+    definition = entry.definition.strip()
+    if not definition:
+        raise HTTPException(status_code=422, detail="'definition' is required.")
+    async with _acronyms_lock:
+        data = _load_acronyms()
+        if key not in data:
+            raise HTTPException(status_code=404, detail=f"Acronym {key!r} not found.")
+        data[key] = definition
+        _save_acronyms(data)
+    logger.info(f"Acronym updated: {key!r}")
+    return {"key": key, "definition": definition}
+
+
+@app.delete("/api/acronyms/{key}", status_code=200)
+async def delete_acronym(
+    key: str,
+    token: str | None = QueryParam(default=None),
+    x_admin_token: str | None = Header(default=None),
+    token_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
+):
+    """Delete a glossary entry. Requires admin authentication."""
+    _check_admin_token(token, x_admin_token, token_cookie)
+    key = key.strip().upper()
+    async with _acronyms_lock:
+        data = _load_acronyms()
+        if key not in data:
+            raise HTTPException(status_code=404, detail=f"Acronym {key!r} not found.")
+        del data[key]
+        _save_acronyms(data)
+    logger.info(f"Acronym deleted: {key!r}")
+    return {"deleted": key}
+
+
 @app.post("/feedback")
 async def feedback(payload: FeedbackPayload):
     """
@@ -884,6 +993,45 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
   </table>
 </section>
 
+<section>
+  <h2>Manage Acronym Glossary</h2>
+  <p style="font-size:0.85rem;color:#555;margin:0 0 1rem;">
+    These acronym definitions appear as tooltips in chat answers.
+    Changes take effect immediately — no restart needed.
+  </p>
+
+  <!-- Add / edit form -->
+  <form id="acronymForm" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem;align-items:flex-end;">
+    <div style="display:flex;flex-direction:column;gap:0.2rem;">
+      <label for="acronymKey" style="font-size:0.8rem;font-weight:600;color:#444;">Acronym</label>
+      <input id="acronymKey" type="text" placeholder="e.g. EHCP"
+             style="padding:0.5rem 0.75rem;border:1px solid #ccc;border-radius:6px;font-size:0.9rem;width:120px;text-transform:uppercase;">
+    </div>
+    <div style="display:flex;flex-direction:column;gap:0.2rem;flex:1;min-width:200px;">
+      <label for="acronymDef" style="font-size:0.8rem;font-weight:600;color:#444;">Definition</label>
+      <input id="acronymDef" type="text" placeholder="e.g. Education, Health and Care Plan"
+             style="padding:0.5rem 0.75rem;border:1px solid #ccc;border-radius:6px;font-size:0.9rem;width:100%;">
+    </div>
+    <button type="submit" id="acronymSaveBtn"
+            style="background:#5b3fa6;color:#fff;border:none;border-radius:6px;padding:0.55rem 1.1rem;font-size:0.9rem;font-weight:600;cursor:pointer;white-space:nowrap;">
+      Save entry
+    </button>
+    <button type="button" id="acronymCancelBtn"
+            style="background:#e5e7eb;color:#374151;border:none;border-radius:6px;padding:0.55rem 0.9rem;font-size:0.9rem;font-weight:600;cursor:pointer;display:none;">
+      Cancel
+    </button>
+  </form>
+  <div id="acronymMsg" style="font-size:0.85rem;margin-bottom:0.75rem;"></div>
+
+  <!-- Acronym table -->
+  <table id="acronymTable">
+    <thead><tr><th>Acronym</th><th>Definition</th><th style="width:120px;">Actions</th></tr></thead>
+    <tbody id="acronymTbody">
+      <tr><td colspan="3" class="empty">Loading…</td></tr>
+    </tbody>
+  </table>
+</section>
+
 <p class="footer">Maya Admin &mdash; Autism Hounslow &mdash; For internal use only</p>
 <script>
 /* ── Knowledge Base live-polling ─────────────────────────────────────────── */
@@ -1132,6 +1280,132 @@ function triggerReindex() {{
     }}
   }}
 }})();
+
+/* ── Acronym Glossary Management ─────────────────────────────────────────── */
+var _editingKey = null;  // null = adding new; string = editing existing key
+
+function _showAcronymMsg(text, color) {{
+  var el = document.getElementById('acronymMsg');
+  el.textContent = text;
+  el.style.color = color || '#444';
+}}
+
+function _renderAcronymTable(glossary) {{
+  var tbody = document.getElementById('acronymTbody');
+  if (!tbody) {{ return; }}
+  var keys = Object.keys(glossary).sort();
+  if (keys.length === 0) {{
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">No acronyms defined yet.</td></tr>';
+    return;
+  }}
+  var html = '';
+  for (var i = 0; i < keys.length; i++) {{
+    var k = keys[i];
+    var d = glossary[k];
+    html += '<tr>'
+          + '<td><strong>' + _esc(k) + '</strong></td>'
+          + '<td>' + _esc(d) + '</td>'
+          + '<td style="white-space:nowrap;">'
+          +   '<button onclick="editAcronym(' + JSON.stringify(k) + ',' + JSON.stringify(d) + ')" '
+          +     'style="background:#e7eefc;color:#2a52b5;border:none;border-radius:4px;padding:0.25rem 0.6rem;font-size:0.8rem;cursor:pointer;margin-right:4px;">Edit</button>'
+          +   '<button onclick="deleteAcronym(' + JSON.stringify(k) + ')" '
+          +     'style="background:#fde3e6;color:#b00020;border:none;border-radius:4px;padding:0.25rem 0.6rem;font-size:0.8rem;cursor:pointer;">Delete</button>'
+          + '</td>'
+          + '</tr>\n';
+  }}
+  tbody.innerHTML = html;
+}}
+
+function loadAcronymTable() {{
+  fetch('/api/acronyms')
+    .then(function(r) {{ return r.json(); }})
+    .then(function(g) {{ _renderAcronymTable(g); }})
+    .catch(function() {{ _showAcronymMsg('Failed to load glossary.', '#b00020'); }});
+}}
+
+function editAcronym(key, definition) {{
+  _editingKey = key;
+  document.getElementById('acronymKey').value = key;
+  document.getElementById('acronymKey').readOnly = true;
+  document.getElementById('acronymDef').value = definition;
+  document.getElementById('acronymSaveBtn').textContent = 'Update entry';
+  document.getElementById('acronymCancelBtn').style.display = '';
+  document.getElementById('acronymMsg').textContent = '';
+  document.getElementById('acronymDef').focus();
+}}
+
+function cancelAcronymEdit() {{
+  _editingKey = null;
+  document.getElementById('acronymKey').value = '';
+  document.getElementById('acronymKey').readOnly = false;
+  document.getElementById('acronymDef').value = '';
+  document.getElementById('acronymSaveBtn').textContent = 'Save entry';
+  document.getElementById('acronymCancelBtn').style.display = 'none';
+  document.getElementById('acronymMsg').textContent = '';
+}}
+
+function deleteAcronym(key) {{
+  if (!confirm('Delete acronym "' + key + '"?')) {{ return; }}
+  fetch('/api/acronyms/' + encodeURIComponent(key), {{
+    method: 'DELETE',
+    credentials: 'include'
+  }})
+  .then(function(r) {{
+    if (r.ok) {{
+      _showAcronymMsg('Deleted "' + key + '".', '#1b7a3d');
+      loadAcronymTable();
+    }} else {{
+      return r.json().then(function(d) {{
+        _showAcronymMsg('Error: ' + (d.detail || 'Could not delete.'), '#b00020');
+      }});
+    }}
+  }})
+  .catch(function(e) {{ _showAcronymMsg('Error: ' + e, '#b00020'); }});
+}}
+
+document.addEventListener('DOMContentLoaded', function() {{
+  loadAcronymTable();
+
+  document.getElementById('acronymCancelBtn').addEventListener('click', cancelAcronymEdit);
+
+  document.getElementById('acronymForm').addEventListener('submit', function(e) {{
+    e.preventDefault();
+    var key = document.getElementById('acronymKey').value.trim().toUpperCase();
+    var def = document.getElementById('acronymDef').value.trim();
+    if (!key || !def) {{
+      _showAcronymMsg('Both acronym and definition are required.', '#b00020');
+      return;
+    }}
+
+    var method, url;
+    if (_editingKey) {{
+      method = 'PUT';
+      url    = '/api/acronyms/' + encodeURIComponent(_editingKey);
+    }} else {{
+      method = 'POST';
+      url    = '/api/acronyms';
+    }}
+
+    fetch(url, {{
+      method: method,
+      credentials: 'include',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ key: key, definition: def }})
+    }})
+    .then(function(r) {{
+      if (r.ok) {{
+        _showAcronymMsg((_editingKey ? 'Updated' : 'Added') + ' "' + key + '".', '#1b7a3d');
+        cancelAcronymEdit();
+        loadAcronymTable();
+      }} else {{
+        return r.json().then(function(d) {{
+          _showAcronymMsg('Error: ' + (d.detail || 'Save failed.'), '#b00020');
+        }});
+      }}
+    }})
+    .catch(function(err) {{ _showAcronymMsg('Error: ' + err, '#b00020'); }});
+  }});
+}});
 </script>
 </body>
 </html>"""

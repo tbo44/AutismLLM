@@ -1,37 +1,54 @@
-/* Maya – Autism Hounslow  script.js  v13 */
+/* Maya – Autism Hounslow  script.js  v14 */
 
-/* ── Acronym glossary ── */
-const ACRONYM_GLOSSARY = {
-    'EHCP':   'Education, Health and Care Plan',
-    'SEND':   'Special Educational Needs and Disabilities',
-    'SEN':    'Special Educational Needs',
-    'SENCO':  'Special Educational Needs Co-ordinator',
-    'PIP':    'Personal Independence Payment',
-    'DLA':    'Disability Living Allowance',
-    'ESA':    'Employment and Support Allowance',
-    'UC':     'Universal Credit',
-    'ASD':    'Autism Spectrum Disorder',
-    'ADHD':   'Attention Deficit Hyperactivity Disorder',
-    'GP':     'General Practitioner (your family doctor)',
-    'CAMHS':  'Child and Adolescent Mental Health Services',
-    'OT':     'Occupational Therapist',
-    'IPSEA':  'Independent Provider of Special Education Advice',
-    'NHS':    'National Health Service',
-    'NAS':    'National Autistic Society',
-    'TAF':    'Team Around the Family',
-    'EHC':    'Education, Health and Care',
-    'LA':     'Local Authority',
-    'DWP':    'Department for Work and Pensions',
-    'SAR':    'Subject Access Request',
-    'CCG':    'Clinical Commissioning Group'
-};
+/* ── Acronym glossary (loaded from /api/acronyms on startup) ── */
+let ACRONYM_GLOSSARY = {};
 
-// Build a single regex from the glossary keys (longest first to avoid partial matches)
-const _acronymKeys = Object.keys(ACRONYM_GLOSSARY).sort((a, b) => b.length - a.length);
-const _acronymPattern = new RegExp(
-    `(<[^>]*>)|(\\b(${_acronymKeys.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b)`,
-    'g'
-);
+// Compiled regex — rebuilt whenever the glossary is loaded or updated.
+// Starts as a never-match pattern so annotateAcronyms is safe before the
+// first fetch completes.
+let _acronymPattern = /(?!)/g;
+
+/**
+ * (Re)build _acronymPattern from the current ACRONYM_GLOSSARY.
+ * Keys are sorted longest-first to avoid partial matches (e.g. EHC before EHCP).
+ */
+function _buildAcronymPattern() {
+    const keys = Object.keys(ACRONYM_GLOSSARY).sort((a, b) => b.length - a.length);
+    if (keys.length === 0) {
+        _acronymPattern = /(?!)/g;
+        return;
+    }
+    _acronymPattern = new RegExp(
+        `(<[^>]*>)|(\\b(${keys.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b)`,
+        'g'
+    );
+}
+
+/**
+ * Fetch the glossary from the backend and rebuild the regex.
+ * Called once on DOMContentLoaded; safe to call again if the glossary is
+ * updated from the admin dashboard in the same tab (not currently needed).
+ */
+async function _loadAcronymGlossary() {
+    try {
+        const res = await fetch('/api/acronyms');
+        if (res.ok) {
+            ACRONYM_GLOSSARY = await res.json();
+            _buildAcronymPattern();
+        }
+    } catch (e) {
+        console.warn('Maya: could not load acronym glossary — tooltips disabled.', e);
+    }
+}
+
+/**
+ * Directly set the glossary (used by the test runner to inject the glossary
+ * without an HTTP round-trip).
+ */
+function _setAcronymGlossary(glossary) {
+    ACRONYM_GLOSSARY = glossary;
+    _buildAcronymPattern();
+}
 
 class MayaApp {
     constructor() {
@@ -517,6 +534,9 @@ class MayaApp {
 // ── Boot ──────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Load the acronym glossary from the backend before the first user message.
+    _loadAcronymGlossary();
+
     const app = new MayaApp();
 
     // Global click handler for "simpler language" buttons (event delegation)
