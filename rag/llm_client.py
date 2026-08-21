@@ -17,7 +17,7 @@ Provider selection (priority order):
 import os
 import json
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from openai import OpenAI
 import openai
 
@@ -223,7 +223,7 @@ CONTEXT INFORMATION:
     # Query enhancement
     # ─────────────────────────────────────────────────────────────────
 
-    def enhance_query(self, user_question: str) -> str:
+    def enhance_query(self, user_question: str) -> Union[str, Dict[str, Any]]:
         if not self.client:
             return user_question
         try:
@@ -244,6 +244,9 @@ CONTEXT INFORMATION:
                 logger.info(f"Query enhanced: '{user_question}' → '{enhanced}'")
                 return enhanced
             return user_question
+        except openai.RateLimitError as e:
+            logger.warning(f"LLM rate limit reached during query enhancement: {str(e)}")
+            return {"query": user_question, "rate_limited": True}
         except Exception as e:
             logger.error(f"Query enhancement error: {str(e)}")
             return user_question

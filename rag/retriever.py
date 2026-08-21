@@ -185,6 +185,16 @@ class UKAutismRetriever:
             
             # Enhance query for better retrieval
             enhanced_query = self.llm_client.enhance_query(user_question)
+            if isinstance(enhanced_query, dict) and enhanced_query.get("rate_limited"):
+                return {
+                    "results": [],
+                    "enhanced_query": enhanced_query.get("query", user_question),
+                    "expansion_used": False,
+                    "hounslow_specific": hounslow_specific,
+                    "total_found": 0,
+                    "total_returned": 0,
+                    "rate_limited": True,
+                }
             
             # First pass with the (LLM-)enhanced query
             results = self._vector_search(enhanced_query, hounslow_specific, max_results)

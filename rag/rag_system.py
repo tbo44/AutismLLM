@@ -194,6 +194,16 @@ Please feel free to ask me about any of these topics!"""
             
             # Retrieve relevant information
             retrieval_result = self.retriever.retrieve(user_question)
+
+            if retrieval_result.get("rate_limited"):
+                return {
+                    "answer": (
+                        "The AI provider is temporarily unavailable due to a rate limit. "
+                        "Please try again in a few minutes."
+                    ),
+                    "sources": [],
+                    "rate_limited": True,
+                }
             
             if not retrieval_result["results"]:
                 return self._handle_no_results(user_question)
