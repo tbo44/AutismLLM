@@ -12,6 +12,7 @@ Run with:
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
+from tests.llm_test_helpers import _RATE_LIMIT_SENTINEL
 
 
 # ── shared test client ────────────────────────────────────────────────────────
@@ -20,9 +21,6 @@ client = TestClient(app)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
-
-_RATE_LIMIT_SENTINEL = "AI provider is temporarily unavailable due to a rate limit"
-
 
 def ask(question: str, comprehension_level: str = "standard") -> dict:
     """POST /chat and return the parsed JSON response."""
