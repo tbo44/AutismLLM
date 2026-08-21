@@ -49,3 +49,20 @@ raising it is in-domain-but-wrong answers.
 ## Distance metric & seed wording
 - ChromaDB distances here are squared-L2 on normalised embeddings ≈ 2× cosine distance, so the 0.8 threshold ≈ 0.4 cosine.
 - **How to apply:** when a needed seed entry scores just above the bar, an FAQ-style title matching the natural question (e.g. "What is an EHCP and how do I apply for one? (…)") moves distance far more than rewording the body (~0.81 → ~0.69 in one case).
+
+## Compound-topic overview seeds
+
+For broad questions that must surface several distinct entitlements, add compact
+overview records alongside the detailed procedural records. Use the broad natural
+question as the overview title and name the entitlement in its concise
+description. For respite, put the specific service types in a short title and
+the natural question plus the next action in the description.
+
+**Why:** long procedural chunks dilute the embedding signal, and raising the
+strict 0.8 threshold admitted an in-domain-but-wrong housing result. Compact
+overviews recovered the related carer benefits, Motability eligibility, and
+respite route while preserving the existing precision guard.
+
+**How to apply:** keep detailed guides for eligibility and steps; assert the
+compound question returns every required overview below the strict threshold,
+not through the single-hit second-tier fallback.

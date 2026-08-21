@@ -89,6 +89,21 @@ def _relevant_match_distance(store, question, keyword):
     return min(matches) if matches else None
 
 
+def _strict_result_titles(store, question):
+    """Titles retrieved through the strict gate, with no relaxed fallback."""
+    return {
+        r["metadata"]["title"]
+        for r in _strict_results(store, question)
+    }
+
+
+def _strict_results(store, question):
+    """Results below the strict threshold, before the second-tier fallback."""
+    expanded = expand_query_with_synonyms(question)
+    results = store.search(expanded, n_results=8, authority_boost=True)
+    return [r for r in results if r["distance"] < MIN_RELEVANCE_THRESHOLD]
+
+
 # ── CORE: natural questions that must retrieve in-seed topics ─────────────────
 
 CORE_TOPICS = [
@@ -126,6 +141,41 @@ def test_core_seed_topics_are_retrievable(seed_store, question, keyword):
         f"This is exactly the silent gap the threshold can hide — users get the "
         f"'no information' fallback for an answerable question. Tune "
         f"MIN_RELEVANCE_THRESHOLD or extend the query expansion in rag/retriever.py."
+    )
+
+
+def test_compound_carer_question_retrieves_every_core_benefit_strictly(seed_store):
+    """A broad carer question must reach all benefits, not a fallback single hit."""
+    strict_results = _strict_results(seed_store, "What benefits can I claim as a carer?")
+    strict_text = "\n".join(result["text"].lower() for result in strict_results)
+    expected_benefits = {
+        "carer's allowance",
+        "carer's credit",
+        "carer's element",
+    }
+    missing = {
+        benefit for benefit in expected_benefits if benefit not in strict_text
+    }
+
+    assert not missing, (
+        "COMPOUND RETRIEVAL GAP: a carer benefits question must retrieve Carer's "
+        "Allowance, Carer's Credit, and the Universal Credit Carer's Element below "
+        f"the strict {MIN_RELEVANCE_THRESHOLD} threshold. Missing: {sorted(missing)!r}. "
+        "Do not rely on the second-tier gate, which intentionally returns only one hit."
+    )
+
+
+def test_motability_and_respite_overviews_clear_the_strict_gate(seed_store):
+    """Broad Motability and respite questions must not depend on a single-hit fallback."""
+    motability_titles = _strict_result_titles(seed_store, "What is the Motability scheme?")
+    respite_titles = _strict_result_titles(
+        seed_store, "What respite care is available for carers?"
+    )
+
+    assert "What is the Motability Scheme?" in motability_titles
+    assert (
+        "Respite care: short breaks, sitting services and overnight support"
+        in respite_titles
     )
 
 
