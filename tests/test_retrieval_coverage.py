@@ -38,6 +38,7 @@ from rag.vector_store import UKAutismVectorStore
 from rag.structured_importer import import_structured_knowledge
 from rag.retriever import (
     MIN_RELEVANCE_THRESHOLD,
+    SECOND_TIER_THRESHOLD,
     apply_relevance_gate,
     expand_query_with_synonyms,
 )
@@ -204,11 +205,17 @@ def test_known_retrieval_gaps_are_tracked(seed_store, question, keyword):
 
 # ── PRECISION: off-topic / out-of-scope questions must return nothing ─────────
 # The second-tier gate relaxes recall, so this guards against the corresponding
-# precision regression: none of these may survive the gate. Genuinely off-topic
-# questions score >= ~1.48 against the seed; the in-domain-but-wrong ones
-# ("housing benefit in Scotland" ≈ 1.09) are rejected by the lexical anchor.
+# precision regression: none of these may survive the gate. The seed_store
+# fixture imports every record in the current seed, so additions automatically
+# rerun this calibration guard against the expanded knowledge base. Genuinely
+# off-topic questions currently score >= ~1.48; the in-domain-but-wrong one
+# ("housing benefit in Scotland" ≈ 1.09) is rejected by the lexical anchor.
 
-OFF_TOPIC = [
+# These have no topical overlap with the seed, so their best distance is the
+# calibration floor for SECOND_TIER_THRESHOLD. Scotland is intentionally not in
+# this group: it is in-domain but wrong, and the lexical anchor is what rejects
+# it despite its much closer best match.
+GENUINELY_OFF_TOPIC = [
     "What is the weather today?",
     "How do I fix my car engine?",
     "Best pizza recipe",
@@ -216,19 +223,45 @@ OFF_TOPIC = [
     "How do I get a mortgage?",
     "What is ADHD medication dosage?",
     "How do I apply for a US green card?",
+]
+
+OFF_TOPIC = [
+    *GENUINELY_OFF_TOPIC,
     "How do I apply for housing benefit in Scotland?",
 ]
 
 
+@pytest.mark.parametrize("question", GENUINELY_OFF_TOPIC)
+def test_second_tier_threshold_stays_below_off_topic_distance_floor(
+    seed_store, question
+):
+    """Seed additions must not move a truly off-topic hit into tier-two range."""
+    expanded = expand_query_with_synonyms(question)
+    results = seed_store.search(expanded, n_results=8, authority_boost=True)
+    best = min(results, key=lambda result: result["distance"])
+
+    assert best["distance"] >= SECOND_TIER_THRESHOLD, (
+        f"CALIBRATION DRIFT: the genuinely off-topic question {question!r} now "
+        f"has a best seed match at {best['distance']:.4f} to "
+        f"{best['metadata']['title']!r}, below the second-tier threshold of "
+        f"{SECOND_TIER_THRESHOLD}. Retune SECOND_TIER_THRESHOLD before this "
+        f"seed expansion can admit a weak match."
+    )
+
+
 @pytest.mark.parametrize("question", OFF_TOPIC)
 def test_off_topic_questions_return_nothing(seed_store, question):
-    """Off-topic questions must fall through both tiers of the relevance gate."""
+    """Each off-topic question must fall through both tiers after seed changes."""
     expanded = expand_query_with_synonyms(question)
     results = seed_store.search(expanded, n_results=8, authority_boost=True)
     gated = apply_relevance_gate(results, question)
+    best = min(results, key=lambda result: result["distance"])
 
     assert gated == [], (
         f"PRECISION REGRESSION: the off-topic question {question!r} retrieved "
         f"{[r['metadata']['title'] for r in gated]!r} through the relevance gate. "
-        f"Tighten SECOND_TIER_THRESHOLD or the lexical anchor in rag/retriever.py."
+        f"Best seed match: {best['distance']:.4f} to "
+        f"{best['metadata']['title']!r}; second-tier threshold: "
+        f"{SECOND_TIER_THRESHOLD}. Tighten SECOND_TIER_THRESHOLD or the lexical "
+        f"anchor in rag/retriever.py."
     )

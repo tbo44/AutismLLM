@@ -55,8 +55,8 @@ MIN_RELEVANCE_THRESHOLD = 0.8
 #
 # When NOTHING clears the strict 0.8 threshold, the second tier may return the
 # SINGLE best chunk — but only when it is clearly the right topic:
-#   • its distance is below SECOND_TIER_THRESHOLD (measured: genuinely off-topic
-#     questions like weather/pizza/football score >= ~1.48 against this seed),
+#   • its distance is below SECOND_TIER_THRESHOLD (measured: the current
+#     OFF_TOPIC coverage set bottoms out at 1.4798 for ADHD medication dosage),
 #     AND
 #   • it has a strong lexical anchor — distinctive words from the user's own
 #     question appear in the chunk TITLE. Two distinctive title matches are
@@ -67,8 +67,11 @@ MIN_RELEVANCE_THRESHOLD = 0.8
 # housing benefit in Scotland?" best hit ≈ 1.09 with at most one generic title
 # word) are still rejected, and only ONE chunk is ever passed to the LLM from
 # this tier, keeping the hallucination surface minimal.
-SECOND_TIER_THRESHOLD = 1.45
-SECOND_TIER_SINGLE_MATCH_MAX = 1.0
+#
+# Re-run tests/test_retrieval_coverage.py after changing the seed. New entries
+# can lower these best-match distances and invalidate this calibration.
+SECOND_TIER_THRESHOLD = 1.45  # Tuned below the measured 1.4798 off-topic floor.
+SECOND_TIER_SINGLE_MATCH_MAX = 1.0  # Tuned to admit the original 0.94 single-title-match carer hit.
 
 # Words too generic to anchor a topic match on their own — common across most
 # seed titles or questions, so they carry no topical signal.
