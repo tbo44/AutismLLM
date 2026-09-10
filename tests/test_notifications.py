@@ -2,6 +2,7 @@
 
 import os
 import smtplib
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -60,6 +61,49 @@ def test_zero_throttle_always_sends(monkeypatch):
         assert notifications.send_reindex_failure_alert("scheduled", "x", "t") is True
         assert notifications.send_reindex_failure_alert("scheduled", "y", "t") is True
         assert smtp.call_count == 2
+
+
+def test_get_status_reports_active_throttle(monkeypatch):
+    monkeypatch.setenv("REINDEX_ALERT_EMAIL_TO", "staff@example.org")
+    monkeypatch.setenv("REINDEX_ALERT_THROTTLE_HOURS", "24")
+    sent_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    notifications._THROTTLE_FILE.write_text(sent_at.isoformat())
+
+    status = notifications.get_status()
+
+    assert status["throttled"] is True
+    assert datetime.fromisoformat(status["next_allowed_at"]) == sent_at + timedelta(hours=24)
+
+
+def test_get_status_reports_expired_throttle(monkeypatch):
+    monkeypatch.setenv("REINDEX_ALERT_EMAIL_TO", "staff@example.org")
+    monkeypatch.setenv("REINDEX_ALERT_THROTTLE_HOURS", "24")
+    sent_at = datetime.now(timezone.utc) - timedelta(hours=25)
+    notifications._THROTTLE_FILE.write_text(sent_at.isoformat())
+
+    status = notifications.get_status()
+
+    assert status["throttled"] is False
+    assert status["next_allowed_at"] is None
+
+
+def test_admin_dashboard_shows_throttle_expiry():
+    kb = {
+        "email_alerts": {
+            "configured": True,
+            "recipient_display": "staff@example.org",
+            "last_sent_at": "2026-09-10T00:00:00+00:00",
+            "throttled": True,
+            "next_allowed_at": "2026-09-11T00:00:00+00:00",
+        },
+        "schedule": {"enabled": False},
+        "history": [],
+    }
+
+    stats = {"top_sources": [], "questions_7d": 0, "total_questions": 0}
+    html = app_main._render_admin_html([], stats, kb)
+
+    assert "throttled until 11 Sep 2026 01:00 BST" in html
 
 
 def test_replit_mail_mode(monkeypatch):

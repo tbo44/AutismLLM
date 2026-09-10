@@ -831,6 +831,12 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
     if email_alerts.get("configured"):
         recipient = _esc(email_alerts.get("recipient_display") or "unknown")
         email_status_html = f'<span class="badge badge-ok">On</span> &nbsp;<span style="font-size:0.85rem;font-weight:400;color:#444">{recipient}</span>'
+        if email_alerts.get("throttled"):
+            throttle_until = _esc(_fmt_uk_time(email_alerts.get("next_allowed_at")))
+            email_status_html += (
+                f' &nbsp;<span style="font-size:0.8rem;font-weight:400;color:#9a5b00">'
+                f'throttled until {throttle_until}</span>'
+            )
         last_alert_str = _fmt_uk_time(email_alerts.get("last_sent_at"))
     else:
         email_status_html = (

@@ -40,7 +40,7 @@ import smtplib
 import subprocess
 import threading
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -79,6 +79,9 @@ def get_status() -> dict:
                                        "Repl owner (Replit mail)".
       last_sent_at     (str | None)  — ISO-8601 UTC timestamp of the most
                                        recent alert, or None if never sent.
+      throttled         (bool)        — True while failure alerts are suppressed.
+      next_allowed_at   (str | None)  — ISO-8601 UTC timestamp when suppression
+                                        ends, or None if not throttled.
     """
     recipients = _recipients()
     configured = bool(recipients)
@@ -90,10 +93,22 @@ def get_status() -> dict:
         recipient_display = ", ".join(recipients)
 
     last = _last_sent_at()
+    next_allowed = None
+    if last is not None:
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        else:
+            last = last.astimezone(timezone.utc)
+        candidate = last + timedelta(hours=_throttle_hours())
+        if datetime.now(timezone.utc) < candidate:
+            next_allowed = candidate
+
     return {
         "configured": configured,
         "recipient_display": recipient_display,
         "last_sent_at": last.isoformat() if last else None,
+        "throttled": next_allowed is not None,
+        "next_allowed_at": next_allowed.isoformat() if next_allowed else None,
     }
 
 
