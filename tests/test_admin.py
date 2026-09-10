@@ -473,6 +473,30 @@ def test_login_lockout_blocks_correct_password(admin_token, monkeypatch, clear_l
     assert "Too many failed attempts" in resp.text
 
 
+def test_login_failed_attempt_count_resets_after_window_expires(
+    admin_token, monkeypatch, clear_login_attempts
+):
+    """A failure from an expired window starts a new count instead of locking out."""
+    monkeypatch.setattr(main, "_LOGIN_MAX_ATTEMPTS", 3)
+    monkeypatch.setattr(main, "_is_locked_out", lambda ip: (False, 0))
+    main._login_attempts["testclient"] = {
+        "count": main._LOGIN_MAX_ATTEMPTS - 1,
+        "window_start": (
+            main._time.monotonic() - main._LOGIN_LOCKOUT_SECONDS - 1
+        ),
+        "locked_until": 0,
+    }
+
+    resp = client.post(
+        "/admin/login",
+        data={"token": "wrong"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 401
+    assert main._login_attempts["testclient"]["count"] == 1
+
+
 def test_login_success_clears_failed_attempts(admin_token, monkeypatch, clear_login_attempts):
     """A successful login below the limit removes the client's failure record."""
     monkeypatch.setattr(main, "_LOGIN_MAX_ATTEMPTS", 3)
