@@ -635,3 +635,40 @@ class TestCrawlAndChunkAllCache:
         # Should return the cached chunk without re-fetching content
         urls_in_result = [c.get("metadata", {}).get("url") for c in chunks]
         assert url in urls_in_result
+
+    def test_prunes_urls_removed_from_active_sources(self, tmp_path, caplog):
+        """Cached URLs removed from UK_SOURCES are pruned while active URLs remain."""
+        active_url = "https://example.com/active"
+        stale_urls = [
+            "https://example.com/removed-one",
+            "https://example.com/removed-two",
+        ]
+        cache = CrawlCache(raw_dir=str(tmp_path))
+        for url in [active_url, *stale_urls]:
+            cache.update(
+                url,
+                etag=None,
+                last_modified=None,
+                content_hash=_content_hash(url),
+                chunks=[_make_chunk(url)],
+            )
+
+        with (
+            patch("rag.crawler.UK_SOURCES", [self._fake_source(active_url)]),
+            patch.object(
+                UKAutismCrawler,
+                "crawl_all_sources",
+                new=AsyncMock(return_value=([], [])),
+            ),
+            caplog.at_level("INFO", logger="rag.crawler"),
+        ):
+            asyncio.run(crawl_and_chunk_all(raw_dir=str(tmp_path), use_cache=True))
+
+        persisted_cache = CrawlCache(raw_dir=str(tmp_path))
+        assert persisted_cache.get(active_url) is not None
+        assert all(persisted_cache.get(url) is None for url in stale_urls)
+        assert len(persisted_cache) == 1
+        assert (
+            "Cache pruned: removed 2 stale entry/entries "
+            "for URL(s) no longer in the active source list."
+        ) in caplog.messages
