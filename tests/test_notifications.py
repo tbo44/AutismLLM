@@ -1,6 +1,7 @@
 """Tests for re-index failure email notifications (app/notifications.py)."""
 
 import os
+import smtplib
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -144,14 +145,29 @@ def test_send_test_alert_replit_mail(monkeypatch):
     smtp.assert_not_called()
 
 
-def test_send_test_alert_transport_failure(monkeypatch):
-    """Returns sent=False with error string when the transport raises."""
+def test_send_test_alert_missing_smtp_host(monkeypatch):
+    """Missing SMTP_HOST gives a direct configuration fix."""
     monkeypatch.setenv("REINDEX_ALERT_EMAIL_TO", "staff@example.com")
-    with patch.object(notifications, "_send_smtp", side_effect=RuntimeError("bad creds")):
-        result = notifications.send_test_alert()
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    result = notifications.send_test_alert()
     assert result["sent"] is False
     assert result["configured"] is True
-    assert "bad creds" in result["error"]
+    assert "SMTP_HOST" in result["error"]
+    assert "Traceback" not in result["error"]
+
+
+def test_send_test_alert_auth_failure(monkeypatch):
+    """Authentication failures identify the credential env vars safely."""
+    monkeypatch.setenv("REINDEX_ALERT_EMAIL_TO", "staff@example.com")
+    raw_error = "535 5.7.8 Authentication credentials invalid"
+    failure = smtplib.SMTPAuthenticationError(535, raw_error.encode())
+    with patch.object(notifications, "_send_smtp", side_effect=failure):
+        result = notifications.send_test_alert()
+    assert result["sent"] is False
+    assert "SMTP_USERNAME" in result["error"]
+    assert "SMTP_PASSWORD" in result["error"]
+    assert raw_error not in result["error"]
+    assert "Traceback" not in result["error"]
 
 
 def test_send_test_alert_does_not_touch_throttle(monkeypatch, tmp_path):
@@ -232,9 +248,10 @@ def test_test_alert_endpoint_sends_and_reports(crawl_token, monkeypatch):
 
 
 def test_test_alert_endpoint_transport_failure(crawl_token, monkeypatch):
-    """Transport error → 200 with sent=False and error message."""
+    """Transport error → 200 with safe, actionable configuration guidance."""
     monkeypatch.setenv("REINDEX_ALERT_EMAIL_TO", "staff@example.com")
-    with patch.object(notifications, "_send_smtp", side_effect=RuntimeError("conn refused")):
+    raw_error = "Traceback: connection details from internal host"
+    with patch.object(notifications, "_send_smtp", side_effect=RuntimeError(raw_error)):
         resp = _client.post(
             "/admin/alerts/test",
             headers={"Authorization": f"Bearer {_CRAWL_TOKEN}"},
@@ -242,4 +259,6 @@ def test_test_alert_endpoint_transport_failure(crawl_token, monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body["sent"] is False
-    assert "conn refused" in body["error"]
+    assert "SMTP_HOST" in body["error"]
+    assert raw_error not in body["error"]
+    assert "Traceback" not in body["error"]

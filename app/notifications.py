@@ -198,6 +198,36 @@ def _send_replit_mail(subject: str, body: str) -> None:
             raise RuntimeError(f"Replit mailer returned HTTP {resp.status}")
 
 
+def _test_alert_error(exc: Exception, recipients: list[str]) -> str:
+    """Map transport failures to safe, actionable configuration guidance."""
+    if recipients == ["replit"]:
+        return (
+            "The Replit mail test failed. Check REINDEX_ALERT_EMAIL_TO=replit and "
+            "that REPLIT_CONNECTORS_HOSTNAME is available in this Replit environment."
+        )
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return (
+            "SMTP authentication failed. Check SMTP_USERNAME and SMTP_PASSWORD "
+            "in Secrets, then try again."
+        )
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return (
+            "Could not connect to the SMTP server. Check SMTP_HOST, SMTP_PORT, "
+            "and SMTP_STARTTLS, then try again."
+        )
+    if isinstance(exc, (smtplib.SMTPException, ValueError)):
+        return (
+            "The SMTP server rejected the test email. Check SMTP_HOST, SMTP_PORT, "
+            "SMTP_USERNAME, SMTP_PASSWORD, SMTP_STARTTLS, and "
+            "REINDEX_ALERT_EMAIL_FROM."
+        )
+    return (
+        "The test email could not be sent. Check SMTP_HOST, SMTP_PORT, "
+        "SMTP_USERNAME, SMTP_PASSWORD, SMTP_STARTTLS, and "
+        "REINDEX_ALERT_EMAIL_FROM, then try again."
+    )
+
+
 def send_reindex_failure_alert(source: str, detail: str, when: str) -> bool:
     """
     Send a failure notification email (synchronous). Returns True if an email
@@ -311,5 +341,5 @@ def send_test_alert() -> dict:
             "sent": False,
             "configured": True,
             "recipient": ", ".join(recipients),
-            "error": str(e),
+            "error": _test_alert_error(e, recipients),
         }
