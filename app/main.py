@@ -621,24 +621,35 @@ def _check_admin_token(
 
 
 def _read_feedback_log(limit: int = 50) -> list[dict]:
-    """Return the last `limit` entries from logs/feedback.log, newest first."""
-    path = Path("logs/feedback.log")
-    if not path.exists():
+    """Return newest feedback across the active log and three retained backups."""
+    if limit <= 0:
         return []
+    path = Path("logs/feedback.log")
     entries = []
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-        for line in lines:
+    # Rotation order is append order: active is newest, .3 is oldest.
+    # Do not depend on timestamps, which may be missing in older submissions.
+    for log_path in [path, *(Path(f"{path}.{i}") for i in range(1, 4))]:
+        try:
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeError):
+            logger.warning("Could not read feedback log file %s; skipping.", log_path)
+            continue
+        for line in reversed(lines):
             line = line.strip()
             if not line:
                 continue
             try:
-                entries.append(json.loads(line))
+                entry = json.loads(line)
             except json.JSONDecodeError:
-                pass
-    except Exception:
-        pass
-    return list(reversed(entries))[:limit]
+                continue
+            if not isinstance(entry, dict):
+                continue
+            entries.append(entry)
+            if len(entries) >= limit:
+                return entries
+    return entries
 
 
 def _read_questions_stats() -> dict:

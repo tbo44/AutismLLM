@@ -270,6 +270,57 @@ def test_read_feedback_log_respects_limit(logs_dir):
     assert result[0]["ts"] == "2026-07-01T10:00:09"
 
 
+@pytest.fixture
+def rotated_feedback(logs_dir):
+    entries = [{"issue_type": f"feedback-{i:02d}"} for i in range(80)]
+    for backup in range(4):
+        name = "feedback.log" + (f".{backup}" if backup else "")
+        start = 60 - backup * 20
+        _write_lines(logs_dir / name, entries[start:start + 20])
+    # Files beyond the configured retention must not be included.
+    _write_lines(logs_dir / "feedback.log.4", [{"issue_type": "not-retained"}])
+    return entries
+
+
+def test_feedback_rotation_order_and_default_limit(rotated_feedback):
+    assert _read_feedback_log() == list(reversed(rotated_feedback))[:50]
+    assert _read_feedback_log(limit=100) == list(reversed(rotated_feedback))
+    assert _read_feedback_log(limit=0) == []
+
+
+def test_dashboard_shows_latest_50_across_rotation(admin_token, rotated_feedback):
+    response = client.get("/admin", headers={"X-Admin-Token": admin_token})
+    assert response.status_code == 200
+    displayed = re.findall(r"<td>(feedback-\d+)</td>", response.text)
+    assert displayed == [entry["issue_type"] for entry in reversed(rotated_feedback[30:])]
+    assert "not-retained" not in response.text
+
+
+def test_feedback_missing_active_and_middle_backup(logs_dir):
+    _write_lines(logs_dir / "feedback.log.1", [{"issue_type": "newer"}])
+    _write_lines(logs_dir / "feedback.log.3", [{"issue_type": "older"}])
+    assert _read_feedback_log() == [{"issue_type": "newer"}, {"issue_type": "older"}]
+
+
+@pytest.mark.parametrize("broken_backup", [0, 1, 2, 3])
+@pytest.mark.parametrize("failure", ["bad_json", "bad_encoding", "unreadable"])
+def test_feedback_bad_file_does_not_hide_other_files(logs_dir, broken_backup, failure):
+    for backup in range(4):
+        name = "feedback.log" + (f".{backup}" if backup else "")
+        path = logs_dir / name
+        if backup != broken_backup:
+            _write_lines(path, [{"backup": backup}])
+        elif failure == "bad_json":
+            path.write_text('not-json\nnull\n[]\n42\n"not-an-entry"\n\n', encoding="utf-8")
+        elif failure == "bad_encoding":
+            path.write_bytes(b"\xff\xfe")
+        else:
+            path.mkdir()  # Reading this path raises an OSError on all platforms.
+    assert _read_feedback_log() == [
+        {"backup": backup} for backup in range(4) if backup != broken_backup
+    ]
+
+
 def test_read_questions_stats_missing_file(logs_dir):
     stats = _read_questions_stats()
     assert stats == {"top_sources": [], "questions_7d": 0, "total_questions": 0}
