@@ -1,6 +1,7 @@
 """Acronym mutation API contracts, using real JSON I/O in a temporary directory."""
 
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -135,3 +136,89 @@ def test_add_update_delete_persists_each_change(client, glossary_path, channel):
     assert deleted.status_code == 200
     assert deleted.json() == {"deleted": "EHCP"}
     assert json.loads(glossary_path.read_text(encoding="utf-8")) == INITIAL_GLOSSARY
+
+
+def mutate(client, method):
+    path = "/api/acronyms" if method == "POST" else "/api/acronyms/GP"
+    body = {"json": {"key": "GP", "definition": "Changed"}} if method != "DELETE" else {}
+    return client.request(method, path, headers={"X-Admin-Token": VALID_TOKEN}, **body)
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE"])
+@pytest.mark.parametrize("content", [
+    b'{"GP": "unfinished', b"\xff\xfe", b"[]", b"null", b'{"GP": 42}',
+])
+def test_damaged_glossary_preserved(client, glossary_path, method, content):
+    glossary_path.write_bytes(content)
+    response = mutate(client, method)
+    assert response.status_code == 503
+    assert "No changes were saved" in response.json()["detail"]
+    assert glossary_path.read_bytes() == content
+    assert list(glossary_path.parent.iterdir()) == [glossary_path]
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE"])
+def test_unreadable_glossary_preserved(client, glossary_path, monkeypatch, method):
+    before = glossary_path.read_bytes()
+    original_read = Path.read_text
+
+    def unreadable(path, *args, **kwargs):
+        if path == glossary_path:
+            raise PermissionError("Access denied")
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    response = mutate(client, method)
+    assert response.status_code == 503
+    assert glossary_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE"])
+@pytest.mark.parametrize("failure_point", ["fsync", "replace"])
+def test_failed_atomic_save_preserves_original(
+    client, glossary_path, monkeypatch, method, failure_point,
+):
+    before = glossary_path.read_bytes()
+
+    def fail(*args, **kwargs):
+        raise OSError("Simulated interrupted save")
+
+    monkeypatch.setattr(main.os, failure_point, fail)
+    response = mutate(client, method)
+    assert response.status_code == 503
+    assert "original file has not been changed" in response.json()["detail"]
+    assert glossary_path.read_bytes() == before
+    assert list(glossary_path.parent.iterdir()) == [glossary_path]
+
+
+def test_save_replaces_only_after_complete_json_is_written(client, glossary_path, monkeypatch):
+    before = glossary_path.read_bytes()
+    original_replace = main.os.replace
+    replacements = []
+
+    def verify_replace(source, target):
+        assert Path(source).parent == glossary_path.parent
+        assert Path(source) != glossary_path
+        assert Path(target) == glossary_path
+        assert glossary_path.read_bytes() == before
+        assert json.loads(Path(source).read_text(encoding="utf-8")) == {"GP": "Changed"}
+        replacements.append(source)
+        original_replace(source, target)
+
+    monkeypatch.setattr(main.os, "replace", verify_replace)
+    assert mutate(client, "PUT").status_code == 200
+    assert len(replacements) == 1
+    assert json.loads(glossary_path.read_text(encoding="utf-8")) == {"GP": "Changed"}
+    assert list(glossary_path.parent.iterdir()) == [glossary_path]
+
+
+def test_missing_glossary_can_be_created(client, glossary_path):
+    glossary_path.unlink()
+    assert mutate(client, "POST").status_code == 201
+    assert json.loads(glossary_path.read_text(encoding="utf-8")) == {"GP": "Changed"}
+
+
+def test_public_read_reports_corruption_instead_of_empty_glossary(client, glossary_path):
+    glossary_path.write_bytes(b"invalid-json")
+    assert client.get("/api/acronyms").status_code == 503
+    assert glossary_path.read_bytes() == b"invalid-json"

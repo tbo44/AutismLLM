@@ -13,6 +13,7 @@ import os
 import re
 import asyncio
 import secrets
+import tempfile
 from pathlib import Path
 from collections import Counter
 
@@ -369,20 +370,55 @@ _acronyms_lock = asyncio.Lock()
 
 
 def _load_acronyms() -> dict:
-    """Read data/acronyms.json; return empty dict on any error."""
+    """Load a glossary; never treat damaged or unreadable content as empty."""
     try:
-        return json.loads(_ACRONYMS_PATH.read_text(encoding="utf-8"))
-    except Exception:
+        data = json.loads(_ACRONYMS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or any(
+            not isinstance(key, str) or not key.strip() or not isinstance(value, str)
+            for key, value in data.items()
+        ):
+            raise ValueError("Glossary must be an object of acronym definitions")
+        return data
+    except FileNotFoundError:
+        # Preserve first-use creation when no glossary has been installed yet.
         return {}
+    except (OSError, UnicodeError, ValueError):
+        logger.error("Glossary could not be read or decoded; refusing to treat it as empty.")
+        raise HTTPException(
+            status_code=503,
+            detail="The glossary file is unreadable or damaged. No changes were saved. "
+                   "Ask an administrator to check its permissions or restore a valid copy.",
+        ) from None
 
 
 def _save_acronyms(data: dict) -> None:
-    """Write data/acronyms.json, creating parent dirs as needed."""
-    _ACRONYMS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _ACRONYMS_PATH.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    """Write completely to a sibling file, then atomically replace the glossary."""
+    temporary_path = None
+    try:
+        encoded = json.dumps(data, ensure_ascii=False, indent=2)
+        _ACRONYMS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=_ACRONYMS_PATH.parent,
+            prefix=f".{_ACRONYMS_PATH.name}.", suffix=".tmp", delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(encoded)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, _ACRONYMS_PATH)
+    except (OSError, TypeError, ValueError):
+        logger.error("Could not save glossary atomically; original glossary left unchanged.")
+        raise HTTPException(
+            status_code=503,
+            detail="The glossary could not be saved. The original file has not been changed. "
+                   "Ask an administrator to check disk space and file permissions.",
+        ) from None
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not remove temporary glossary file.")
 
 
 class AcronymEntry(BaseModel):
@@ -1565,9 +1601,14 @@ function _renderAcronymTable(glossary) {{
 
 function loadAcronymTable() {{
   fetch('/api/acronyms')
-    .then(function(r) {{ return r.json(); }})
+    .then(function(r) {{
+      return r.json().then(function(data) {{
+        if (!r.ok) {{ throw new Error(data.detail || 'Failed to load glossary.'); }}
+        return data;
+      }});
+    }})
     .then(function(g) {{ _renderAcronymTable(g); }})
-    .catch(function() {{ _showAcronymMsg('Failed to load glossary.', '#b00020'); }});
+    .catch(function(error) {{ _showAcronymMsg(error.message || 'Failed to load glossary.', '#b00020'); }});
 }}
 
 function editAcronym(key, definition) {{
