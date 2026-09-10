@@ -8,6 +8,7 @@ lxml>=4.9.4,<5.2.0
 pytz==2024.2
 python-multipart
 pytest
+playwright
 chromadb
 lxml
 sentence-transformers

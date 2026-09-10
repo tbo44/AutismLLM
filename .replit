@@ -5,7 +5,7 @@ integrations = ["python_openai:1.0.0", "github:1.0.0"]
 
 [nix]
 channel = "stable-25_05"
-packages = ["libxcrypt", "xcodebuild", "zlib"]
+packages = ["gitFull", "libxcrypt", "playwright-driver", "xcodebuild", "zlib", "chromium"]
 
 [workflows]
 runButton = "Project"

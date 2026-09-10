@@ -818,7 +818,7 @@ body.low-stim .section-note .section-heading           { background: #DDD; color
     padding: 2px 1px;
     border-radius: 2px;
     outline: none;
-    display: inline;
+    display: inline-block;
 }
 
 /* Keyboard focus ring */
