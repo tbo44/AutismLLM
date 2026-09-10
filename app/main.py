@@ -1104,7 +1104,9 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
   <h2>Manage Acronym Glossary</h2>
   <p style="font-size:0.85rem;color:#555;margin:0 0 1rem;">
     These acronym definitions appear as tooltips in chat answers.
-    Changes take effect immediately — no restart needed.
+    Changes apply to new sessions immediately; existing open tabs refresh within
+    5 minutes while connected. Inactive tabs catch up when you return.
+    No restart needed.
   </p>
 
   <!-- Add / edit form -->

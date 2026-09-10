@@ -1,7 +1,10 @@
 /* Maya – Autism Hounslow  script.js  v14 */
 
-/* ── Acronym glossary (loaded from /api/acronyms on startup) ── */
+/* ── Acronym glossary (refreshed from /api/acronyms every five minutes) ── */
 let ACRONYM_GLOSSARY = {};
+const ACRONYM_REFRESH_MS = 5 * 60 * 1000;
+let _acronymFetchPending = false;
+let _acronymLastAttempt = 0;
 
 // Compiled regex — rebuilt whenever the glossary is loaded or updated.
 // Starts as a never-match pattern so annotateAcronyms is safe before the
@@ -26,19 +29,44 @@ function _buildAcronymPattern() {
 
 /**
  * Fetch the glossary from the backend and rebuild the regex.
- * Called once on DOMContentLoaded; safe to call again if the glossary is
- * updated from the admin dashboard in the same tab (not currently needed).
+ * Return whether the glossary changed; retain the last good copy on failure.
  */
 async function _loadAcronymGlossary() {
+    if (_acronymFetchPending) return false;
+    _acronymFetchPending = true;
+    _acronymLastAttempt = Date.now();
     try {
-        const res = await fetch('/api/acronyms');
-        if (res.ok) {
-            ACRONYM_GLOSSARY = await res.json();
-            _buildAcronymPattern();
+        const res = await fetch('/api/acronyms', { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const glossary = await res.json();
+        if (!glossary || Array.isArray(glossary) || typeof glossary !== 'object' ||
+            Object.entries(glossary).some(([key, value]) => !key || typeof value !== 'string')) {
+            throw new Error('Invalid acronym glossary');
         }
+        const changed = JSON.stringify(glossary) !== JSON.stringify(ACRONYM_GLOSSARY);
+        ACRONYM_GLOSSARY = glossary;
+        _buildAcronymPattern();
+        return changed;
     } catch (e) {
-        console.warn('Maya: could not load acronym glossary — tooltips disabled.', e);
+        console.warn('Maya: could not refresh acronym glossary — keeping the last loaded definitions.', e);
+        return false;
+    } finally {
+        _acronymFetchPending = false;
     }
+}
+
+function _startAcronymRefresh(app) {
+    const refresh = async () => {
+        if (await _loadAcronymGlossary()) app.refreshAcronymTooltips();
+    };
+    refresh();
+    setInterval(refresh, ACRONYM_REFRESH_MS);
+    // Suspended/background tabs may miss their timer; catch up on return.
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && Date.now() - _acronymLastAttempt >= ACRONYM_REFRESH_MS) {
+            refresh();
+        }
+    });
 }
 
 /**
@@ -285,7 +313,8 @@ class MayaApp {
 
         if (msg.role === 'assistant') {
             const sourcesHTML = this.buildSourcesHTML(msg.sources);
-            el.innerHTML = `<div class="avatar" aria-hidden="true">M</div><div class="message-bubble">${this.renderAnswer(msg.content, msg)}${sourcesHTML}</div>`;
+            el.innerHTML = `<div class="avatar" aria-hidden="true">M</div><div class="message-bubble"><div class="message-answer">${this.renderAnswer(msg.content, msg)}</div>${sourcesHTML}</div>`;
+            el.querySelector('.message-answer').mayaMessage = msg;
         } else {
             el.innerHTML = `<div class="message-bubble">${this.escapeHtml(msg.content)}</div>`;
         }
@@ -296,6 +325,16 @@ class MayaApp {
     }
 
     // ── Acronym annotation ────────────────────────────────────────────
+
+    refreshAcronymTooltips() {
+        // Re-render only answer text, leaving source disclosure state and
+        // the conversation itself intact. This also handles additions/deletions.
+        this.chatArea.querySelectorAll('.message-answer').forEach(el => {
+            const msg = el.mayaMessage;
+            const html = this.renderAnswer(msg.content, msg);
+            if (el.innerHTML !== html) el.innerHTML = html;
+        });
+    }
 
     /**
      * Wrap the first occurrence of each known acronym in the message HTML
@@ -534,10 +573,8 @@ class MayaApp {
 // ── Boot ──────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Load the acronym glossary from the backend before the first user message.
-    _loadAcronymGlossary();
-
     const app = new MayaApp();
+    _startAcronymRefresh(app);
 
     // Global click handler for "simpler language" buttons (event delegation)
     document.addEventListener('click', (e) => {
