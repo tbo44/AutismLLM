@@ -473,6 +473,31 @@ def test_login_lockout_blocks_correct_password(admin_token, monkeypatch, clear_l
     assert "Too many failed attempts" in resp.text
 
 
+def test_login_success_clears_failed_attempts(admin_token, monkeypatch, clear_login_attempts):
+    """A successful login below the limit removes the client's failure record."""
+    monkeypatch.setattr(main, "_LOGIN_MAX_ATTEMPTS", 3)
+
+    for _ in range(main._LOGIN_MAX_ATTEMPTS - 1):
+        resp = client.post(
+            "/admin/login",
+            data={"token": "wrong"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 401
+
+    assert len(main._login_attempts) == 1
+
+    resp = client.post(
+        "/admin/login",
+        data={"token": VALID_TOKEN},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/admin"
+    assert main._login_attempts == {}
+
+
 def test_login_remaining_attempts_warning_shown(admin_token, monkeypatch, clear_login_attempts):
     """When within 2 attempts of the limit, the form shows how many attempts remain."""
     monkeypatch.setattr(main, "_LOGIN_MAX_ATTEMPTS", 5)
