@@ -145,10 +145,20 @@ Provider selection priority: explicit `LLM_PROVIDER` → auto-detect from keys/U
 | `LLM_MODEL` | per provider | Groq→`llama-3.3-70b-versatile`, OpenAI→`gpt-4o-mini`, Ollama→`qwen2.5:72b` |
 | `TEMPERATURE` | `0` | Determinism — keep at 0 in production |
 | `TOP_P` | `1.0` | Top-p sampling |
+| `LLM_RATE_LIMIT_COOLDOWN_SECONDS` | `30` | Seconds to pause provider calls after a rate limit; finite non-negative number, `0` disables |
 | `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | SentenceTransformers model |
 | `HF_TOKEN` | — | Hugging Face token (private embedding models) |
 
 **Provider examples**
+
+The rate-limit cooldown is shared by answer requests using the application's LLM
+client. Moderation, query enhancement, and answer generation all activate it.
+During the cooldown, answers return the existing temporary-unavailable message
+without provider calls; local safety guardrails still run. Calls resume on the
+next request after expiry. The cooldown uses a monotonic clock and is in-memory
+per server process, not shared across replicas or preserved after a restart.
+Already-running provider calls are not cancelled. Change the setting before
+starting the server.
 
 ```bash
 # Ollama with Qwen (no-keys default)

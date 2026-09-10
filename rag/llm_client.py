@@ -17,6 +17,9 @@ Provider selection (priority order):
 import os
 import json
 import logging
+import math
+import time
+from threading import Lock
 from typing import List, Dict, Any, Optional, Union
 from openai import OpenAI
 import openai
@@ -113,11 +116,28 @@ class UKAutismLLMClient:
         self.temperature = float(os.environ.get("TEMPERATURE", "0"))
         self.top_p       = float(os.environ.get("TOP_P", "1.0"))
         self.formatter   = StructuredDataFormatter()
+        self.rate_limit_cooldown_seconds = float(os.environ.get("LLM_RATE_LIMIT_COOLDOWN_SECONDS", "30"))
+        if not math.isfinite(self.rate_limit_cooldown_seconds) or self.rate_limit_cooldown_seconds < 0:
+            raise ValueError("LLM_RATE_LIMIT_COOLDOWN_SECONDS must be a finite, non-negative number")
+        self._cooldown_until = 0.0
+        self._cooldown_lock = Lock()
         self._initialize_client()
 
     def _initialize_client(self):
         self.client = _build_openai_client()
         logger.info(f"LLM client ready  model={self.model}  temp={self.temperature}  top_p={self.top_p}")
+
+    def is_rate_limited(self) -> bool:
+        """Share the cooldown across requests using this client, without sleeping."""
+        with self._cooldown_lock:
+            return time.monotonic() < self._cooldown_until
+
+    def _start_rate_limit_cooldown(self) -> None:
+        with self._cooldown_lock:
+            self._cooldown_until = max(
+                self._cooldown_until,
+                time.monotonic() + self.rate_limit_cooldown_seconds,
+            )
 
     # ─────────────────────────────────────────────────────────────────
     # Main response generation
@@ -133,6 +153,8 @@ class UKAutismLLMClient:
         """Generate a structured response using retrieved context."""
         if not self.client:
             return {"response": "LLM client not available", "sources_used": [], "chunks_used": 0, "model_used": self.model, "success": False, "error": "Client not initialized"}
+        if self.is_rate_limited():
+            return {"response": "", "sources_used": [], "chunks_used": 0, "model_used": self.model, "success": False, "rate_limited": True, "error": "Provider rate-limit cooldown active"}
 
         try:
             sources_used = set()
@@ -213,6 +235,7 @@ CONTEXT INFORMATION:
             return {"response": generated_text, "sources_used": list(sources_used), "chunks_used": len(retrieved_chunks), "model_used": self.model, "success": True}
 
         except openai.RateLimitError as e:
+            self._start_rate_limit_cooldown()
             logger.warning(f"LLM rate limit reached during response synthesis: {str(e)}")
             return {"response": "", "sources_used": [], "chunks_used": 0, "model_used": self.model, "success": False, "rate_limited": True, "error": str(e)}
         except Exception as e:
@@ -226,6 +249,8 @@ CONTEXT INFORMATION:
     def enhance_query(self, user_question: str) -> Union[str, Dict[str, Any]]:
         if not self.client:
             return user_question
+        if self.is_rate_limited():
+            return {"query": user_question, "rate_limited": True}
         try:
             prompt = (
                 "Rewrite the following question as a concise search query for a UK autism information system. "
@@ -245,6 +270,7 @@ CONTEXT INFORMATION:
                 return enhanced
             return user_question
         except openai.RateLimitError as e:
+            self._start_rate_limit_cooldown()
             logger.warning(f"LLM rate limit reached during query enhancement: {str(e)}")
             return {"query": user_question, "rate_limited": True}
         except Exception as e:
@@ -258,6 +284,8 @@ CONTEXT INFORMATION:
     def check_content_appropriateness(self, user_question: str) -> Dict[str, Any]:
         if not self.client:
             return {"appropriate": True, "reason": "Moderation unavailable", "category": "unknown"}
+        if self.is_rate_limited():
+            return {"appropriate": True, "reason": "Rate limited", "category": "unknown", "rate_limited": True}
         try:
             prompt = (
                 "You are a content filter for a UK autism facts assistant. "
@@ -284,6 +312,7 @@ CONTEXT INFORMATION:
                     pass
             return {"appropriate": True, "reason": "Parse error", "category": "unknown"}
         except openai.RateLimitError as e:
+            self._start_rate_limit_cooldown()
             logger.warning(f"LLM rate limit reached during appropriateness check: {str(e)}")
             return {"appropriate": True, "reason": "Rate limited", "category": "unknown", "rate_limited": True}
         except Exception as e:
