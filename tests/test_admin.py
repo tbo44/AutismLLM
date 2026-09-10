@@ -1,9 +1,13 @@
 """Tests for the /admin dashboard: auth behaviour and log parsing."""
 
+import asyncio
 import json
+import logging
 import re
 import subprocess
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -114,6 +118,99 @@ def test_admin_rendered_javascript_is_valid(admin_token, tmp_path):
             capture_output=True, text=True, timeout=10,
         )
         assert result.returncode == 0, result.stderr
+
+
+# ── live re-index status history ──────────────────────────────────────
+
+
+def test_seed_reindex_completion_appears_in_polled_history(tmp_path, monkeypatch):
+    original_rag_system = main._rag_system
+    original_startup_complete = main._startup_complete
+    token = "crawl-test-token"
+    monkeypatch.setenv("ADMIN_CRAWL_TOKEN", token)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "logs").mkdir()
+
+    history_logger = logging.getLogger(f"test.reindex-history.{id(tmp_path)}")
+    history_logger.setLevel(logging.INFO)
+    history_logger.propagate = False
+    handler = logging.FileHandler(tmp_path / "logs" / "reindex.log", encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-7s  %(message)s"))
+    history_logger.addHandler(handler)
+    monkeypatch.setattr(main, "_reindex_logger", history_logger)
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="indexed", stderr=""),
+    )
+    monkeypatch.setattr(main, "_initialize_rag_sync", lambda: SimpleNamespace())
+    monkeypatch.setattr(main.notifications, "reset_throttle", lambda: None)
+
+    main._crawl_status.update(
+        {"running": False, "last_run": None, "last_result": None, "alert": None}
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async def run_reindex_and_poll():
+        started = await main.admin_reindex(authorization=headers["Authorization"])
+        assert started["status"] == "started"
+        assert main._crawl_status["running"] is True
+
+        completed_entry = None
+        for _ in range(200):
+            payload = await main.admin_crawl_status(
+                authorization=headers["Authorization"]
+            )
+            completed_entry = next(
+                (
+                    entry
+                    for entry in payload["history"]
+                    if entry["source"] == "manual-reindex"
+                    and entry["outcome"] == "SUCCESS"
+                ),
+                None,
+            )
+            if not payload["running"] and completed_entry is not None:
+                break
+            await asyncio.sleep(0.01)
+
+        assert completed_entry is not None
+        assert datetime.strptime(
+            completed_entry["ts"], "%Y-%m-%d %H:%M:%S,%f"
+        )
+
+    try:
+        asyncio.run(run_reindex_and_poll())
+    finally:
+        main._rag_system = original_rag_system
+        main._startup_complete = original_startup_complete
+        handler.close()
+        history_logger.removeHandler(handler)
+
+
+def test_dashboard_polling_renders_completed_history_without_reload(admin_token):
+    response = client.get(f"/admin?token={admin_token}")
+    scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", response.text, re.DOTALL)
+    runner = str(Path(__file__).parent / "admin_history_runner.cjs")
+    result = subprocess.run(
+        ["node", runner],
+        input=json.dumps({"script": scripts[0]}),
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    output = json.loads(result.stdout)
+    assert output["requests"] == [
+        ["POST", "/admin/crawl"],
+        ["GET", "/admin/crawl/status"],
+        ["GET", "/admin/crawl/status"],
+    ]
+    assert "2026-09-10 08:45:00,000" in output["historyHtml"]
+    assert "manual-crawl" in output["historyHtml"]
+    assert 'class="ok">SUCCESS' in output["historyHtml"]
+    assert output["pollingStopped"] is True
 
 
 # ── log parsing helpers ───────────────────────────────────────────────

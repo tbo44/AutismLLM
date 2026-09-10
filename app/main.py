@@ -2059,7 +2059,15 @@ async def admin_crawl(authorization: str | None = Header(default=None)):
             "message": "A crawl+reindex is already in progress. Check /admin/crawl/status for updates.",
         }
 
-    _crawl_task = asyncio.create_task(_run_crawl_and_reindex_background())
+    # Reserve the running state before returning so the dashboard's immediate
+    # first poll cannot observe a false idle state and stop polling.
+    _crawl_status["running"] = True
+    _crawl_status["last_result"] = None
+    try:
+        _crawl_task = asyncio.create_task(_run_crawl_and_reindex_background())
+    except Exception:
+        _crawl_status["running"] = False
+        raise
     logger.info("🚀 Admin crawl+reindex task spawned.")
     return {
         "status": "started",
@@ -2177,7 +2185,15 @@ async def admin_reindex(authorization: str | None = Header(default=None)):
             "message": "A re-index is already in progress. Check /admin/crawl/status for updates.",
         }
 
-    _crawl_task = asyncio.create_task(_run_reindex_only_background())
+    # Reserve the running state before returning so an immediate status poll
+    # remains active until the background task records its terminal result.
+    _crawl_status["running"] = True
+    _crawl_status["last_result"] = None
+    try:
+        _crawl_task = asyncio.create_task(_run_reindex_only_background())
+    except Exception:
+        _crawl_status["running"] = False
+        raise
     logger.info("🚀 Admin seed-only re-index task spawned.")
     return {
         "status": "started",
