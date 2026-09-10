@@ -2,6 +2,8 @@
 
 import os
 import smtplib
+import subprocess
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
@@ -306,3 +308,92 @@ def test_test_alert_endpoint_transport_failure(crawl_token, monkeypatch):
     assert "SMTP_HOST" in body["error"]
     assert raw_error not in body["error"]
     assert "Traceback" not in body["error"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "missing_hostname",
+        "identity_nonzero",
+        "identity_empty_token",
+        "identity_timeout",
+        "identity_command_missing",
+        "mailer_http_error",
+        "mailer_error_status",
+    ],
+)
+def test_test_alert_endpoint_replit_failures_are_safe(
+    failure, crawl_token, monkeypatch,
+):
+    """Exercise the real mail path without running a command or sending mail."""
+    monkeypatch.setenv("REINDEX_ALERT_EMAIL_TO", "replit")
+    hostname = "private-connector.example.invalid"
+    monkeypatch.setenv("REPLIT_CONNECTORS_HOSTNAME", hostname)
+    token = "fake-identity-token-do-not-expose"
+    subprocess_detail = "private-subprocess-stderr-do-not-expose"
+    http_detail = "private-http-response-do-not-expose"
+    command = [
+        "replit", "identity", "create", "--audience", f"https://{hostname}",
+    ]
+    mailer_url = f"https://{hostname}/api/v2/mailer/send"
+
+    with patch.object(notifications.subprocess, "run") as run, \
+         patch.object(notifications.urllib.request, "urlopen") as urlopen, \
+         patch.object(notifications, "_send_smtp") as smtp:
+        run.return_value = subprocess.CompletedProcess(
+            command, returncode=0, stdout=token, stderr=subprocess_detail,
+        )
+        if failure == "missing_hostname":
+            monkeypatch.delenv("REPLIT_CONNECTORS_HOSTNAME")
+        elif failure == "identity_nonzero":
+            run.return_value.returncode = 1
+        elif failure == "identity_empty_token":
+            run.return_value.stdout = " \n"
+        elif failure == "identity_timeout":
+            run.side_effect = subprocess.TimeoutExpired(
+                command, 30, output=token, stderr=subprocess_detail,
+            )
+        elif failure == "identity_command_missing":
+            run.side_effect = FileNotFoundError(subprocess_detail)
+        elif failure == "mailer_http_error":
+            urlopen.side_effect = urllib.error.HTTPError(
+                mailer_url, 503, f"{http_detail}: {token}", {}, None,
+            )
+        elif failure == "mailer_error_status":
+            urlopen.return_value.__enter__.return_value.status = 503
+
+        resp = _client.post(
+            "/admin/alerts/test",
+            headers={"Authorization": f"Bearer {crawl_token}"},
+        )
+
+        smtp.assert_not_called()
+        if failure == "missing_hostname":
+            run.assert_not_called()
+        else:
+            run.assert_called_once_with(
+                command, capture_output=True, text=True, timeout=30,
+            )
+        if failure.startswith("mailer_"):
+            urlopen.assert_called_once()
+            request = urlopen.call_args.args[0]
+            assert request.full_url == mailer_url
+            assert request.get_header("Replit-authentication") == f"Bearer {token}"
+        else:
+            urlopen.assert_not_called()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sent"] is False
+    assert body["configured"] is True
+    assert body["recipient"] == "replit"
+    assert "Check" in body["error"]
+    assert "REINDEX_ALERT_EMAIL_TO=replit" in body["error"]
+    assert "REPLIT_CONNECTORS_HOSTNAME" in body["error"]
+    for internal_detail in (
+        token, subprocess_detail, http_detail, hostname, mailer_url,
+        "Traceback", "TimeoutExpired", "FileNotFoundError", "HTTPError",
+        "Replit mailer returned HTTP 503", "Could not obtain Replit identity token",
+    ):
+        assert internal_detail not in resp.text
+    assert notifications._last_sent_at() is None
