@@ -81,6 +81,9 @@ def test_admin_valid_token_returns_dashboard(admin_token):
     assert "text/html" in resp.headers["content-type"]
     body = resp.text
     assert "Knowledge Base" in body
+    assert 'id="testAlertBtn"' in body
+    assert "Send test email" in body
+    assert "fetch('/admin/alerts/test'" in body
     assert "Top 10 Most-Retrieved Sources" in body
     assert "Last 50 Feedback Submissions" in body
 

@@ -910,7 +910,13 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
                         font-weight: 600; }}
   button.reindex-btn:hover {{ background: #4a3185; }}
   button.reindex-btn:disabled {{ background: #b9a9dd; cursor: not-allowed; }}
+  button.test-alert-btn {{ background: #356f8f; color: #fff; border: none; cursor: pointer;
+                           border-radius: 6px; padding: 0.55rem 1.1rem; font-size: 0.9rem;
+                           font-weight: 600; }}
+  button.test-alert-btn:hover {{ background: #2a5973; }}
+  button.test-alert-btn:disabled {{ background: #a9c2d0; cursor: not-allowed; }}
   .reindex-msg {{ font-size: 0.85rem; margin-left: 0.75rem; color: #444; }}
+  .test-alert-msg {{ font-size: 0.85rem; margin-left: 0.75rem; color: #444; }}
 </style>
 </head>
 <body>
@@ -958,7 +964,13 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
     </div>
     <div class="kb-item">
       <div class="kb-label">Email alerts</div>
-      <div class="kb-val" style="font-size:0.9rem;">{email_status_html}</div>
+      <div class="kb-val" style="font-size:0.9rem;">
+        {email_status_html}
+        <div style="margin-top:0.55rem;">
+          <button id="testAlertBtn" class="test-alert-btn" onclick="triggerTestAlert()">Send test email</button>
+          <span id="testAlertMsg" class="test-alert-msg"></span>
+        </div>
+      </div>
     </div>
     <div class="kb-item">
       <div class="kb-label">Last alert sent</div>
@@ -1251,6 +1263,45 @@ function triggerReindex() {{
       btn.disabled = false;
       msg.style.color = '#b00020';
       msg.textContent = (res.body && res.body.detail) || 'Failed to start re-index.';
+    }}
+  }})
+  .catch(function (e) {{
+    btn.disabled = false;
+    msg.style.color = '#b00020';
+    msg.textContent = 'Error: ' + e;
+  }});
+}}
+
+/* ── Test alert email button ──────────────────────────────────────────────── */
+function triggerTestAlert() {{
+  var btn = document.getElementById('testAlertBtn');
+  var msg = document.getElementById('testAlertMsg');
+  var saved = _getSavedToken();
+  var token = saved || window.prompt('Enter the crawl admin token (ADMIN_CRAWL_TOKEN) to send a test email:');
+  if (!token) {{ return; }}
+  token = token.trim();
+  btn.disabled = true;
+  msg.style.color = '#444';
+  msg.textContent = 'Sending test email\u2026';
+  fetch('/admin/alerts/test', {{
+    method: 'POST',
+    headers: {{ 'Authorization': 'Bearer ' + token }}
+  }})
+  .then(function (r) {{ return r.json().then(function (d) {{ return {{ ok: r.ok, status: r.status, body: d }}; }}); }})
+  .then(function (res) {{
+    btn.disabled = false;
+    if (res.ok && res.body && res.body.sent) {{
+      msg.style.color = '#1b7a3d';
+      msg.textContent = 'Email sent to ' + (res.body.recipient || 'the configured recipient') + '.';
+    }} else if (res.status === 401 || res.status === 403) {{
+      /* Saved token rejected (may have been rotated) — clear it and re-prompt next time. */
+      try {{ sessionStorage.removeItem(_TOKEN_KEY); }} catch (e) {{ }}
+      _crawlToken = '';
+      msg.style.color = '#b00020';
+      msg.textContent = 'Token rejected \u2014 please click Send test email again and enter the current token.';
+    }} else {{
+      msg.style.color = '#b00020';
+      msg.textContent = (res.body && res.body.error) || 'Test email was not sent.';
     }}
   }})
   .catch(function (e) {{
