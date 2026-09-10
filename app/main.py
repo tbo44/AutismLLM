@@ -892,6 +892,11 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
     cache_total = cache.get("total_entries", 0)
     cache_expiring = cache.get("expiring_entries", 0)
     cache_window = cache.get("within_days", 7)
+    cache_rows = "".join(
+        f'<tr><td class="cache-url">{_esc(page["url"])}</td>'
+        f'<td>{_esc(_fmt_uk_time(page["expires_at"]))}</td></tr>'
+        for page in cache.get("expiring_pages", [])
+    ) or '<tr><td colspan="2" class="empty">No cached pages due to expire in this window.</td></tr>'
 
     schedule = kb.get("schedule") or {}
     if schedule.get("enabled"):
@@ -1006,6 +1011,11 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
                          font-weight: 600; margin-left:0.45rem; }}
   button.expiring-btn:hover {{ background: #2a5973; }}
   button.expiring-btn:disabled {{ background: #a9c2d0; cursor: not-allowed; }}
+  .cache-details {{ margin: 1rem 0; }}
+  .cache-details summary {{ cursor: pointer; font-weight: 600; }}
+  .cache-page-list {{ max-height: 18rem; overflow: auto; margin-top: 0.5rem; }}
+  .cache-page-list table {{ table-layout: fixed; width: 100%; }}
+  .cache-url {{ overflow-wrap: anywhere; }}
   button.test-alert-btn {{ background: #356f8f; color: #fff; border: none; cursor: pointer;
                            border-radius: 6px; padding: 0.55rem 1.1rem; font-size: 0.9rem;
                            font-weight: 600; }}
@@ -1059,7 +1069,7 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
       <div class="kb-val" id="cacheTotal">{cache_total}</div>
     </div>
     <div class="kb-item">
-      <div class="kb-label">Expire within {cache_window} days</div>
+      <div class="kb-label">Expire within <span id="cacheWindow">{cache_window}</span> days</div>
       <div class="kb-val" id="cacheExpiring">{cache_expiring}</div>
     </div>
     <div class="kb-item">
@@ -1082,6 +1092,17 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
     </div>
   </div>
   <p id="kbDetails" style="font-size:0.85rem;color:#555;margin:0 0 1rem;">{f'Details: {last_detail}' if last_detail else ''}</p>
+  <details class="cache-details" id="cacheExpiryDetails">
+    <summary>Review expiring pages (<span id="cacheDetailCount">{cache_expiring}</span>)</summary>
+    <p>Includes pages already expired. Expected expiry is based on the cache age limit.
+       The re-crawl checks this list again when started.</p>
+    <div class="cache-page-list">
+      <table aria-label="Pages due to expire">
+        <thead><tr><th scope="col">Page URL</th><th scope="col">Expected expiry (UK time)</th></tr></thead>
+        <tbody id="cacheExpiryTbody">{cache_rows}</tbody>
+      </table>
+    </div>
+  </details>
   <div class="kb-actions">
     <button id="reindexBtn" class="reindex-btn" onclick="triggerReindex()">Re-index now</button>
     <button id="expiringBtn" class="expiring-btn" onclick="triggerExpiringCrawl()"
@@ -1266,6 +1287,14 @@ function _applyStatus(data) {{
   if (data.cache) {{
     document.getElementById('cacheTotal').textContent = String(data.cache.total_entries || 0);
     document.getElementById('cacheExpiring').textContent = String(data.cache.expiring_entries || 0);
+    document.getElementById('cacheDetailCount').textContent = String(data.cache.expiring_entries || 0);
+    document.getElementById('cacheWindow').textContent = String(data.cache.within_days);
+    document.getElementById('cacheExpiryTbody').innerHTML =
+      (data.cache.expiring_pages || []).map(function (page) {{
+        return '<tr><td class="cache-url">' + _esc(page.url) + '</td><td>' +
+          _esc(_fmtUkTime(page.expires_at)) + '</td></tr>';
+      }}).join('') ||
+      '<tr><td colspan="2" class="empty">No cached pages due to expire in this window.</td></tr>';
     document.getElementById('expiringBtn').disabled =
       running || !data.cache.expiring_entries;
   }}

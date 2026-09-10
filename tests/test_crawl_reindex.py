@@ -429,6 +429,27 @@ class TestCrawlCache:
         assert summary["total_entries"] == 2
         assert summary["expiring_entries"] == 1
         assert summary["expiring_urls"] == ["https://example.com/soon"]
+        assert summary["expiring_pages"] == [{
+            "url": "https://example.com/soon",
+            "expires_at": (now + timedelta(days=5)).isoformat(),
+        }]
+
+    def test_expiry_details_match_selection_for_custom_window(self, tmp_path):
+        cache = CrawlCache(raw_dir=str(tmp_path), max_age_days=10)
+        now = datetime(2026, 9, 10, tzinfo=timezone.utc)
+        cache._data = {
+            "https://example.com/overdue": {"cached_at": (now - timedelta(days=11)).isoformat()},
+            "https://example.com/boundary": {"cached_at": (now - timedelta(days=8)).replace(tzinfo=None).isoformat()},
+            "https://example.com/later": {"cached_at": (now - timedelta(days=7)).isoformat()},
+            "https://example.com/invalid": {"cached_at": "bad-date"},
+        }
+        summary = cache.expiry_summary(within_days=2, now=now)
+        assert summary["expiring_entries"] == len(summary["expiring_pages"]) == 2
+        assert summary["expiring_urls"] == [page["url"] for page in summary["expiring_pages"]]
+        assert summary["expiring_pages"] == [
+            {"url": "https://example.com/boundary", "expires_at": (now + timedelta(days=2)).isoformat()},
+            {"url": "https://example.com/overdue", "expires_at": (now - timedelta(days=1)).isoformat()},
+        ]
 
 
 # ── _content_hash helper ───────────────────────────────────────────────────────

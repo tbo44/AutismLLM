@@ -6,7 +6,7 @@ let raw = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => { raw += chunk; });
 process.stdin.on('end', async () => {
-    const { script } = JSON.parse(raw);
+    const { script, cacheSnapshots } = JSON.parse(raw);
     const elements = new Map();
     const requests = [];
     let intervalCallback = null;
@@ -96,6 +96,20 @@ process.stdin.on('end', async () => {
     });
 
     vm.runInContext(script, context);
+    if (cacheSnapshots) {
+        const snapshots = cacheSnapshots.map(cache => {
+            context._applyStatus({ ...complete, cache });
+            return {
+                html: element('cacheExpiryTbody').innerHTML,
+                count: element('cacheExpiring').textContent,
+                detailCount: element('cacheDetailCount').textContent,
+                window: element('cacheWindow').textContent,
+                disabled: element('expiringBtn').disabled,
+            };
+        });
+        process.stdout.write(JSON.stringify(snapshots));
+        return;
+    }
     context.triggerReindex();
     await new Promise(resolve => setImmediate(resolve));
     await new Promise(resolve => setImmediate(resolve));

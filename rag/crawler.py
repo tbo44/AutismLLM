@@ -161,7 +161,7 @@ class CrawlCache:
         if now.tzinfo is None:
             now = now.replace(tzinfo=timezone.utc)
         cutoff = now + timedelta(days=within_days)
-        expiring_urls: List[str] = []
+        expiring_pages: List[Dict[str, str]] = []
 
         for url, entry in self._data.items():
             cached_at_str = entry.get("cached_at")
@@ -175,14 +175,19 @@ class CrawlCache:
                 continue
             expires_at = cached_at + timedelta(days=self.max_age_days)
             if expires_at <= cutoff:
-                expiring_urls.append(url)
+                expiring_pages.append({
+                    "url": url,
+                    "expires_at": expires_at.astimezone(timezone.utc).isoformat(),
+                })
 
+        expiring_pages.sort(key=lambda page: page["url"])
         return {
             "total_entries": len(self._data),
-            "expiring_entries": len(expiring_urls),
+            "expiring_entries": len(expiring_pages),
             "within_days": within_days,
             "max_age_days": self.max_age_days,
-            "expiring_urls": sorted(expiring_urls),
+            "expiring_urls": [page["url"] for page in expiring_pages],
+            "expiring_pages": expiring_pages,
         }
 
     def __len__(self) -> int:
