@@ -14,11 +14,12 @@ client = TestClient(app, raise_server_exceptions=True)
 
 
 @pytest.fixture(autouse=True)
-def reset_state(monkeypatch):
+def reset_state(monkeypatch, tmp_path):
     """Patch token + limits to known values and clear in-memory attempt store."""
     monkeypatch.setattr(main, "_ADMIN_TOKEN", VALID_TOKEN)
     monkeypatch.setattr(main, "_LOGIN_MAX_ATTEMPTS", 3)
     monkeypatch.setattr(main, "_LOGIN_LOCKOUT_SECONDS", 900)
+    monkeypatch.setattr(main, "_LOGIN_LOCKOUTS_PATH", tmp_path / "login_lockouts.json")
     # Clear any leftover attempt records from previous tests
     main._login_attempts.clear()
     yield
@@ -239,36 +240,34 @@ def test_correct_password_after_lockout_expires_succeeds(monkeypatch):
 
 # ── Server-restart behaviour ───────────────────────────────────────────
 
-def test_lockout_cleared_after_simulated_server_restart(monkeypatch):
-    """Clearing _login_attempts (what a server restart does) removes the lockout.
-
-    This test documents the known in-memory limitation: a restart resets the
-    counter.  The test ensures the code behaves consistently with that design
-    (no stale state causes unexpected errors) and that the lockout logic
-    re-arms correctly after the restart.
-    """
+def test_lockout_survives_simulated_server_restart():
+    """An active lockout is reconstructed from disk after process state is lost."""
     # Lock the IP out
     _post_wrong()
     _post_wrong()
     _post_wrong()  # triggers lockout
     assert _post_wrong().status_code == 429, "IP should be locked out before restart"
 
-    # Simulate server restart: in-memory store is wiped
+    # Simulate server restart: process memory is wiped, then startup reloads disk.
     main._login_attempts.clear()
+    loaded = main._load_login_lockouts()
 
-    # After restart, the lockout is gone — a wrong attempt starts a fresh window
+    assert loaded == 1
     resp = _post_wrong()
-    assert resp.status_code == 401, (
-        "After simulated restart the attempt counter resets; "
-        "first wrong password should be 401, not 429"
+    assert resp.status_code == 429
+    assert "Too many failed attempts" in resp.text
+
+
+def test_expired_lockouts_are_not_loaded(monkeypatch):
+    """Startup ignores persisted lockouts whose wall-clock expiry has passed."""
+    main._LOGIN_LOCKOUTS_PATH.write_text(
+        '{"expired-ip": 999.0}',
+        encoding="utf-8",
     )
-    assert "Too many failed attempts" not in resp.text
+    monkeypatch.setattr(main._time, "time", lambda: 1_000.0)
 
-    # And the lockout re-arms on a fresh sequence of failures
-    _post_wrong()  # 2nd wrong after restart
-    resp2 = _post_wrong()  # 3rd wrong — hits max=3 again
-    assert resp2.status_code == 401
-    assert "Too many failed attempts" in resp2.text
+    loaded = main._load_login_lockouts()
 
-    resp3 = _post_wrong()  # 4th — now 429 again
-    assert resp3.status_code == 429
+    assert loaded == 0
+    assert "expired-ip" not in main._login_attempts
+    assert main._LOGIN_LOCKOUTS_PATH.read_text(encoding="utf-8") == "{}"

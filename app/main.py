@@ -163,6 +163,7 @@ async def startup_event():
         asyncio.create_task(_scheduled_reindex_loop())
     else:
         logger.info("⏰ Scheduled re-index disabled (SCHEDULED_REINDEX_ENABLED=false).")
+    _load_login_lockouts()
     asyncio.create_task(_login_attempts_pruner_loop())
     logger.info("✅ Server startup event complete – background task spawned")
 
@@ -493,9 +494,64 @@ try:
 except ValueError:
     _LOGIN_LOCKOUT_SECONDS = 900  # 15 minutes
 
-# In-memory store: {ip: {"count": int, "window_start": float, "locked_until": float}}
+# Runtime store uses monotonic timestamps. Active lockouts are also persisted with
+# wall-clock expiry timestamps so they can be reconstructed after a restart.
 import time as _time
 _login_attempts: dict[str, dict] = {}
+_LOGIN_LOCKOUTS_PATH = Path(
+    os.environ.get("LOGIN_LOCKOUTS_PATH", "logs/login_lockouts.json")
+)
+
+
+def _save_login_lockouts() -> None:
+    """Atomically persist active lockouts using restart-safe wall-clock expiries."""
+    monotonic_now = _time.monotonic()
+    wall_now = _time.time()
+    active = {
+        ip: wall_now + (entry.get("locked_until", 0) - monotonic_now)
+        for ip, entry in _login_attempts.items()
+        if entry.get("locked_until", 0) > monotonic_now
+    }
+    try:
+        _LOGIN_LOCKOUTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = _LOGIN_LOCKOUTS_PATH.with_suffix(
+            _LOGIN_LOCKOUTS_PATH.suffix + ".tmp"
+        )
+        temporary_path.write_text(json.dumps(active), encoding="utf-8")
+        temporary_path.replace(_LOGIN_LOCKOUTS_PATH)
+    except OSError:
+        logger.exception("Could not persist admin login lockouts.")
+
+
+def _load_login_lockouts() -> int:
+    """Load unexpired lockouts from disk, ignoring malformed or expired entries."""
+    try:
+        saved = json.loads(_LOGIN_LOCKOUTS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(saved, dict):
+            raise ValueError("lockout file must contain an object")
+    except FileNotFoundError:
+        return 0
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        logger.warning("Could not load admin login lockouts; ignoring invalid file.")
+        return 0
+
+    wall_now = _time.time()
+    monotonic_now = _time.monotonic()
+    loaded = 0
+    for ip, wall_expiry in saved.items():
+        if not isinstance(ip, str) or not isinstance(wall_expiry, (int, float)):
+            continue
+        remaining = wall_expiry - wall_now
+        if remaining <= 0:
+            continue
+        _login_attempts[ip] = {
+            "count": _LOGIN_MAX_ATTEMPTS,
+            "window_start": monotonic_now,
+            "locked_until": monotonic_now + remaining,
+        }
+        loaded += 1
+    _save_login_lockouts()
+    return loaded
 
 
 def _prune_login_attempts() -> int:
@@ -515,6 +571,7 @@ def _prune_login_attempts() -> int:
     for ip in stale:
         _login_attempts.pop(ip, None)
     if stale:
+        _save_login_lockouts()
         logger.debug(f"Login-attempt pruner removed {len(stale)} stale entries.")
     return len(stale)
 
@@ -1647,6 +1704,7 @@ def _is_locked_out(ip: str) -> tuple[bool, int]:
     window_start = entry.get("window_start", 0)
     if now - window_start > _LOGIN_LOCKOUT_SECONDS:
         _login_attempts.pop(ip, None)
+        _save_login_lockouts()
     return False, 0
 
 
@@ -1665,6 +1723,7 @@ def _record_failed_attempt(ip: str) -> bool:
     entry["count"] += 1
     if entry["count"] >= _LOGIN_MAX_ATTEMPTS:
         entry["locked_until"] = now + _LOGIN_LOCKOUT_SECONDS
+        _save_login_lockouts()
         logger.warning(
             f"🔒 Admin login locked out for IP {ip} after {entry['count']} failed attempts."
         )
@@ -1674,7 +1733,8 @@ def _record_failed_attempt(ip: str) -> bool:
 
 def _clear_failed_attempts(ip: str) -> None:
     """Reset the failure counter for *ip* after a successful login."""
-    _login_attempts.pop(ip, None)
+    if _login_attempts.pop(ip, None) is not None:
+        _save_login_lockouts()
 
 
 @app.post("/admin/login")
