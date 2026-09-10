@@ -176,6 +176,38 @@ def test_trusted_proxy_uses_xff_client_ip(monkeypatch):
 
 # ── Lockout expiry: correct password succeeds once window passes ───────
 
+def test_pruner_removes_only_fully_expired_entries(monkeypatch):
+    """Expired records are pruned without dropping active tracking or lockouts."""
+    now = 10_000.0
+    monkeypatch.setattr(main._time, "monotonic", lambda: now)
+
+    expired_ip = "192.0.2.1"
+    active_window_ip = "192.0.2.2"
+    active_lockout_ip = "192.0.2.3"
+    main._login_attempts.update({
+        expired_ip: {
+            "count": 2,
+            "window_start": now - main._LOGIN_LOCKOUT_SECONDS - 1,
+            "locked_until": now - 1,
+        },
+        active_window_ip: {
+            "count": 1,
+            "window_start": now - main._LOGIN_LOCKOUT_SECONDS + 1,
+            "locked_until": 0,
+        },
+        active_lockout_ip: {
+            "count": 3,
+            "window_start": now - main._LOGIN_LOCKOUT_SECONDS - 1,
+            "locked_until": now + 1,
+        },
+    })
+
+    pruned = main._prune_login_attempts()
+
+    assert pruned == 1
+    assert set(main._login_attempts) == {active_window_ip, active_lockout_ip}
+
+
 def test_correct_password_after_lockout_expires_succeeds(monkeypatch):
     """After the lockout window elapses, a correct password must be accepted (303)
     and the attempt record must be cleared so the next wrong attempt is a plain 401."""
