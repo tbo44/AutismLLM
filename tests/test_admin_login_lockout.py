@@ -1,5 +1,6 @@
 """Tests for admin login rate-limiting / lockout."""
 
+import json
 import time
 
 import pytest
@@ -271,3 +272,39 @@ def test_expired_lockouts_are_not_loaded(monkeypatch):
     assert loaded == 0
     assert "expired-ip" not in main._login_attempts
     assert main._LOGIN_LOCKOUTS_PATH.read_text(encoding="utf-8") == "{}"
+
+
+@pytest.mark.parametrize("seconds_after_expiry", [0, 1])
+def test_wrong_login_after_persisted_lockout_expires_and_restart(
+    monkeypatch, seconds_after_expiry,
+):
+    """A restarted server starts a fresh failure window after disk expiry."""
+    clock = {"wall": 1_700_000_000.0, "monotonic": 1_000.0}
+    monkeypatch.setattr(main._time, "time", lambda: clock["wall"])
+    monkeypatch.setattr(main._time, "monotonic", lambda: clock["monotonic"])
+
+    # Use the real login path to persist a lockout for this client's actual IP.
+    for _ in range(main._LOGIN_MAX_ATTEMPTS):
+        assert _post_wrong().status_code == 401
+    assert _post_wrong().status_code == 429
+    ip, = main._login_attempts
+    saved = json.loads(main._LOGIN_LOCKOUTS_PATH.read_text(encoding="utf-8"))
+    assert saved == {ip: clock["wall"] + main._LOGIN_LOCKOUT_SECONDS}
+
+    # Lose process state and advance wall time, with a different monotonic origin.
+    main._login_attempts.clear()
+    clock["wall"] = saved[ip] + seconds_after_expiry
+    clock["monotonic"] = 20.0
+    assert main._load_login_lockouts() == 0
+    assert main._login_attempts == {}
+    assert json.loads(main._LOGIN_LOCKOUTS_PATH.read_text(encoding="utf-8")) == {}
+
+    response = _post_wrong()
+    assert response.status_code == 401
+    assert "Incorrect password" in response.text
+    assert "Too many failed attempts" not in response.text
+    assert main._login_attempts[ip] == {
+        "count": 1,
+        "window_start": clock["monotonic"],
+        "locked_until": 0,
+    }
