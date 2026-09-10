@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 
 RUNNER = str(Path(__file__).parent / "acronym_runner.cjs")
+GLOSSARY_PATH = Path(__file__).parent.parent / "data" / "acronyms.json"
+ACRONYM_GLOSSARY = json.loads(GLOSSARY_PATH.read_text(encoding="utf-8"))
 
 # Spot-check subset of expected definitions from ACRONYM_GLOSSARY.
 # The runner also returns the full glossary for any additional assertions.
@@ -64,6 +66,21 @@ def abbr_for(acronym: str, definition: str) -> str:
         f'data-tooltip="{safe_def}" '
         f'title="{safe_def}" '
         f'aria-label="{acronym}: {safe_def}">{acronym}</abbr>'
+    )
+
+
+# ── Glossary coverage ─────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("acronym,definition", sorted(ACRONYM_GLOSSARY.items()))
+def test_every_glossary_entry_is_exercised_by_runner(acronym, definition):
+    """Every canonical glossary entry must be loaded and annotated by the runner."""
+    out = run_annotate(f"<p>{acronym}</p>")
+
+    assert out["glossary"] == ACRONYM_GLOSSARY, (
+        "The test runner glossary has drifted from data/acronyms.json"
+    )
+    assert abbr_for(acronym, definition) in out["result"], (
+        f"Canonical glossary entry {acronym!r} was not annotated:\n{out['result']}"
     )
 
 
