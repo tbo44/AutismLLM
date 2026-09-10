@@ -151,6 +151,40 @@ class CrawlCache:
             del self._data[url]
             self._save()
 
+    def expiry_summary(
+        self,
+        within_days: int = 7,
+        now: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """Return cache freshness counts and URLs due to expire soon."""
+        now = now or datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        cutoff = now + timedelta(days=within_days)
+        expiring_urls: List[str] = []
+
+        for url, entry in self._data.items():
+            cached_at_str = entry.get("cached_at")
+            if not cached_at_str:
+                continue
+            try:
+                cached_at = datetime.fromisoformat(cached_at_str)
+                if cached_at.tzinfo is None:
+                    cached_at = cached_at.replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            expires_at = cached_at + timedelta(days=self.max_age_days)
+            if expires_at <= cutoff:
+                expiring_urls.append(url)
+
+        return {
+            "total_entries": len(self._data),
+            "expiring_entries": len(expiring_urls),
+            "within_days": within_days,
+            "max_age_days": self.max_age_days,
+            "expiring_urls": sorted(expiring_urls),
+        }
+
     def __len__(self) -> int:
         return len(self._data)
 
@@ -214,6 +248,7 @@ class UKAutismCrawler:
         self,
         url: str,
         source: Source,
+        force_refresh: bool = False,
     ) -> Tuple[Optional[CrawledDocument], bool]:
         """Crawl a single URL and extract clean content.
 
@@ -229,7 +264,7 @@ class UKAutismCrawler:
             # Rate limiting
             await asyncio.sleep(self.delay)
 
-            cached_entry = self.cache.get(url) if self.cache else None
+            cached_entry = self.cache.get(url) if self.cache and not force_refresh else None
             conditional_headers = self._build_conditional_headers(cached_entry)
 
             if conditional_headers:
@@ -403,6 +438,25 @@ class UKAutismCrawler:
         )
         return all_fresh, all_reused
 
+    async def crawl_selected_urls(
+        self,
+        urls: Set[str],
+    ) -> Tuple[List[CrawledDocument], List[Dict[str, Any]]]:
+        """Force-refresh only the configured source URLs in *urls*."""
+        all_fresh: List[CrawledDocument] = []
+        selected = set(urls)
+        for source in UK_SOURCES:
+            for path in source.crawl_paths:
+                url = source.base_url + path
+                if url not in selected:
+                    continue
+                doc, from_cache = await self.crawl_url(url, source, force_refresh=True)
+                if doc:
+                    all_fresh.append(doc)
+                elif from_cache:
+                    logger.debug("Unexpected cached result for forced refresh: %s", url)
+        return all_fresh, []
+
 def chunk_document(doc: CrawledDocument, chunk_size: int = 1000, overlap: int = 200) -> List[Dict[str, Any]]:
     """Split document into chunks for vector storage"""
     words = doc.content.split()
@@ -461,6 +515,7 @@ async def crawl_and_chunk_all(
     raw_dir: str = "data/raw",
     use_cache: bool = True,
     max_age_days: Optional[int] = None,
+    only_urls: Optional[Iterable[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Crawl all configured sources and return chunked documents.
 
@@ -495,8 +550,12 @@ async def crawl_and_chunk_all(
     if cache is not None:
         logger.info(f"Crawl cache: max age = {cache.max_age_days} day(s).")
 
+    selected_urls = set(only_urls) if only_urls is not None else None
     async with UKAutismCrawler(cache=cache) as crawler:
-        fresh_documents, reused_chunks = await crawler.crawl_all_sources()
+        if selected_urls is None:
+            fresh_documents, reused_chunks = await crawler.crawl_all_sources()
+        else:
+            fresh_documents, reused_chunks = await crawler.crawl_selected_urls(selected_urls)
 
     # Prune stale cache entries whose URLs are no longer in the active source list
     if cache is not None:
@@ -531,6 +590,17 @@ async def crawl_and_chunk_all(
                 content_hash=doc.metadata.get("content_hash", _content_hash(doc.content)),
                 chunks=doc_chunks,
             )
+
+    if cache is not None and selected_urls is not None:
+        # A targeted crawl only contacts selected URLs, but callers rebuild the
+        # complete index. Include every active cached page in that rebuild.
+        refreshed_urls = {doc.url for doc in fresh_documents}
+        reused_chunks = [
+            chunk
+            for url, entry in cache._data.items()
+            if url not in refreshed_urls
+            for chunk in entry.get("chunks", [])
+        ]
 
     all_chunks = fresh_chunks + reused_chunks
 

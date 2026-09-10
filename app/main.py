@@ -704,6 +704,15 @@ def _read_kb_health() -> dict:
     next_run = (
         _next_scheduled_run().isoformat() if _SCHEDULED_REINDEX_ENABLED else None
     )
+    try:
+        from rag.crawler import CrawlCache
+        cache_summary = CrawlCache().expiry_summary(within_days=7)
+    except Exception:
+        cache_summary = {
+            "total_entries": 0,
+            "expiring_entries": 0,
+            "within_days": 7,
+        }
 
     return {
         "total_chunks": total_chunks,
@@ -719,6 +728,7 @@ def _read_kb_health() -> dict:
         },
         "email_alerts": notifications.get_status(),
         "history": _read_reindex_history(),
+        "cache": cache_summary,
     }
 
 
@@ -810,6 +820,10 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
 
     elapsed = last_result.get("elapsed_seconds")
     duration_display = f"{elapsed}s" if elapsed is not None else "—"
+    cache = kb.get("cache") or {}
+    cache_total = cache.get("total_entries", 0)
+    cache_expiring = cache.get("expiring_entries", 0)
+    cache_window = cache.get("within_days", 7)
 
     schedule = kb.get("schedule") or {}
     if schedule.get("enabled"):
@@ -919,6 +933,11 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
                         font-weight: 600; }}
   button.reindex-btn:hover {{ background: #4a3185; }}
   button.reindex-btn:disabled {{ background: #b9a9dd; cursor: not-allowed; }}
+  button.expiring-btn {{ background: #356f8f; color: #fff; border: none; cursor: pointer;
+                         border-radius: 6px; padding: 0.55rem 1.1rem; font-size: 0.9rem;
+                         font-weight: 600; margin-left:0.45rem; }}
+  button.expiring-btn:hover {{ background: #2a5973; }}
+  button.expiring-btn:disabled {{ background: #a9c2d0; cursor: not-allowed; }}
   button.test-alert-btn {{ background: #356f8f; color: #fff; border: none; cursor: pointer;
                            border-radius: 6px; padding: 0.55rem 1.1rem; font-size: 0.9rem;
                            font-weight: 600; }}
@@ -968,6 +987,14 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
       <div class="kb-val" id="kbStatusBadge">{kb_status_html}</div>
     </div>
     <div class="kb-item">
+      <div class="kb-label">Cached pages</div>
+      <div class="kb-val" id="cacheTotal">{cache_total}</div>
+    </div>
+    <div class="kb-item">
+      <div class="kb-label">Expire within {cache_window} days</div>
+      <div class="kb-val" id="cacheExpiring">{cache_expiring}</div>
+    </div>
+    <div class="kb-item">
       <div class="kb-label">Schedule</div>
       <div class="kb-val" style="font-size:0.9rem;font-weight:500;">{sched_text}</div>
     </div>
@@ -989,6 +1016,8 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
   <p id="kbDetails" style="font-size:0.85rem;color:#555;margin:0 0 1rem;">{f'Details: {last_detail}' if last_detail else ''}</p>
   <div class="kb-actions">
     <button id="reindexBtn" class="reindex-btn" onclick="triggerReindex()">Re-index now</button>
+    <button id="expiringBtn" class="expiring-btn" onclick="triggerExpiringCrawl()"
+            {'disabled' if cache_expiring == 0 else ''}>Re-crawl expiring pages</button>
     <span id="reindexMsg" class="reindex-msg"></span>
   </div>
   <h2 style="font-size:1rem;margin-top:1.25rem;">Re-index history</h2>
@@ -1164,15 +1193,24 @@ function _applyStatus(data) {{
   var det = document.getElementById('kbDetails');
   det.textContent = _detailText(running, lastResult);
 
+  if (data.cache) {{
+    document.getElementById('cacheTotal').textContent = String(data.cache.total_entries || 0);
+    document.getElementById('cacheExpiring').textContent = String(data.cache.expiring_entries || 0);
+    document.getElementById('expiringBtn').disabled =
+      running || !data.cache.expiring_entries;
+  }}
+
   if (data.history) {{
     _renderHistoryRows(data.history);
   }}
 
   var msg = document.getElementById('reindexMsg');
   var btn = document.getElementById('reindexBtn');
+  var expiringBtn = document.getElementById('expiringBtn');
 
   if (!running) {{
     btn.disabled = false;
+    expiringBtn.disabled = !data.cache || !data.cache.expiring_entries;
     if (lastResult) {{
       if (lastResult.success) {{
         msg.style.color = '#1b7a3d';
@@ -1229,6 +1267,7 @@ function _startPolling(token) {{
   _saveToken(token);              // persist for this session
   if (_pollTimer) {{ return; }}   // already polling
   document.getElementById('reindexBtn').disabled = true;
+  document.getElementById('expiringBtn').disabled = true;
   _pollOnce();                    // immediate first check
   _pollTimer = setInterval(_pollOnce, _pollInterval);
 }}
@@ -1272,6 +1311,55 @@ function triggerReindex() {{
       btn.disabled = false;
       msg.style.color = '#b00020';
       msg.textContent = (res.body && res.body.detail) || 'Failed to start re-index.';
+    }}
+  }})
+  .catch(function (e) {{
+    btn.disabled = false;
+    msg.style.color = '#b00020';
+    msg.textContent = 'Error: ' + e;
+  }});
+}}
+
+function triggerExpiringCrawl() {{
+  var btn = document.getElementById('expiringBtn');
+  var msg = document.getElementById('reindexMsg');
+  var saved = _getSavedToken();
+  var token = saved || window.prompt(
+    'Enter the crawl admin token (ADMIN_CRAWL_TOKEN) to re-crawl expiring pages:'
+  );
+  if (!token) {{ return; }}
+  token = token.trim();
+  btn.disabled = true;
+  msg.style.color = '#444';
+  msg.textContent = 'Starting targeted crawl\u2026';
+  fetch('/admin/crawl/expiring', {{
+    method: 'POST',
+    headers: {{ 'Authorization': 'Bearer ' + token }}
+  }})
+  .then(function (r) {{
+    return r.json().then(function (d) {{
+      return {{ ok: r.ok, status: r.status, body: d }};
+    }});
+  }})
+  .then(function (res) {{
+    if (res.ok && res.body.status === 'started') {{
+      msg.style.color = '#2a52b5';
+      msg.textContent = res.body.message;
+      _startPolling(token);
+    }} else if (res.ok && res.body.status === 'nothing_to_do') {{
+      msg.style.color = '#1b7a3d';
+      msg.textContent = res.body.message;
+    }} else if (res.status === 401 || res.status === 403) {{
+      try {{ sessionStorage.removeItem(_TOKEN_KEY); }} catch (e) {{ }}
+      _crawlToken = '';
+      btn.disabled = false;
+      msg.style.color = '#b00020';
+      msg.textContent = 'Token rejected \u2014 enter the current token and try again.';
+    }} else {{
+      btn.disabled = false;
+      msg.style.color = '#b00020';
+      msg.textContent = (res.body && (res.body.detail || res.body.message)) ||
+                        'Failed to start targeted crawl.';
     }}
   }})
   .catch(function (e) {{
@@ -1746,7 +1834,10 @@ def _verify_admin_token(authorization: str | None):
         raise HTTPException(status_code=403, detail="Invalid admin token.")
 
 
-async def _run_crawl_and_reindex_background(source: str = "manual-crawl"):
+async def _run_crawl_and_reindex_background(
+    source: str = "manual-crawl",
+    only_urls: set[str] | None = None,
+):
     """
     Full pipeline: crawl trusted UK autism sources → add to ChromaDB alongside
     seed JSONL data → hot-reload RAG system.
@@ -1775,7 +1866,7 @@ async def _run_crawl_and_reindex_background(source: str = "manual-crawl"):
         from rag.structured_importer import StructuredKnowledgeImporter
 
         try:
-            crawled_chunks = await crawl_and_chunk_all()
+            crawled_chunks = await crawl_and_chunk_all(only_urls=only_urls)
             docs_crawled = len(crawled_chunks)
             logger.info(f"✅ Crawled {docs_crawled} chunks from live sources")
             # Persist the raw crawl output to data/raw/ alongside ChromaDB.
@@ -1976,6 +2067,38 @@ async def admin_crawl(authorization: str | None = Header(default=None)):
     }
 
 
+@app.post("/admin/crawl/expiring")
+async def admin_crawl_expiring(authorization: str | None = Header(default=None)):
+    """Re-crawl only cache entries due to expire within the dashboard window."""
+    _verify_admin_token(authorization)
+    global _crawl_task
+    if _crawl_status["running"]:
+        return {
+            "status": "already_running",
+            "message": "A crawl+reindex is already in progress.",
+        }
+
+    from rag.crawler import CrawlCache
+    summary = CrawlCache().expiry_summary(within_days=7)
+    urls = set(summary["expiring_urls"])
+    if not urls:
+        return {
+            "status": "nothing_to_do",
+            "message": "No cached pages expire within the next 7 days.",
+        }
+    _crawl_task = asyncio.create_task(
+        _run_crawl_and_reindex_background(
+            source="manual-expiring-crawl",
+            only_urls=urls,
+        )
+    )
+    return {
+        "status": "started",
+        "count": len(urls),
+        "message": f"Re-crawling {len(urls)} expiring cached page(s).",
+    }
+
+
 @app.get("/admin/crawl/status")
 async def admin_crawl_status(authorization: str | None = Header(default=None)):
     """Return the status of the last (or current) crawl+reindex run."""
@@ -1983,6 +2106,7 @@ async def admin_crawl_status(authorization: str | None = Header(default=None)):
     next_run = (
         _next_scheduled_run().isoformat() if _SCHEDULED_REINDEX_ENABLED else None
     )
+    from rag.crawler import CrawlCache
     return {
         "running": _crawl_status["running"],
         "last_run": _crawl_status["last_run"],
@@ -1996,6 +2120,7 @@ async def admin_crawl_status(authorization: str | None = Header(default=None)):
         },
         "email_alerts": notifications.get_status(),
         "history": _read_reindex_history(),
+        "cache": CrawlCache().expiry_summary(within_days=7),
     }
 
 

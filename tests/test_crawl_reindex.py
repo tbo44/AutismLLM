@@ -15,6 +15,7 @@ import hashlib
 import json
 import sys
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -409,6 +410,26 @@ class TestCrawlCache:
         cache.update("https://b.com", etag=None, last_modified=None, content_hash="h2", chunks=[])
         assert len(cache) == 2
 
+    def test_expiry_summary_counts_pages_due_within_window(self, tmp_path):
+        cache = CrawlCache(raw_dir=str(tmp_path), max_age_days=30)
+        now = datetime(2026, 9, 10, tzinfo=timezone.utc)
+        cache._data = {
+            "https://example.com/soon": {
+                "cached_at": (now - timedelta(days=25)).isoformat(),
+                "chunks": [],
+            },
+            "https://example.com/later": {
+                "cached_at": (now - timedelta(days=5)).isoformat(),
+                "chunks": [],
+            },
+        }
+
+        summary = cache.expiry_summary(within_days=7, now=now)
+
+        assert summary["total_entries"] == 2
+        assert summary["expiring_entries"] == 1
+        assert summary["expiring_urls"] == ["https://example.com/soon"]
+
 
 # ── _content_hash helper ───────────────────────────────────────────────────────
 
@@ -672,3 +693,47 @@ class TestCrawlAndChunkAllCache:
             "Cache pruned: removed 2 stale entry/entries "
             "for URL(s) no longer in the active source list."
         ) in caplog.messages
+
+    def test_targeted_crawl_fetches_only_selected_url_and_keeps_full_cache(self, tmp_path):
+        selected_url = "https://example.com/expiring"
+        other_url = "https://example.com/fresh"
+        cache = CrawlCache(raw_dir=str(tmp_path))
+        cache.update(
+            selected_url,
+            etag='"old"',
+            last_modified=None,
+            content_hash="old",
+            chunks=[_make_chunk(selected_url)],
+        )
+        other_chunk = _make_chunk(other_url)
+        cache.update(
+            other_url,
+            etag='"fresh"',
+            last_modified=None,
+            content_hash="fresh",
+            chunks=[other_chunk],
+        )
+        content = "updated page content " * 30
+        response = _make_httpx_response(200, self._fake_html(content))
+        get_mock = AsyncMock(return_value=response)
+
+        with (
+            patch("httpx.AsyncClient.get", new=get_mock),
+            patch("trafilatura.extract", return_value=content),
+            patch(
+                "rag.crawler.UK_SOURCES",
+                [self._fake_source(selected_url), self._fake_source(other_url)],
+            ),
+        ):
+            chunks = asyncio.run(
+                crawl_and_chunk_all(
+                    raw_dir=str(tmp_path),
+                    use_cache=True,
+                    only_urls={selected_url},
+                )
+            )
+
+        assert get_mock.await_count == 1
+        assert str(get_mock.await_args.args[0]) == selected_url
+        urls = {chunk["metadata"]["url"] for chunk in chunks}
+        assert urls == {selected_url, other_url}

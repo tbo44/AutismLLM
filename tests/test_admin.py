@@ -88,6 +88,10 @@ def test_admin_valid_token_returns_dashboard(admin_token):
     assert "fetch('/admin/alerts/test'" in body
     assert "Top 10 Most-Retrieved Sources" in body
     assert "Last 50 Feedback Submissions" in body
+    assert 'id="cacheTotal"' in body
+    assert 'id="cacheExpiring"' in body
+    assert "Re-crawl expiring pages" in body
+    assert "fetch('/admin/crawl/expiring'" in body
 
 
 def test_admin_valid_token_via_header(admin_token):
