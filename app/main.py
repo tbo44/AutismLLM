@@ -586,13 +586,15 @@ def _read_feedback_log(limit: int = 50) -> list[dict]:
 
 def _read_questions_stats() -> dict:
     """
-    Parse logs/questions.log and return:
+    Parse logs/questions.log and its rotated backups and return:
       - top_sources: list of (url, count) — top 10 most-retrieved source URLs
       - questions_7d: count of questions logged in the last 7 days
-      - total_questions: total question entries in the log
+      - total_questions: total question entries retained across the logs
     """
     path = Path("logs/questions.log")
-    if not path.exists():
+    paths = [path, *(Path(f"{path}.{i}") for i in range(1, 4))]
+    existing_paths = [candidate for candidate in paths if candidate.exists()]
+    if not existing_paths:
         return {"top_sources": [], "questions_7d": 0, "total_questions": 0}
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=7)
@@ -600,8 +602,11 @@ def _read_questions_stats() -> dict:
     questions_7d = 0
     total = 0
 
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+    for log_path in existing_paths:
+        try:
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            continue
         for line in lines:
             line = line.strip()
             if not line:
@@ -623,8 +628,6 @@ def _read_questions_stats() -> dict:
             for url in entry.get("source_ids", []):
                 if url:
                     url_counter[url] += 1
-    except Exception:
-        pass
 
     top_sources = url_counter.most_common(10)
     return {

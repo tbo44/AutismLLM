@@ -191,6 +191,50 @@ def test_read_questions_stats_naive_timestamp_treated_as_utc(logs_dir):
     assert stats["questions_7d"] == 1
 
 
+def test_read_questions_stats_includes_rotated_backups(logs_dir):
+    now = datetime.now(timezone.utc)
+    recent = now.isoformat()
+    old = (now - timedelta(days=8)).isoformat()
+    _write_lines(
+        logs_dir / "questions.log",
+        [{"ts": recent, "source_ids": ["https://current.example"]}],
+    )
+    _write_lines(
+        logs_dir / "questions.log.1",
+        [
+            {"ts": recent, "source_ids": ["https://backup.example"]},
+            {"ts": old, "source_ids": ["https://backup.example"]},
+        ],
+    )
+    _write_lines(
+        logs_dir / "questions.log.3",
+        [{"ts": recent, "source_ids": ["https://backup.example"]}],
+    )
+
+    stats = _read_questions_stats()
+
+    assert stats["total_questions"] == 4
+    assert stats["questions_7d"] == 3
+    assert dict(stats["top_sources"]) == {
+        "https://backup.example": 3,
+        "https://current.example": 1,
+    }
+
+
+def test_read_questions_stats_uses_backup_when_current_log_is_missing(logs_dir):
+    recent = datetime.now(timezone.utc).isoformat()
+    _write_lines(
+        logs_dir / "questions.log.1",
+        [{"ts": recent, "source_ids": ["https://backup.example"]}],
+    )
+
+    stats = _read_questions_stats()
+
+    assert stats["total_questions"] == 1
+    assert stats["questions_7d"] == 1
+    assert stats["top_sources"] == [("https://backup.example", 1)]
+
+
 # ── /admin/login  (GET) ───────────────────────────────────────────────
 
 
