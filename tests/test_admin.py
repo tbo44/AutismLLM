@@ -1,6 +1,8 @@
 """Tests for the /admin dashboard: auth behaviour and log parsing."""
 
 import json
+import re
+import subprocess
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -92,6 +94,22 @@ def test_admin_valid_token_via_header(admin_token):
     resp = client.get("/admin", headers={"X-Admin-Token": VALID_TOKEN})
     assert resp.status_code == 200
     assert "Knowledge Base" in resp.text
+
+
+def test_admin_rendered_javascript_is_valid(admin_token, tmp_path):
+    """Check the emitted JavaScript, including Python template escaping."""
+    resp = client.get("/admin", headers={"X-Admin-Token": VALID_TOKEN})
+    assert resp.status_code == 200
+    scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", resp.text, re.DOTALL)
+    assert scripts, "The dashboard must include its interactive controls"
+    for index, source in enumerate(scripts):
+        script = tmp_path / f"admin-{index}.js"
+        script.write_text(source, encoding="utf-8")
+        result = subprocess.run(
+            ["node", "--check", str(script)],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 # ── log parsing helpers ───────────────────────────────────────────────

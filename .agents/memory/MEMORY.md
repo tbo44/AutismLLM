@@ -4,3 +4,4 @@
 - [Retrieval threshold & coverage gap](retrieval-threshold.md) — 0.8 cosine cut-off silently drops short natural questions for in-seed topics; acronym expansion + coverage test guard it
 - [GitHub sync method](github-sync.md) — main-agent git writes are blocked; push via /tmp clone + connector proxy token (see file).
 - [Pytest imports](pytest-imports.md) — bare pytest may omit the project root; use python -m pytest until test configuration is fixed.
+- [Rendered dashboard checks](rendered-dashboard-checks.md) — successful login and HTTP responses can hide invalid JavaScript emitted by Python templates.

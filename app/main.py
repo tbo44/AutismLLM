@@ -1138,7 +1138,7 @@ function _renderHistoryRows(history) {{
           + '<td>' + _esc(h.source || '\u2014') + '</td>'
           + '<td' + (cls ? ' class="' + cls + '"' : '') + '>' + _esc(h.outcome || '\u2014') + '</td>'
           + '<td>' + _esc(h.detail || '') + '</td>'
-          + '</tr>\n';
+          + '</tr>\\n';
   }}
   tbody.innerHTML = html;
 }}
@@ -1194,7 +1194,7 @@ function _promptReplaceToken(reason) {{
   /* Called when the saved token is rejected.  Clear it and ask for a fresh one. */
   try {{ sessionStorage.removeItem(_TOKEN_KEY); }} catch (e) {{ }}
   _crawlToken = '';
-  var fresh = window.prompt(reason + '\nEnter the current ADMIN_CRAWL_TOKEN to continue:');
+  var fresh = window.prompt(reason + '\\nEnter the current ADMIN_CRAWL_TOKEN to continue:');
   if (fresh && fresh.trim()) {{
     _crawlToken = fresh.trim();
     _saveToken(_crawlToken);
@@ -1328,7 +1328,7 @@ function triggerTestAlert() {{
     var token = saved;
     if (!token) {{
       token = window.prompt(
-        'A re-index is already in progress.\n' +
+        'A re-index is already in progress.\\n' +
         'Enter the crawl admin token (ADMIN_CRAWL_TOKEN) to watch live progress, ' +
         'or press Cancel to continue without live updates:'
       );
@@ -1371,7 +1371,7 @@ function _renderAcronymTable(glossary) {{
           +   '<button onclick="deleteAcronym(' + JSON.stringify(k) + ')" '
           +     'style="background:#fde3e6;color:#b00020;border:none;border-radius:4px;padding:0.25rem 0.6rem;font-size:0.8rem;cursor:pointer;">Delete</button>'
           + '</td>'
-          + '</tr>\n';
+          + '</tr>\\n';
   }}
   tbody.innerHTML = html;
 }}
