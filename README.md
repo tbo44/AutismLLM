@@ -322,13 +322,16 @@ Page: "Get Information"
 
 ## 14. Syncing to GitHub
 
-The live app is the source of truth; the GitHub repo at
-[github.com/tbo44/AutismLLM](https://github.com/tbo44/AutismLLM) is kept in sync
-with it so collaborators always see current code.
+The committed Replit workspace `main` branch is the source for the GitHub repo at
+[github.com/tbo44/AutismLLM](https://github.com/tbo44/AutismLLM).
+The **GitHub Sync** workflow checks for new commits every 60 seconds while the
+workspace is running, and re-verifies the remote every five minutes. The Run
+button starts it alongside Maya Server. It catches up when restarted.
+Uncommitted edits are not uploaded. Publishing the website is separate.
 
 ### One-step sync
 
-Run this from inside the Replit shell after any round of changes:
+If the watcher is stopped, run this from inside the Replit shell:
 
 ```bash
 python scripts/sync_to_github.py
@@ -340,17 +343,21 @@ The script:
    Repl via **Integrations → GitHub**).
 2. Clones the Replit workspace into a temporary directory.
 3. Pushes `main` to `github.com/tbo44/AutismLLM`.
-4. Deletes the temporary clone (and the embedded token) immediately afterwards.
+4. Verifies that GitHub `main` matches the pushed commit, then deletes the temporary clone.
+Credentials are passed through an ephemeral credential helper, never embedded in
+remote URLs or command arguments.
 
 > **Prerequisite:** The GitHub integration must be connected. If it isn't, open
 > the Replit sidebar → **Integrations** → **GitHub** → **Connect** (one-time
 > OAuth flow, then it persists).
 
-### When to run it
+### Safety and failures
 
-Push to GitHub after any session where you commit changes — at the end of a
-feature, a fix, or any content update. You do not need to push after every
-individual commit; once per work session is enough.
+The watcher never commits unfinished edits, force-pushes, or changes local Git
+history. If GitHub has diverged, it reports a rejected push instead of overwriting
+collaborators' work. Failures appear in the **GitHub Sync** workflow console and
+are retried every 60 seconds. Authentication failures require repairing the
+GitHub connection. A lock prevents simultaneous manual and automatic runs.
 
 ---
 
