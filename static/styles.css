@@ -871,9 +871,16 @@ body.low-stim .section-note .section-heading           { background: #DDD; color
     transition: opacity 0.15s ease, visibility 0.15s ease;
 }
 
-/* Show on hover or focus (desktop/keyboard) */
-.maya-abbr:hover::after,
-.maya-abbr:hover::before,
+/* Touch browsers can retain :hover after a tap; only use it with a mouse. */
+@media (hover: hover) {
+    .maya-abbr:hover::after,
+    .maya-abbr:hover::before {
+        opacity: 1;
+        visibility: visible;
+    }
+}
+
+/* Keyboard focus works with either pointer type. */
 .maya-abbr:focus-visible::after,
 .maya-abbr:focus-visible::before {
     opacity: 1;
@@ -885,6 +892,13 @@ body.low-stim .section-note .section-heading           { background: #DDD; color
 .maya-abbr.open::before {
     opacity: 1;
     visibility: visible;
+}
+
+/* Escape/toggle dismissal must override hover and keyboard focus, too. */
+.maya-abbr.tooltip-dismissed::after,
+.maya-abbr.tooltip-dismissed::before {
+    opacity: 0;
+    visibility: hidden;
 }
 
 /* Low-stimulation mode: muted tooltip colours */

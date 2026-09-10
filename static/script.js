@@ -586,12 +586,22 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // ── Acronym tooltip: tap/click to open, keyboard Enter/Space ──────
+    // A fresh interaction allows an explicitly dismissed tooltip to open again.
+    document.addEventListener('focusin', (e) => {
+        const abbr = e.target.closest('.maya-abbr');
+        if (abbr) abbr.classList.remove('tooltip-dismissed');
+    });
+    document.addEventListener('pointerover', (e) => {
+        const abbr = e.target.closest('.maya-abbr');
+        if (abbr && e.pointerType === 'mouse') abbr.classList.remove('tooltip-dismissed');
+    });
     document.addEventListener('click', (e) => {
         const abbr = e.target.closest('.maya-abbr');
         if (abbr) {
             // Toggle open on this one, close all others
             const wasOpen = abbr.classList.contains('open');
             document.querySelectorAll('.maya-abbr.open').forEach(el => el.classList.remove('open'));
+            abbr.classList.toggle('tooltip-dismissed', wasOpen);
             if (!wasOpen) abbr.classList.add('open');
             e.stopPropagation();
             return;
@@ -607,11 +617,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 e.preventDefault();
                 const wasOpen = abbr.classList.contains('open');
                 document.querySelectorAll('.maya-abbr.open').forEach(el => el.classList.remove('open'));
+                abbr.classList.toggle('tooltip-dismissed', wasOpen);
                 if (!wasOpen) abbr.classList.add('open');
             }
         }
         if (e.key === 'Escape') {
-            document.querySelectorAll('.maya-abbr.open').forEach(el => el.classList.remove('open'));
+            document.querySelectorAll('.maya-abbr.open, .maya-abbr:focus, .maya-abbr:hover').forEach(el => {
+                el.classList.remove('open');
+                // Keep keyboard focus while overriding any lingering hover/focus styles.
+                el.classList.add('tooltip-dismissed');
+            });
         }
     });
 });

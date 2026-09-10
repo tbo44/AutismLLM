@@ -5,3 +5,4 @@
 - [GitHub sync method](github-sync.md) — main-agent git writes are blocked; push via /tmp clone + connector proxy token (see file).
 - [Rendered dashboard checks](rendered-dashboard-checks.md) — successful login and HTTP responses can hide invalid JavaScript emitted by Python templates.
 - [TestClient background tasks](testclient-background-tasks.md) — separate sync requests may cancel create_task work; keep trigger-and-poll scenarios in one event loop.
+- [Touch tooltip verification](touch-tooltip-verification.md) — assert computed visibility, not just open state; mobile hover/focus can keep a dismissed tooltip visible.

@@ -69,15 +69,17 @@ def live_server():
 
 
 @pytest.mark.browser
-def test_acronym_tooltip_is_visible_after_chat_response(live_server):
-    """A real chat response renders an EHCP tooltip on hover and keyboard focus."""
+@pytest.mark.parametrize("mobile", [False, True], ids=["desktop", "touchscreen"])
+def test_acronym_tooltip_is_visible_after_chat_response(live_server, mobile):
+    """Rendered chat acronyms support mouse/keyboard and touchscreen dismissal."""
     with sync_playwright() as playwright:
         system_chromium = shutil.which("chromium")
         browser = playwright.chromium.launch(
             headless=True,
             executable_path=system_chromium,
         )
-        page = browser.new_page()
+        context = browser.new_context(**(playwright.devices["Pixel 5"] if mobile else {}))
+        page = context.new_page()
 
         chat_requests = []
 
@@ -115,6 +117,38 @@ def test_acronym_tooltip_is_visible_after_chat_response(live_server):
         ]
         assert acronym.text_content() == "EHCP"
         assert acronym.get_attribute("data-tooltip") == EHCP_DEFINITION
+
+        if mobile:
+            assert page.evaluate("navigator.maxTouchPoints") > 0
+            assert page.evaluate("matchMedia('(hover: none)').matches")
+
+            def wait_for_tooltip(opened):
+                page.wait_for_function(
+                    """({element, opened}) => {
+                        const tooltip = getComputedStyle(element, '::after');
+                        return element.classList.contains('open') === opened &&
+                            tooltip.visibility === (opened ? 'visible' : 'hidden') &&
+                            tooltip.opacity === (opened ? '1' : '0');
+                    }""",
+                    arg={"element": acronym.element_handle(), "opened": opened},
+                    timeout=5000,
+                )
+
+            acronym.tap()
+            wait_for_tooltip(True)
+            page.get_by_label("Type your question").tap()
+            wait_for_tooltip(False)
+
+            acronym.tap()
+            wait_for_tooltip(True)
+            page.keyboard.press("Escape")
+            wait_for_tooltip(False)
+            # Dismissal must not prevent a later tap from reopening the explanation.
+            acronym.tap()
+            wait_for_tooltip(True)
+            context.close()
+            browser.close()
+            return
 
         acronym.hover()
         page.wait_for_function(
