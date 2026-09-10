@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import subprocess
+import httpx
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -185,6 +186,86 @@ def test_seed_reindex_completion_appears_in_polled_history(tmp_path, monkeypatch
     finally:
         main._rag_system = original_rag_system
         main._startup_complete = original_startup_complete
+        handler.close()
+        history_logger.removeHandler(handler)
+
+
+def test_failed_seed_reindex_appears_in_live_status(tmp_path, monkeypatch):
+    """HTTP polling exposes the failed subprocess result, newest history and alert."""
+    token = "test-failed-reindex-token"
+    detail = "Seed index failed: invalid knowledge entry"
+    notifications_sent = []
+    monkeypatch.setenv("ADMIN_CRAWL_TOKEN", token)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "logs").mkdir()
+    monkeypatch.setattr(main, "_crawl_status", {
+        "running": False, "last_run": None, "last_result": None, "alert": None,
+    })
+    monkeypatch.setattr(main, "_crawl_task", None)
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=2, stdout="", stderr=f"  {detail}\n",
+        ),
+    )
+    monkeypatch.setattr(
+        main.notifications, "notify_reindex_failure_async",
+        lambda source, message, when: notifications_sent.append((source, message, when)),
+    )
+
+    def unexpected_reload():
+        pytest.fail("A failed re-index must not replace the running knowledge base")
+
+    monkeypatch.setattr(main, "_initialize_rag_sync", unexpected_reload)
+    history_logger = logging.getLogger(f"test.failed-reindex.{id(tmp_path)}")
+    history_logger.setLevel(logging.INFO)
+    history_logger.propagate = False
+    handler = logging.FileHandler(tmp_path / "logs/reindex.log", encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-7s  %(message)s"))
+    history_logger.addHandler(handler)
+    monkeypatch.setattr(main, "_reindex_logger", history_logger)
+    history_logger.info("[previous-run] SUCCESS — earlier run")
+
+    async def trigger_and_poll():
+        # One event loop keeps the endpoint's create_task alive between requests.
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="https://testserver",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as http:
+            response = await http.post("/admin/reindex")
+            assert response.status_code == 200
+            assert response.json()["status"] == "started"
+            for _ in range(200):
+                response = await http.get("/admin/crawl/status")
+                assert response.status_code == 200
+                payload = response.json()
+                if not payload["running"]:
+                    break
+                await asyncio.sleep(0.01)
+            assert payload["running"] is False
+            assert payload["last_result"] == {
+                "success": False, "exit_code": 2, "stderr_tail": detail,
+            }
+            newest = payload["history"][0]
+            assert newest["source"] == "manual-reindex"
+            assert newest["outcome"] == "FAILURE"
+            assert newest["detail"] == detail
+            assert datetime.strptime(newest["ts"], "%Y-%m-%d %H:%M:%S,%f")
+            assert payload["history"][1]["source"] == "previous-run"
+            alert = payload["alert"]
+            assert alert["level"] == "warning"
+            assert alert["source"] == newest["source"]
+            assert alert["message"] == f"Re-index failed (manual-reindex): {detail}"
+            alert_at = datetime.fromisoformat(alert["at"].replace("Z", "+00:00"))
+            finished_at = datetime.fromisoformat(payload["last_run"].replace("Z", "+00:00"))
+            assert started_at <= alert_at <= finished_at
+            assert notifications_sent == [("manual-reindex", detail, alert["at"])]
+
+    started_at = datetime.now(timezone.utc)
+    try:
+        asyncio.run(trigger_and_poll())
+    finally:
         handler.close()
         history_logger.removeHandler(handler)
 
