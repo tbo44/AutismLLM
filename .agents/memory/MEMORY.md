@@ -6,3 +6,4 @@
 - [Rendered dashboard checks](rendered-dashboard-checks.md) — successful login and HTTP responses can hide invalid JavaScript emitted by Python templates.
 - [TestClient background tasks](testclient-background-tasks.md) — separate sync requests may cancel create_task work; keep trigger-and-poll scenarios in one event loop.
 - [Touch tooltip verification](touch-tooltip-verification.md) — assert computed visibility, not just open state; mobile hover/focus can keep a dismissed tooltip visible.
+- [Test-email retry scope](test-email-retries.md) — retry deduplication targets lost browser responses, not exactly-once SMTP delivery or restart recovery.

@@ -14,6 +14,7 @@ import re
 import asyncio
 import secrets
 import tempfile
+import time
 from pathlib import Path
 from collections import Counter
 
@@ -1546,23 +1547,31 @@ function triggerExpiringCrawl() {{
 }}
 
 /* ── Test alert email button ──────────────────────────────────────────────── */
+var _testAlertKey = '';
 function triggerTestAlert() {{
   var btn = document.getElementById('testAlertBtn');
   var msg = document.getElementById('testAlertMsg');
+  if (btn.disabled) {{ return; }}
   var saved = _getSavedToken();
   var token = saved || window.prompt('Enter the crawl admin token (ADMIN_CRAWL_TOKEN) to send a test email:');
   token = (token || '').trim();
   if (!token) {{ return; }}
+  if (!_testAlertKey) {{
+    var bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    _testAlertKey = Array.from(bytes, function (b) {{ return b.toString(16).padStart(2, '0'); }}).join('');
+  }}
   btn.disabled = true;
   msg.style.color = '#444';
   msg.textContent = 'Sending test email\u2026';
   fetch('/admin/alerts/test', {{
     method: 'POST',
-    headers: {{ 'Authorization': 'Bearer ' + token }}
+    headers: {{ 'Authorization': 'Bearer ' + token, 'Idempotency-Key': _testAlertKey }}
   }})
   .then(function (r) {{ return r.json().then(function (d) {{ return {{ ok: r.ok, status: r.status, body: d }}; }}); }})
   .then(function (res) {{
     btn.disabled = false;
+    if (res.ok || res.status === 401 || res.status === 403) {{ _testAlertKey = ''; }}
     if (res.ok && res.body && res.body.sent) {{
       msg.style.color = '#1b7a3d';
       msg.textContent = 'Email sent to ' + (res.body.recipient || 'the configured recipient') + '.';
@@ -2345,8 +2354,18 @@ async def admin_crawl_status(authorization: str | None = Header(default=None)):
     }
 
 
+# Process-local, bounded retry protection. Keep in-flight tasks even if their
+# HTTP request disconnects; never evict a recent result to make room for a send.
+_TEST_ALERT_TTL = 24 * 60 * 60
+_TEST_ALERT_LIMIT = 1024
+_test_alert_requests: dict[str, tuple[float, asyncio.Task]] = {}
+
+
 @app.post("/admin/alerts/test")
-async def admin_test_alert(authorization: str | None = Header(default=None)):
+async def admin_test_alert(
+    authorization: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None),
+):
     """
     Send a test alert email to verify that failure notifications are correctly
     configured, without waiting for an actual re-index failure.
@@ -2356,6 +2375,9 @@ async def admin_test_alert(authorization: str | None = Header(default=None)):
     so no real failure alert will be suppressed as a result.
 
     Requires Bearer token matching ADMIN_CRAWL_TOKEN environment variable.
+    Optional Idempotency-Key reuses an attempt's result for 24 hours within this
+    server process, including concurrent retries. Requests without a key retain
+    the original behaviour. Protection does not survive a server restart.
 
     Example:
         curl -X POST https://<host>/admin/alerts/test \\
@@ -2371,8 +2393,26 @@ async def admin_test_alert(authorization: str | None = Header(default=None)):
         }
     """
     _verify_admin_token(authorization)
-    result = await asyncio.to_thread(notifications.send_test_alert)
-    return result
+    if idempotency_key is None:
+        return await asyncio.to_thread(notifications.send_test_alert)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", idempotency_key):
+        raise HTTPException(status_code=400, detail="Invalid Idempotency-Key.")
+
+    now = time.monotonic()
+    for key, (created, task) in list(_test_alert_requests.items()):
+        if task.done() and now - created >= _TEST_ALERT_TTL:
+            del _test_alert_requests[key]
+    entry = _test_alert_requests.get(idempotency_key)
+    if entry is None:
+        if len(_test_alert_requests) >= _TEST_ALERT_LIMIT:
+            raise HTTPException(status_code=503, detail="Test email retry capacity reached. Try again later.")
+        task = asyncio.create_task(asyncio.to_thread(notifications.send_test_alert))
+        _test_alert_requests[idempotency_key] = (now, task)
+    else:
+        _, task = entry
+    # Cancellation of a disconnected request must not cancel the delivery task
+    # and allow a retry to send the same email a second time.
+    return await asyncio.shield(task)
 
 
 @app.post("/admin/reindex")

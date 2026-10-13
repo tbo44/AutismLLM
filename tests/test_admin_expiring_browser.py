@@ -33,6 +33,7 @@ def targeted_server(tmp_path, monkeypatch):
         "running": False, "last_run": None, "last_result": None, "alert": None,
     })
     monkeypatch.setattr(main, "_crawl_task", None)
+    monkeypatch.setattr(main, "_test_alert_requests", {})
     monkeypatch.setattr(main, "_startup_complete", True)
     monkeypatch.setattr(main.notifications, "reset_throttle", lambda: None)
     monkeypatch.setattr(main.notifications, "notify_reindex_failure_async", lambda *args: None)
@@ -294,7 +295,10 @@ def test_dashboard_test_alert_clears_rejected_saved_token_then_retries(
 
 
 @pytest.mark.browser
-@pytest.mark.parametrize("failure", ["delivery", "fetch"], ids=["delivery-failed", "fetch-rejected"])
+@pytest.mark.parametrize(
+    "failure", ["delivery", "fetch", "lost-response"],
+    ids=["delivery-failed", "fetch-rejected", "response-lost-after-delivery"],
+)
 def test_dashboard_test_alert_failure_allows_successful_retry(
     targeted_server, monkeypatch, failure,
 ):
@@ -335,9 +339,18 @@ def test_dashboard_test_alert_failure_allows_successful_retry(
                     and request.method == "POST" else None)
             button = page.get_by_role("button", name="Send test email")
             message = page.locator("#testAlertMsg")
-            if failure == "fetch":
-                # Abort only this POST; the next click uses the real endpoint.
-                page.route("**/admin/alerts/test", lambda route: route.abort("failed"), times=1)
+            if failure in ("fetch", "lost-response"):
+                def lose_response(route):
+                    if failure == "lost-response":
+                        # Actually call the endpoint and let mocked delivery
+                        # complete, then drop the response before JS receives it.
+                        response = route.fetch()
+                        assert response.status == 200
+                        assert response.json()["sent"] is True
+                        delivery.assert_called_once_with()
+                    route.abort("failed")
+
+                page.route("**/admin/alerts/test", lose_response, times=1)
                 with page.expect_event(
                     "requestfailed",
                     predicate=lambda r: r.url.endswith("/admin/alerts/test") and r.method == "POST",
@@ -347,7 +360,7 @@ def test_dashboard_test_alert_failure_allows_successful_retry(
                     "Could not confirm whether the test email was sent. "
                     "Check your connection, then click Send test email again."
                 )
-                delivery.assert_not_called()
+                assert delivery.call_count == (1 if failure == "lost-response" else 0)
             else:
                 with page.expect_response(
                     lambda r: r.url.endswith("/admin/alerts/test") and r.request.method == "POST"
@@ -376,10 +389,23 @@ def test_dashboard_test_alert_failure_allows_successful_retry(
             assert prompts == []
             assert len(requests) == 2
             assert requests[1].headers["authorization"] == "Bearer " + server.token
+            first_key = requests[0].headers["idempotency-key"]
+            retry_key = requests[1].headers["idempotency-key"]
+            assert first_key
+            assert (first_key == retry_key) is (failure != "delivery")
             assert delivery.call_count == (2 if failure == "delivery" else 1)
             assert all(call.args == () and call.kwargs == {} for call in delivery.call_args_list)
             assert page.evaluate("(key) => sessionStorage.getItem(key)", token_key) == server.token
             assert page.evaluate("_crawlToken") == server.token
+            if failure == "lost-response":
+                # After confirmation, a deliberate new click is a new send.
+                with page.expect_response(
+                    lambda r: r.url.endswith("/admin/alerts/test") and r.request.method == "POST"
+                ):
+                    button.click()
+                expect(message).to_have_text("Email sent to isolated@example.test.")
+                assert requests[2].headers["idempotency-key"] != retry_key
+                assert delivery.call_count == 2
         finally:
             browser.close()
 
