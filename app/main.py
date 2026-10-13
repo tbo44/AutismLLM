@@ -20,6 +20,7 @@ from pathlib import Path
 from collections import Counter
 
 from app import notifications
+from app.github_backup_status import render_status as render_github_backup_status
 from app.test_alert_attempts import AttemptCapacityError, TestAlertAttemptStore
 from app.postgres_test_alert_attempts import (
     PostgresTestAlertAttemptStore, create_test_alert_attempt_store,
@@ -858,6 +859,7 @@ def _fmt_uk_time(iso_str: str | None) -> str:
 
 def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
     """Build and return the admin dashboard as a self-contained HTML string."""
+    github_backup_html = render_github_backup_status()
     test_attempt_script = (
         Path(__file__).resolve().parent.parent / "static" / "admin-test-attempts.js"
     ).read_text(encoding="utf-8")
@@ -1069,6 +1071,7 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
   button.test-alert-btn:disabled {{ background: #a9c2d0; cursor: not-allowed; }}
   .reindex-msg {{ font-size: 0.85rem; margin-left: 0.75rem; color: #444; }}
   .test-alert-msg {{ font-size: 0.85rem; margin-left: 0.75rem; color: #444; }}
+  #githubBackup code {{ overflow-wrap: anywhere; }}
 </style>
 </head>
 <body>
@@ -1090,6 +1093,7 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
   </div>
 </div>
 
+{github_backup_html}
 <section>
   <h2>Knowledge Base</h2>
   {kb_alert_html}

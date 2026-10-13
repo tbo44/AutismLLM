@@ -28,6 +28,24 @@ GITHUB_REPO = "tbo44/AutismLLM"
 WORKSPACE = str(Path(__file__).resolve().parents[1])
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}.git"
 
+# Direct script execution puts scripts/, not the project root, on sys.path.
+if WORKSPACE not in sys.path:
+    sys.path.insert(0, WORKSPACE)
+from app.github_backup_status import STATUS_PATH, write_result
+
+
+class BackupFailure(RuntimeError):
+    def __init__(self, category, message):
+        super().__init__(message)
+        self.category = category
+
+
+def _record_failure(category):
+    try:
+        write_result(STATUS_PATH, failure=category)
+    except (OSError, ValueError):
+        print("Backup status could not be saved; check status storage.", flush=True)
+
 
 def _get_github_token() -> str:
     """Retrieve the GitHub OAuth access token from the Replit connector proxy."""
@@ -97,6 +115,17 @@ def _run(cmd: list[str], cwd: str | None = None, env: dict | None = None) -> str
 
 
 def sync_once() -> str:
+    try:
+        return _sync_once()
+    except (RuntimeError, OSError, subprocess.TimeoutExpired, SystemExit) as exc:
+        category = exc.category if isinstance(exc, BackupFailure) else (
+            "authorization" if isinstance(exc, SystemExit) else "sync"
+        )
+        _record_failure(category)
+        raise
+
+
+def _sync_once() -> str:
     """Back up committed main plus remote history; return the workspace commit.
 
     The returned commit is the watcher's checkpoint, not necessarily GitHub's tip:
@@ -145,7 +174,8 @@ def sync_once() -> str:
                     conflicts = _run(["git", "diff", "--name-only", "--diff-filter=U"],
                                      cwd=clone_dir)
                     detail = f" Conflicting files: {conflicts}." if conflicts else ""
-                    raise RuntimeError(
+                    raise BackupFailure(
+                        "conflict",
                         "Cannot safely merge GitHub main with workspace main."
                         + detail + " Resolve the histories in a working checkout and commit "
                         "the resolution before retrying. Nothing was pushed; workspace "
@@ -161,17 +191,22 @@ def sync_once() -> str:
                         ("non-fast-forward" in exc.output or "fetch first" in exc.output)):
                     raise
                 if attempt == 2:
-                    raise RuntimeError(
+                    raise BackupFailure(
+                        "remote_changed",
                         "GitHub main kept advancing during sync; stopped after 3 attempts. "
                         "No commits were overwritten. Retry when remote updates settle."
                     ) from exc
                 print("GitHub main advanced during sync; fetching and merging again.",
                       flush=True)
         combined_head = _run(["git", "rev-parse", "refs/heads/main"], cwd=clone_dir)
-        remote = _run(git + ["ls-remote", "origin", "refs/heads/main"], cwd=clone_dir, env=env)
+        try:
+            remote = _run(git + ["ls-remote", "origin", "refs/heads/main"], cwd=clone_dir, env=env)
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+            raise BackupFailure("verification", "GitHub verification could not complete.") from exc
         if not remote or remote.split()[0] != combined_head:
-            raise RuntimeError("GitHub verification failed: main changed during the sync.")
+            raise BackupFailure("verification", "GitHub verification failed: main changed during the sync.")
 
+        write_result(STATUS_PATH, workspace_commit=local_head, remote_tip=combined_head)
         print(f"Verified GitHub main at {combined_head} "
               f"(workspace main {local_head}).", flush=True)
         return local_head
@@ -193,12 +228,16 @@ def main() -> None:
         last_synced = None
         last_verified = 0.0
         while True:
+            attempted = False
             try:
                 head = _run(["git", "rev-parse", "refs/heads/main"], cwd=WORKSPACE)
                 if head != last_synced or time.monotonic() - last_verified >= 300:
+                    attempted = True
                     last_synced = sync_once()
                     last_verified = time.monotonic()
             except (RuntimeError, OSError, subprocess.TimeoutExpired, SystemExit) as exc:
+                if not attempted:
+                    _record_failure("sync")
                 if not args.watch:
                     raise
                 print(f"GitHub sync failed; retrying in 60 seconds: {exc}", flush=True)

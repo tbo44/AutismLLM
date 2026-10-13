@@ -4,6 +4,12 @@ import subprocess
 import pytest
 
 from scripts import sync_to_github as sync
+from app.github_backup_status import read_record
+
+
+@pytest.fixture(autouse=True)
+def isolated_status(tmp_path, monkeypatch):
+    monkeypatch.setattr(sync, "STATUS_PATH", tmp_path / "backup-status.json")
 
 
 def git(path, *args):
@@ -65,6 +71,9 @@ def test_sync_preserves_both_divergent_histories(repositories, tmp_path):
     (workspace / "example.txt").write_text("unfinished edit\n")
     assert sync.sync_once() == local_head
     combined = git(remote, "rev-parse", "main")
+    receipt = read_record(sync.STATUS_PATH)
+    assert receipt["last_success"]["workspace_commit"] == local_head
+    assert receipt["last_success"]["remote_tip"] == combined
     git(remote, "merge-base", "--is-ancestor", local_head, combined)
     git(remote, "merge-base", "--is-ancestor", remote_head, combined)
     assert git(remote, "show", "main:remote.txt") == "GitHub-only work"
@@ -119,6 +128,10 @@ def test_conflict_is_visible_and_leaves_both_repositories_unchanged(
     monkeypatch.setattr(sync.tempfile, "mkdtemp", record_temp)
     with pytest.raises(RuntimeError, match="Conflicting files: example.txt"):
         sync.sync_once()
+    receipt = read_record(sync.STATUS_PATH)
+    assert receipt["outcome"] == "failure"
+    assert receipt["last_failure"]["category"] == "conflict"
+    assert receipt["last_success"] is not None
     assert "CONFLICT" in capsys.readouterr().out
     assert all(not sync.Path(path).exists() for path in scratch)
     assert git(remote, "rev-parse", "main") == remote_head
@@ -216,6 +229,25 @@ def test_other_push_failures_are_not_treated_as_divergence(repositories, monkeyp
         sync.sync_once()
     assert len(pushes) == 1
     assert git(remote, "for-each-ref", "refs/heads") == ""
+
+
+def test_failed_verification_never_records_success(repositories, monkeypatch):
+    _, remote = repositories
+    original_run = sync._run
+
+    def fail_verification(cmd, cwd=None, env=None):
+        if "ls-remote" in cmd and "--heads" not in cmd:
+            raise sync.GitCommandError(cmd, "private diagnostic")
+        return original_run(cmd, cwd=cwd, env=env)
+
+    monkeypatch.setattr(sync, "_run", fail_verification)
+    with pytest.raises(sync.BackupFailure):
+        sync.sync_once()
+    receipt = read_record(sync.STATUS_PATH)
+    assert receipt["last_success"] is None
+    assert receipt["last_failure"]["category"] == "verification"
+    # The push happened, but it must not be described as verified.
+    assert git(remote, "rev-parse", "main")
 
 
 def test_watcher_checkpoints_workspace_commit_not_temporary_merge(
