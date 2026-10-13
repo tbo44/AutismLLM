@@ -909,8 +909,8 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
             parts.append(f"crawled {last_result['crawled_chunks']}")
         last_detail = _esc(", ".join(parts))
     elif last_result.get("success") is False:
-        kb_status_html = '<span class="badge badge-err">Failed</span>'
-        last_outcome = "Failed"
+        last_outcome = "Refresh incomplete" if last_result.get("index_success") else "Failed"
+        kb_status_html = f'<span class="badge badge-err">{last_outcome}</span>'
         err = (
             last_result.get("error")
             or last_result.get("stderr_tail")
@@ -1251,7 +1251,8 @@ function _badgeHtml(running, lastResult) {{
   if (lastResult.success) {{
     return '<span class="badge badge-ok">Success</span>';
   }}
-  return '<span class="badge badge-err">Failed</span>';
+  return '<span class="badge badge-err">' +
+    (lastResult.index_success ? 'Refresh incomplete' : 'Failed') + '</span>';
 }}
 
 function _detailText(running, lastResult) {{
@@ -1356,7 +1357,7 @@ function _applyStatus(data) {{
                      (lastResult.exit_code != null
                        ? 'Script exited with code ' + lastResult.exit_code
                        : 'Re-index failed — check server logs.');
-        msg.textContent = 'Re-index failed: ' + errMsg;
+        msg.textContent = (lastResult.index_success ? 'Page refresh incomplete: ' : 'Re-index failed: ') + errMsg;
       }}
     }}
     _stopPolling();
@@ -1957,7 +1958,10 @@ def _record_reindex_result(source: str, result: dict) -> None:
         _crawl_status["alert"] = {
             "level": "warning",
             "source": source,
-            "message": f"Re-index failed ({source}): {detail}",
+            "message": (
+                f"Page refresh incomplete ({source}): {detail}"
+                if result.get("index_success") else f"Re-index failed ({source}): {detail}"
+            ),
             "at": when,
         }
         # Actively notify staff by email (fire-and-forget, throttled, no-op if
@@ -1997,6 +2001,7 @@ async def _run_crawl_and_reindex_background(
     docs_crawled = 0
     chunks_from_crawl = 0
     reindex_success = False
+    refresh_report = {"failed_urls": []}
 
     try:
         # Step 1: crawl live web sources
@@ -2009,15 +2014,26 @@ async def _run_crawl_and_reindex_background(
         from rag.structured_importer import StructuredKnowledgeImporter
 
         try:
-            crawled_chunks = await crawl_and_chunk_all(only_urls=only_urls)
+            crawled_chunks = await crawl_and_chunk_all(
+                only_urls=only_urls, refresh_report=refresh_report,
+            )
             docs_crawled = len(crawled_chunks)
             logger.info(f"✅ Crawled {docs_crawled} chunks from live sources")
             # Persist the raw crawl output to data/raw/ alongside ChromaDB.
             if crawled_chunks:
                 await asyncio.to_thread(save_crawled_chunks, crawled_chunks)
         except Exception as crawl_err:
-            logger.warning(f"⚠️ Web crawl failed or partially failed: {crawl_err} — continuing with seed data only")
-            crawled_chunks = []
+            logger.warning(f"⚠️ Web crawl failed: {crawl_err} — rebuilding with retained cached content")
+            from rag.crawler import CrawlCache
+            # A failed crawl must not silently erase cached pages when rebuilding.
+            cached = CrawlCache()
+            crawled_chunks = [
+                chunk for entry in cached._data.values() for chunk in entry.get("chunks", [])
+            ]
+            refresh_report["failed_urls"] = sorted(
+                only_urls if only_urls is not None else cached._data.keys()
+            )
+            refresh_report["error"] = str(crawl_err)
 
         # Step 2: load seed JSONL data, then add crawled chunks (skipping any URL
         # already present in the curated seed data so it is never stored twice).
@@ -2048,13 +2064,24 @@ async def _run_crawl_and_reindex_background(
         _rag_system = await asyncio.to_thread(_initialize_rag_sync)
         _startup_complete = True
 
+        failed_urls = refresh_report["failed_urls"]
+        refresh_failed = bool(failed_urls or refresh_report.get("error"))
         _crawl_status["last_result"] = {
-            "success": True,
+            "success": not refresh_failed,
+            "index_success": True,
+            "failed_refresh_urls": failed_urls,
+            "failed_refresh_count": len(failed_urls),
             "elapsed_seconds": round(elapsed, 1),
             "total_chunks": total_chunks,
             "seed_chunks": seed_count,
             "crawled_chunks": chunks_from_crawl,
         }
+        if refresh_failed:
+            _crawl_status["last_result"]["error"] = (
+                f"Index rebuilt, but refresh failed for {len(failed_urls)} page(s): "
+                + (", ".join(failed_urls) or refresh_report.get("error", "Crawl failed"))
+                + ". Existing cached content was retained where available."
+            )
         _record_reindex_result(source, _crawl_status["last_result"])
         logger.info("✅ RAG system reloaded after crawl+reindex.")
 
@@ -2063,6 +2090,9 @@ async def _run_crawl_and_reindex_background(
         logger.error(f"❌ Crawl+reindex background task error: {e}", exc_info=True)
         _crawl_status["last_result"] = {
             "success": False,
+            "index_success": False,
+            "failed_refresh_urls": refresh_report["failed_urls"],
+            "failed_refresh_count": len(refresh_report["failed_urls"]),
             "elapsed_seconds": round(elapsed, 1),
             "error": str(e),
         }

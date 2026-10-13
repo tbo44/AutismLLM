@@ -222,6 +222,7 @@ class UKAutismCrawler:
         self.session = None
         self.uk_timezone = pytz.timezone('Europe/London')
         self.cache = cache  # None means caching is disabled
+        self.failed_urls: Set[str] = set()
 
     async def __aenter__(self):
         self.session = httpx.AsyncClient(
@@ -399,6 +400,12 @@ class UKAutismCrawler:
                     reused_chunks.extend(cached_entry["chunks"])
             elif doc:
                 fresh_documents.append(doc)
+            else:
+                self.failed_urls.add(url)
+                # Even expired content is preferable to dropping a page from
+                # the rebuilt index when its refresh failed.
+                if self.cache:
+                    reused_chunks.extend(self.cache._data.get(url, {}).get("chunks", []))
 
         return fresh_documents, reused_chunks
 
@@ -428,9 +435,15 @@ class UKAutismCrawler:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Flatten results
-        for result in results:
+        for source, result in zip(UK_SOURCES, results):
             if isinstance(result, Exception):
                 logger.error(f"Source crawling failed: {result}")
+                self.failed_urls.update(source.base_url + path for path in source.crawl_paths)
+                if self.cache:
+                    for path in source.crawl_paths:
+                        all_reused.extend(
+                            self.cache._data.get(source.base_url + path, {}).get("chunks", [])
+                        )
             else:
                 fresh, reused = result
                 all_fresh.extend(fresh)
@@ -450,16 +463,21 @@ class UKAutismCrawler:
         """Force-refresh only the configured source URLs in *urls*."""
         all_fresh: List[CrawledDocument] = []
         selected = set(urls)
+        attempted: Set[str] = set()
         for source in UK_SOURCES:
             for path in source.crawl_paths:
                 url = source.base_url + path
                 if url not in selected:
                     continue
+                attempted.add(url)
                 doc, from_cache = await self.crawl_url(url, source, force_refresh=True)
                 if doc:
                     all_fresh.append(doc)
                 elif from_cache:
                     logger.debug("Unexpected cached result for forced refresh: %s", url)
+                else:
+                    self.failed_urls.add(url)
+        self.failed_urls.update(selected - attempted)
         return all_fresh, []
 
 def chunk_document(doc: CrawledDocument, chunk_size: int = 1000, overlap: int = 200) -> List[Dict[str, Any]]:
@@ -521,6 +539,7 @@ async def crawl_and_chunk_all(
     use_cache: bool = True,
     max_age_days: Optional[int] = None,
     only_urls: Optional[Iterable[str]] = None,
+    refresh_report: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Crawl all configured sources and return chunked documents.
 
@@ -546,6 +565,9 @@ async def crawl_and_chunk_all(
         Maximum number of days a cache entry is considered fresh.  ``None``
         (the default) reads ``CRAWL_CACHE_MAX_AGE_DAYS`` from the environment,
         falling back to 30 days.  Ignored when *use_cache* is ``False``.
+    refresh_report:
+        Optional output dictionary populated with ``failed_urls``. Failed
+        fetches retain cached chunks but do not renew their cache timestamps.
 
     Returns
     -------
@@ -561,6 +583,8 @@ async def crawl_and_chunk_all(
             fresh_documents, reused_chunks = await crawler.crawl_all_sources()
         else:
             fresh_documents, reused_chunks = await crawler.crawl_selected_urls(selected_urls)
+        if refresh_report is not None:
+            refresh_report["failed_urls"] = sorted(crawler.failed_urls)
 
     # Prune stale cache entries whose URLs are no longer in the active source list
     if cache is not None:

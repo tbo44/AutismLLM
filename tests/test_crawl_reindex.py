@@ -590,6 +590,28 @@ class TestCrawlUrlCachingPaths:
         assert doc is not None
 
 
+def test_full_crawl_failed_fetch_retains_expired_chunks_and_reports_url(tmp_path):
+    """A failed fetch must not remove stale but usable content from the index."""
+    from rag.sources import Source, SourceAuthority
+    source = Source("Test", "https://example.com", SourceAuthority.NHS, ["/page"], "Test")
+    url = source.base_url + "/page"
+    cache = CrawlCache(raw_dir=str(tmp_path))
+    chunks = [_make_chunk(url)]
+    entry = {
+        "cached_at": (datetime.now(timezone.utc) - timedelta(days=31)).isoformat(),
+        "chunks": chunks,
+    }
+    cache._data[url] = entry.copy()
+    crawler = UKAutismCrawler(cache=cache)
+    crawler.crawl_url = AsyncMock(return_value=(None, False))
+    fresh, reused = asyncio.run(crawler.crawl_source(source))
+    assert fresh == []
+    assert reused == chunks
+    assert crawler.failed_urls == {url}
+    assert cache._data[url] == entry
+    assert cache.get(url) is None
+
+
 # ── crawl_and_chunk_all() integration ─────────────────────────────────────────
 
 

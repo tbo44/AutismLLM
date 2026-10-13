@@ -35,13 +35,14 @@ def targeted_server(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "_crawl_task", None)
     monkeypatch.setattr(main, "_startup_complete", True)
     monkeypatch.setattr(main.notifications, "reset_throttle", lambda: None)
+    monkeypatch.setattr(main.notifications, "notify_reindex_failure_async", lambda *args: None)
     monkeypatch.setattr(main.notifications, "get_status", lambda: {"configured": False})
     source = Source("Test source", "https://source.example", SourceAuthority.NHS,
                     ["/due", "/fresh"], "Isolated crawl source")
     monkeypatch.setattr(crawler, "UK_SOURCES", [source])
     due, fresh = [source.base_url + path for path in source.crawl_paths]
     cache = crawler.CrawlCache()
-    for url, age in [(due, 25), (fresh, 1)]:
+    for url, age in [(due, 31), (fresh, 1)]:
         cache.update(url, etag=None, last_modified=None, content_hash="old",
                      chunks=[{"text": "Cached page", "metadata": {"url": url}}])
         cache._data[url]["cached_at"] = (
@@ -51,11 +52,14 @@ def targeted_server(tmp_path, monkeypatch):
 
     requested = []
     release = threading.Event()
+    fail_refresh = threading.Event()
 
     async def transport(request):
         requested.append(str(request.url))
         while not release.is_set():
             await asyncio.sleep(0.01)
+        if fail_refresh.is_set():
+            return httpx.Response(503, text="Source temporarily unavailable")
         return httpx.Response(200, text=(
             "<html><title>Support guidance</title><body><article><h1>Support</h1><p>"
             + "Families can ask their local authority for information about education, "
@@ -98,7 +102,7 @@ def targeted_server(tmp_path, monkeypatch):
         assert server.started
         yield SimpleNamespace(
             url=f"http://127.0.0.1:{port}", token=token, due=due, fresh=fresh,
-            requested=requested, release=release, store=store,
+            requested=requested, release=release, store=store, fail_refresh=fail_refresh,
         )
     finally:
         release.set()
@@ -110,8 +114,11 @@ def targeted_server(tmp_path, monkeypatch):
 
 
 @pytest.mark.browser
-def test_dashboard_targeted_crawl_through_completion(targeted_server):
+@pytest.mark.parametrize("failed", [False, True], ids=["success", "failed-page-refresh"])
+def test_dashboard_targeted_crawl_through_completion(targeted_server, failed):
     server = targeted_server
+    if failed:
+        server.fail_refresh.set()
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
             headless=True, executable_path=shutil.which("chromium"),
@@ -138,19 +145,45 @@ def test_dashboard_targeted_crawl_through_completion(targeted_server):
             assert server.requested == [server.due]
 
             server.release.set()
-            expect(page.locator("#reindexMsg")).to_have_text(
-                "Re-index finished successfully.", timeout=15000,
-            )
-            expect(page.locator("#kbStatusBadge")).to_contain_text("Success")
-            expect(page.locator("#cacheExpiring")).to_have_text("0")
-            expect(button).to_be_disabled()  # Nothing remains due for refresh.
+            if failed:
+                expect(page.locator("#reindexMsg")).to_contain_text(
+                    "Page refresh incomplete:", timeout=15000,
+                )
+                expect(page.locator("#kbStatusBadge")).to_contain_text("Refresh incomplete")
+                expect(page.locator("#kbDetails")).to_contain_text(server.due)
+                expect(page.locator("#kbDetails")).to_contain_text("Index rebuilt")
+                expect(page.locator("#cacheExpiring")).to_have_text("1")
+                expect(button).to_be_enabled()  # Still stale; an operator can retry.
+                expect(page.locator("#historyTbody tr").first).to_contain_text("FAILURE")
+                result = main._crawl_status["last_result"]
+                assert result["success"] is False
+                assert result["index_success"] is True
+                assert result["failed_refresh_urls"] == [server.due]
+                assert result["failed_refresh_count"] == 1
+                assert main._crawl_status["alert"]["source"] == "manual-expiring-crawl"
+                cached = crawler.CrawlCache()
+                assert cached._data[server.due]["chunks"][0]["text"] == "Cached page"
+                assert cached.get(server.due) is None  # A failed refresh did not renew its age.
+                # Reload also renders the same warning and failed URL server-side.
+                page.reload()
+                expect(page.locator("#kbStatusBadge")).to_contain_text("Refresh incomplete")
+                expect(page.locator("#kbDetails")).to_contain_text(server.due)
+            else:
+                expect(page.locator("#reindexMsg")).to_have_text(
+                    "Re-index finished successfully.", timeout=15000,
+                )
+                expect(page.locator("#kbStatusBadge")).to_contain_text("Success")
+                expect(page.locator("#cacheExpiring")).to_have_text("0")
+                expect(button).to_be_disabled()  # Nothing remains due for refresh.
+                expect(page.locator("#historyTbody tr").first).to_contain_text("SUCCESS")
             expect(page.locator("#reindexBtn")).to_be_enabled()
             expect(page.locator("#historyTbody tr").first).to_contain_text("manual-expiring-crawl")
-            expect(page.locator("#historyTbody tr").first).to_contain_text("SUCCESS")
             assert server.requested == [server.due]
             assert server.fresh not in server.requested
             indexed = server.store.add_documents.call_args.args[0]
             assert {chunk["metadata"]["url"] for chunk in indexed} == {server.due, server.fresh}
-            assert crawler.CrawlCache().expiry_summary()["expiring_entries"] == 0
+            assert crawler.CrawlCache().expiry_summary()["expiring_entries"] == int(failed)
+            if failed:
+                assert next(c for c in indexed if c["metadata"]["url"] == server.due)["text"] == "Cached page"
         finally:
             browser.close()
