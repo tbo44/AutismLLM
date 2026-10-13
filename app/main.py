@@ -21,6 +21,9 @@ from collections import Counter
 
 from app import notifications
 from app.test_alert_attempts import AttemptCapacityError, TestAlertAttemptStore
+from app.postgres_test_alert_attempts import (
+    PostgresTestAlertAttemptStore, create_test_alert_attempt_store,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -2382,11 +2385,9 @@ async def admin_crawl_status(authorization: str | None = Header(default=None)):
     }
 
 
-# All workers must use the same persistent SQLite file. Local tasks only keep
-# delivery alive after disconnect; ownership and results live in the database.
-_test_alert_store = TestAlertAttemptStore(
-    Path(os.environ.get("TEST_ALERT_ATTEMPTS_PATH", "logs/test_alert_attempts.sqlite3"))
-)
+# Local tasks keep delivery alive after disconnect; only the configured durable
+# store owns attempts. PostgreSQL coordinates instances with independent disks.
+_test_alert_store = create_test_alert_attempt_store()
 _test_alert_tasks: set[asyncio.Task] = set()
 _TEST_ALERT_RETRY_WAIT = 1.0
 _TEST_ALERT_UNCERTAIN = (
@@ -2396,7 +2397,7 @@ _TEST_ALERT_UNCERTAIN = (
 )
 
 
-def _deliver_test_alert(store: TestAlertAttemptStore, key: str):
+def _deliver_test_alert(store: TestAlertAttemptStore | PostgresTestAlertAttemptStore, key: str):
     try:
         result = notifications.send_test_alert()
         store.finish(key, result)
@@ -2467,7 +2468,7 @@ async def admin_test_alert(
 
     Requires Bearer token matching ADMIN_CRAWL_TOKEN environment variable.
     Optional Idempotency-Key reuses a completed result for 24 hours, including
-    restarts and workers sharing TEST_ALERT_ATTEMPTS_PATH. Interrupted/uncertain
+    restarts and workers sharing the configured durable backend. Interrupted/uncertain
     attempts are never automatically resent (409). Requests without a key retain
     the original behaviour.
 

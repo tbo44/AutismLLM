@@ -415,13 +415,24 @@ This list evolves — check the project task board (or ask the maintainer) for c
 
 ### Test-email retry tracking
 
-Keyed requests to `/admin/alerts/test` save delivery claims and results in SQLite
-at `TEST_ALERT_ATTEMPTS_PATH` (default `logs/test_alert_attempts.sqlite3`).
-All workers must share this file on persistent storage. This protects retries
-across server process restarts and workers on that shared filesystem, not
-isolated instances with separate disks. SQLite uses a committed exclusive claim
-before delivery; an unavailable/full store prevents sending rather than silently
-falling back to process-local tracking.
+Keyed requests to `/admin/alerts/test` save delivery claims and results in an
+explicitly selected durable backend:
+
+- `TEST_ALERT_ATTEMPTS_BACKEND=sqlite` (default): uses `TEST_ALERT_ATTEMPTS_PATH`
+  (default `logs/test_alert_attempts.sqlite3`). All workers must share this file
+  on storage that survives replacement/restarts. **Separate or ephemeral disks
+  are not coordinated by SQLite.**
+- `TEST_ALERT_ATTEMPTS_BACKEND=postgres`: uses the dedicated secret
+  `TEST_ALERT_ATTEMPTS_DATABASE_URL`. All replicas/replacement instances must
+  connect to the **same durable PostgreSQL database and table**. Independent
+  disks are supported. This does not automatically use `DATABASE_URL`, copy
+  SQLite claims, move ChromaDB, or migrate any other application data.
+
+Both backends commit an exclusive claim before delivery. PostgreSQL serializes
+the capacity check and insert in one transaction, releasing its database lock
+before calling the mail service. Unavailable/full storage or missing tables
+prevent keyed sends (HTTP 503); there is no local fallback. Invalid backend names
+or a missing PostgreSQL URL fail configuration rather than selecting SQLite.
 
 Completed results (including recipient and error information) are retained for
 24 hours from completion and cleaned up on the next keyed request. Interrupted
@@ -429,10 +440,73 @@ attempts remain protected indefinitely: if delivery started but its result was
 not saved, retries return HTTP 409 and never automatically resend. A slow
 in-flight retry can also return 409 after a short wait; retrying the same key
 later will recover the completed result if it was saved. Check the inbox before
-deliberately starting a new attempt (reload the dashboard to reset its key).
+deliberately starting a new attempt using **Start a new attempt**.
 Unresolved attempts count towards the 1,024-attempt limit and must not be deleted
 just to allow retries. This is duplicate-retry protection, not exactly-once SMTP
 delivery. Requests without an `Idempotency-Key` keep the original behavior.
+
+#### Shared PostgreSQL setup and safe cutover
+
+1. Choose a durable, operator-managed PostgreSQL database accessible by every
+   server. Use TLS (`sslmode=require`, or `verify-full` with your provider's CA)
+   for remote connections. Store its connection string as the dedicated secret
+   `TEST_ALERT_ATTEMPTS_DATABASE_URL`; never put it in Git or command arguments.
+   Keep development/tests separate from production. The runtime needs SELECT,
+   INSERT, UPDATE and DELETE on `public.maya_test_alert_attempts` (no DDL).
+2. Have the database administrator explicitly apply
+   `scripts/test_alert_attempts_schema.sql` to that database using their normal
+   database tools. The application never creates PostgreSQL tables at startup.
+   The table must use durable commits (`synchronous_commit=on`, the PostgreSQL
+   default); do not use unlogged tables or disable durability. If you instead
+   choose Replit-managed PostgreSQL, apply schema in development through the
+   database tools and use the supported Publish schema flow for production,
+   not a startup/production schema script.
+3. **Stop all old test-email senders, drain any in-flight sends, and disable test
+   email access during cutover.** Back up each old SQLite store using SQLite's
+   backup tools (including WAL data); preserve claims from every old disk.
+   A fresh shared database alone cannot protect retries of old keys.
+4. From the project root, with the dedicated target secret configured, import
+   **each** stopped source file explicitly:
+
+   ```bash
+   python -m scripts.import_test_alert_attempts \
+     --source /path/to/old/test_alert_attempts.sqlite3 \
+     --confirm-all-senders-stopped
+   ```
+
+   This command does not send email or change the source. It imports pending,
+   uncertain, archived and completed records in one transaction per source.
+   Unresolved claims never become eligible for sending; archived keys remain
+   permanently protected. Completed results retain their original completion
+   time. Identical records can be imported again; any conflicting key aborts
+   the entire source import without overwriting existing protection. Investigate
+   conflicts offline and preserve the most conservative protection; do not
+   delete keys to force the import through. Verify counts/states in the target
+   and keep the source backups.
+5. Only after every source is reconciled, set
+   `TEST_ALERT_ATTEMPTS_BACKEND=postgres` on **all** servers and restart them.
+   Review unresolved attempts in `/admin` before re-enabling test-email access.
+   Never run a mixed SQLite/PostgreSQL fleet. Do not switch back to stale SQLite
+   files: claims created since cutover would be missing.
+
+If an ephemeral source disk has already been lost, its ambiguous claims cannot
+be reconstructed safely. Keep test sends disabled until recovered backups or a
+deliberate operator review establishes a safe path; a new database is not proof
+that old email was never delivered. Restoring an old PostgreSQL backup can also
+lose newer protection records; stop sends and reconcile before reopening.
+Manual archive frees active capacity without deleting a protected key; it does
+not cancel an in-flight send.
+
+Run the isolated PostgreSQL integration tests with:
+
+```bash
+python -m pytest tests/test_postgres_test_alert_attempts.py
+```
+
+They create a temporary local PostgreSQL cluster using `initdb` and `pg_ctl`,
+never use application database credentials, run servers with separate working
+directories, and mock every delivery. Without those server binaries they skip;
+install PostgreSQL server tools in CI to run them.
 
 Maya logs question text and retrieved source IDs to `logs/questions.log` to help
 improve the service. No user identity (IP address, name, session ID) is ever stored.
