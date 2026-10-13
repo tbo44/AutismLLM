@@ -352,8 +352,11 @@ The script:
    personal token or password needed — the integration must be connected to this
    Repl via **Integrations → GitHub**).
 2. Clones the Replit workspace into a temporary directory.
-3. Pushes `main` to `github.com/tbo44/AutismLLM`.
-4. Verifies that GitHub `main` matches the pushed commit, then deletes the temporary clone.
+3. Fetches GitHub `main` and merges it with committed workspace `main` inside the
+   temporary clone, preserving both histories. A new remote branch is created if
+   GitHub does not have `main` yet.
+4. Pushes the combined history to `github.com/tbo44/AutismLLM` without force.
+5. Verifies that GitHub `main` matches the pushed commit, then deletes the temporary clone.
 Credentials are passed through an ephemeral credential helper, never embedded in
 remote URLs or command arguments.
 
@@ -363,11 +366,30 @@ remote URLs or command arguments.
 
 ### Safety and failures
 
-The watcher never commits unfinished edits, force-pushes, or changes local Git
-history. If GitHub has diverged, it reports a rejected push instead of overwriting
-collaborators' work. Failures appear in the **GitHub Sync** workflow console and
-are retried every 60 seconds. Authentication failures require repairing the
-GitHub connection. A lock prevents simultaneous manual and automatic runs.
+The watcher never commits unfinished edits, force-pushes, or changes workspace
+files or local Git history. Remote-only changes stay on GitHub; automatic merges
+are made only in the temporary clone. Later backups preserve those merge commits.
+If GitHub advances during a push, the script fetches and merges again, with at
+most three push attempts per sync.
+
+Conflicting edits or unrelated histories stop the sync without pushing. The
+console names conflicting files when available. Resolve the histories in a
+separate working checkout, commit the resolution, and incorporate it into
+workspace `main` through your normal Git workflow before retrying. Save any
+unfinished workspace work before doing that; the backup script does not import
+remote changes into the workspace or resolve conflicts for you.
+
+Failures appear in the **GitHub Sync** workflow console and are retried every
+60 seconds. A manual run exits unsuccessfully on failure. Authentication failures
+require repairing the GitHub connection. A lock prevents simultaneous manual and
+automatic runs.
+
+Isolated regression checks use local repositories and fake authorization, with
+no network calls or real GitHub pushes:
+
+```bash
+python -m pytest tests/test_github_sync.py -q
+```
 
 ---
 

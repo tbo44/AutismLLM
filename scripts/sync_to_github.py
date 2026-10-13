@@ -9,7 +9,7 @@ Uses the Replit GitHub integration (no personal token needed).
 The script:
   1. Fetches an OAuth token from the Replit connector proxy.
   2. Clones the local workspace into /tmp/maya-sync-<pid>.
-  3. Pushes main → github.com/tbo44/AutismLLM.
+  3. Fetches and merges GitHub main in the temporary clone, then pushes safely.
   4. Removes the temporary clone.
 """
 
@@ -77,6 +77,14 @@ def _get_github_token() -> str:
     )
 
 
+class GitCommandError(RuntimeError):
+    """Keep command diagnostics available for narrowly scoped push retries."""
+
+    def __init__(self, cmd: list[str], output: str):
+        super().__init__(f"Command failed: {' '.join(cmd)}")
+        self.output = output
+
+
 def _run(cmd: list[str], cwd: str | None = None, env: dict | None = None) -> str:
     result = subprocess.run(
         cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=180,
@@ -84,23 +92,28 @@ def _run(cmd: list[str], cwd: str | None = None, env: dict | None = None) -> str
     if result.returncode != 0:
         print(result.stdout)
         print(result.stderr)
-        raise RuntimeError(f"Command failed: {' '.join(cmd)}")
+        raise GitCommandError(cmd, result.stdout + result.stderr)
     return result.stdout.strip()
 
 
 def sync_once() -> str:
-    """Push only committed main history, without changing the workspace."""
+    """Back up committed main plus remote history; return the workspace commit.
+
+    The returned commit is the watcher's checkpoint, not necessarily GitHub's tip:
+    temporary merge commits must not trigger another sync every minute.
+    """
     print("Fetching fresh GitHub authorization.", flush=True)
     token = _get_github_token()
 
-    clone_dir = tempfile.mkdtemp(prefix="maya-sync-")
+    temp_dir = tempfile.mkdtemp(prefix="maya-sync-")
+    clone_dir = str(Path(temp_dir) / "repo")
     try:
         print(f"📂  Cloning workspace → {clone_dir} …")
-        _run(["git", "clone", WORKSPACE, clone_dir])
+        _run(["git", "clone", "--branch", "main", WORKSPACE, clone_dir])
 
         _run(["git", "remote", "set-url", "origin", GITHUB_URL], cwd=clone_dir)
         # Keep credentials out of command arguments, git config, and logs.
-        askpass = Path(clone_dir) / "github-askpass"
+        askpass = Path(temp_dir) / "github-askpass"
         askpass.write_text(
             '#!/bin/sh\ncase "$1" in\n'
             '  *Username*) printf "%s\\n" "x-access-token" ;;\n'
@@ -108,23 +121,63 @@ def sync_once() -> str:
         )
         askpass.chmod(0o700)
 
-        print(f"🚀  Pushing main → github.com/{GITHUB_REPO} …")
         env = {
             **os.environ, "GIT_TERMINAL_PROMPT": "0",
             "GIT_ASKPASS": str(askpass), "MAYA_GITHUB_TOKEN": token,
         }
         git = ["git", "-c", "credential.helper="]
         local_head = _run(["git", "rev-parse", "refs/heads/main"], cwd=clone_dir)
-        _run(git + ["push", "origin", "refs/heads/main:refs/heads/main"], cwd=clone_dir, env=env)
+        # A remote writer may advance main between fetch and push. Retry only
+        # explicit non-fast-forward rejections, with a bounded fresh fetch/merge.
+        for attempt in range(3):
+            remote = _run(git + ["ls-remote", "--heads", "origin", "refs/heads/main"],
+                          cwd=clone_dir, env=env)
+            if remote:
+                _run(git + ["fetch", "--no-tags", "origin", "refs/heads/main"],
+                     cwd=clone_dir, env=env)
+                try:
+                    _run(git + [
+                        "-c", "user.name=Maya GitHub Backup",
+                        "-c", "user.email=maya-backup@users.noreply.github.com",
+                        "merge", "--no-edit", "FETCH_HEAD",
+                    ], cwd=clone_dir, env=env)
+                except GitCommandError as exc:
+                    conflicts = _run(["git", "diff", "--name-only", "--diff-filter=U"],
+                                     cwd=clone_dir)
+                    detail = f" Conflicting files: {conflicts}." if conflicts else ""
+                    raise RuntimeError(
+                        "Cannot safely merge GitHub main with workspace main."
+                        + detail + " Resolve the histories in a working checkout and commit "
+                        "the resolution before retrying. Nothing was pushed; workspace "
+                        "and GitHub commits are unchanged."
+                    ) from exc
+            print(f"Pushing combined main history → github.com/{GITHUB_REPO} …", flush=True)
+            try:
+                _run(git + ["push", "origin", "refs/heads/main:refs/heads/main"],
+                     cwd=clone_dir, env=env)
+                break
+            except GitCommandError as exc:
+                if not ("[rejected]" in exc.output and
+                        ("non-fast-forward" in exc.output or "fetch first" in exc.output)):
+                    raise
+                if attempt == 2:
+                    raise RuntimeError(
+                        "GitHub main kept advancing during sync; stopped after 3 attempts. "
+                        "No commits were overwritten. Retry when remote updates settle."
+                    ) from exc
+                print("GitHub main advanced during sync; fetching and merging again.",
+                      flush=True)
+        combined_head = _run(["git", "rev-parse", "refs/heads/main"], cwd=clone_dir)
         remote = _run(git + ["ls-remote", "origin", "refs/heads/main"], cwd=clone_dir, env=env)
-        if not remote or remote.split()[0] != local_head:
+        if not remote or remote.split()[0] != combined_head:
             raise RuntimeError("GitHub verification failed: main changed during the sync.")
 
-        print(f"Verified GitHub main at {local_head}.", flush=True)
+        print(f"Verified GitHub main at {combined_head} "
+              f"(workspace main {local_head}).", flush=True)
         return local_head
     finally:
         # Remove the clone and credential helper unconditionally.
-        shutil.rmtree(clone_dir, ignore_errors=True)
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def main() -> None:
