@@ -187,3 +187,90 @@ def test_dashboard_targeted_crawl_through_completion(targeted_server, failed):
                 assert next(c for c in indexed if c["metadata"]["url"] == server.due)["text"] == "Cached page"
         finally:
             browser.close()
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize("saved_token", [False, True], ids=["entered-token", "saved-token"])
+def test_dashboard_targeted_crawl_retries_rejected_token(targeted_server, saved_token):
+    server = targeted_server
+    invalid_token = "rejected-browser-token"
+    token_key = "maya_admin_crawl_token"
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            headless=True, executable_path=shutil.which("chromium"),
+        )
+        try:
+            page = browser.new_page()
+            page.goto(server.url + "/admin")
+            page.get_by_label("Admin password").fill(server.token)
+            page.get_by_role("button", name="Sign in").click()
+            page.wait_for_url(server.url + "/admin")
+            expect(page.locator("#cacheExpiring")).to_have_text("1")
+            button = page.get_by_role("button", name="Re-crawl expiring pages")
+            expect(button).to_be_enabled()
+
+            navigations = []
+            page.on("framenavigated", lambda frame: navigations.append(frame.url))
+            if saved_token:
+                page.evaluate(
+                    "([key, token]) => { sessionStorage.setItem(key, token); _crawlToken = token; }",
+                    [token_key, invalid_token],
+                )
+            prompts = []
+            tokens = iter([server.token] if saved_token else [invalid_token, server.token])
+
+            def enter_token(dialog):
+                assert dialog.type == "prompt"
+                prompts.append(dialog.message)
+                dialog.accept(next(tokens))
+
+            page.on("dialog", enter_token)
+            with page.expect_response(
+                lambda r: r.url.endswith("/admin/crawl/expiring") and r.request.method == "POST"
+            ) as rejected:
+                button.click()
+            assert rejected.value.status == 403
+            expect(page.locator("#reindexMsg")).to_have_text(
+                "Token rejected — enter the current token and try again.",
+            )
+            expect(button).to_be_enabled()
+            expect(page.locator("#cacheExpiring")).to_have_text("1")
+            assert page.evaluate("(key) => sessionStorage.getItem(key)", token_key) is None
+            assert page.evaluate("_crawlToken") == ""
+            assert len(prompts) == (0 if saved_token else 1)
+            assert server.requested == []
+            assert main._crawl_status["running"] is False
+            assert main._crawl_task is None
+            server.store.reset_collection.assert_not_called()
+            server.store.add_documents.assert_not_called()
+
+            with page.expect_response(
+                lambda r: r.url.endswith("/admin/crawl/expiring") and r.request.method == "POST"
+            ) as started:
+                button.click()
+            assert started.value.status == 200
+            assert started.value.json()["count"] == 1
+            expect(button).to_be_disabled()
+            expect(page.locator("#reindexMsg")).to_have_text("Re-crawling 1 expiring cached page(s).")
+            expect(page.locator("#kbStatusBadge")).to_contain_text("Re-indexing now")
+            assert len(prompts) == (1 if saved_token else 2)
+            assert page.evaluate("(key) => sessionStorage.getItem(key)", token_key) == server.token
+            assert server.requested == [server.due]
+
+            server.release.set()
+            expect(page.locator("#reindexMsg")).to_have_text(
+                "Re-index finished successfully.", timeout=15000,
+            )
+            expect(page.locator("#kbStatusBadge")).to_contain_text("Success")
+            expect(page.locator("#cacheExpiring")).to_have_text("0")
+            expect(button).to_be_disabled()
+            expect(page.locator("#reindexBtn")).to_be_enabled()
+            expect(page.locator("#historyTbody tr").first).to_contain_text("SUCCESS")
+            expect(page.locator("#historyTbody tr").first).to_contain_text("manual-expiring-crawl")
+            assert server.requested == [server.due]
+            indexed = server.store.add_documents.call_args.args[0]
+            assert {chunk["metadata"]["url"] for chunk in indexed} == {server.due, server.fresh}
+            assert crawler.CrawlCache().expiry_summary()["expiring_entries"] == 0
+            assert navigations == []  # Both attempts completed in the original dashboard document.
+        finally:
+            browser.close()
