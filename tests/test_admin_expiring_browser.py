@@ -313,6 +313,128 @@ def test_dashboard_targeted_crawl_cancels_initial_prompt_then_retries(targeted_s
 
 
 @pytest.mark.browser
+@pytest.mark.parametrize(
+    "button_id, endpoint, history_source",
+    [
+        ("expiringBtn", "/admin/crawl/expiring", "manual-expiring-crawl"),
+        ("reindexBtn", "/admin/crawl", "manual-crawl"),
+    ],
+    ids=["expiring-refresh", "full-reindex"],
+)
+@pytest.mark.parametrize("blank_token", ["", "   "], ids=["empty", "whitespace"])
+def test_dashboard_crawl_ignores_blank_token_then_retries(
+    targeted_server, button_id, endpoint, history_source, blank_token,
+):
+    server = targeted_server
+    token_key = "maya_admin_crawl_token"
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            headless=True, executable_path=shutil.which("chromium"),
+        )
+        try:
+            page = browser.new_page()
+            page.goto(server.url + "/admin")
+            page.get_by_label("Admin password").fill(server.token)
+            page.get_by_role("button", name="Sign in").click()
+            page.wait_for_url(server.url + "/admin")
+            expect(page.locator("#cacheExpiring")).to_have_text("1")
+            button = page.locator("#" + button_id)
+            crawl_posts, status_requests, prompts = [], [], []
+
+            def record_request(request):
+                if request.method == "POST" and request.url in (
+                    server.url + "/admin/crawl", server.url + "/admin/crawl/expiring",
+                    server.url + "/admin/reindex",
+                ):
+                    crawl_posts.append(request)
+                if request.url == server.url + "/admin/crawl/status":
+                    status_requests.append(request)
+
+            def handle_prompt(dialog):
+                assert dialog.type == "prompt"
+                prompts.append(dialog.message)
+                # Accept a blank value; do not dismiss the native prompt.
+                dialog.accept(blank_token if len(prompts) == 1 else "  " + server.token + "  ")
+
+            page.on("request", record_request)
+            page.on("dialog", handle_prompt)
+            page.evaluate("_pollInterval = 500")
+            initial_message = page.locator("#reindexMsg").inner_text()
+            button.click()
+            # Observe multiple polling intervals to catch unintended timers.
+            page.wait_for_timeout(1100)
+
+            assert len(prompts) == 1
+            assert "ADMIN_CRAWL_TOKEN" in prompts[0]
+            assert crawl_posts == []
+            assert status_requests == []
+            assert server.requested == []
+            assert main._crawl_task is None
+            assert main._crawl_status == {
+                "running": False, "last_run": None, "last_result": None, "alert": None,
+            }
+            server.store.reset_collection.assert_not_called()
+            server.store.add_documents.assert_not_called()
+            assert page.evaluate("(key) => sessionStorage.getItem(key)", token_key) is None
+            assert page.evaluate("_crawlToken") == ""
+            assert page.evaluate("_pollTimer") is None
+            expect(page.locator("#expiringBtn")).to_be_enabled()
+            expect(page.locator("#reindexBtn")).to_be_enabled()
+            expect(page.locator("#reindexMsg")).to_have_text(initial_message)
+            expect(page.locator("#historyTbody")).to_contain_text("No re-index history yet.")
+            assert crawler.CrawlCache().expiry_summary()["expiring_entries"] == 1
+
+            with page.expect_response(
+                lambda r: r.url.endswith("/admin/crawl/status") and r.status == 200
+            ) as initial_status, page.expect_response(
+                lambda r: r.url == server.url + endpoint and r.request.method == "POST"
+            ) as started:
+                button.click()
+            assert started.value.status == 200
+            assert started.value.json()["status"] == "started"
+            assert initial_status.value.json()["running"] is True
+            assert len(prompts) == 2
+            assert prompts[1] == prompts[0]
+            assert [request.url for request in crawl_posts] == [server.url + endpoint]
+            assert crawl_posts[0].headers["authorization"] == "Bearer " + server.token
+            assert server.requested == [server.due]
+            expect(page.locator("#expiringBtn")).to_be_disabled()
+            expect(page.locator("#reindexBtn")).to_be_disabled()
+            assert page.evaluate("(key) => sessionStorage.getItem(key)", token_key) == server.token
+            assert page.evaluate("_crawlToken") == server.token
+
+            server.release.set()
+            expect(page.locator("#reindexMsg")).to_have_text(
+                "Re-index finished successfully.", timeout=15000,
+            )
+            expect(page.locator("#kbStatusBadge")).to_contain_text("Success")
+            expect(page.locator("#cacheExpiring")).to_have_text("0")
+            expect(page.locator("#reindexBtn")).to_be_enabled()
+            expect(page.locator("#historyTbody tr")).to_have_count(1)
+            expect(page.locator("#historyTbody tr").first).to_contain_text("SUCCESS")
+            expect(page.locator("#historyTbody tr").first).to_contain_text(history_source)
+            assert main._crawl_status["last_result"]["success"] is True
+            server.store.reset_collection.assert_called_once()
+            server.store.add_documents.assert_called_once()
+            indexed = server.store.add_documents.call_args.args[0]
+            assert {chunk["metadata"]["url"] for chunk in indexed} == {server.due, server.fresh}
+            expected_urls = [server.due] if button_id == "expiringBtn" else [server.due, server.fresh]
+            assert server.requested == expected_urls
+            assert page.evaluate("_pollTimer") is None
+            completed_requests = list(status_requests)
+            assert completed_requests
+            assert {request.headers["authorization"] for request in completed_requests} == {
+                "Bearer " + server.token,
+            }
+            page.wait_for_timeout(1100)
+            assert status_requests == completed_requests
+            assert len(crawl_posts) == 1
+            assert len(prompts) == 2
+        finally:
+            browser.close()
+
+
+@pytest.mark.browser
 def test_dashboard_targeted_crawl_resumes_polling_after_token_rotation(targeted_server, monkeypatch):
     server = targeted_server
     replacement_token = "rotated-browser-admin"

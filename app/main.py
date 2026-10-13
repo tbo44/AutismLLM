@@ -1461,8 +1461,8 @@ function triggerReindex() {{
   var msg = document.getElementById('reindexMsg');
   var saved = _getSavedToken();
   var token = saved || window.prompt('Enter the crawl admin token (ADMIN_CRAWL_TOKEN) to start a full re-index:');
+  token = (token || '').trim();
   if (!token) {{ return; }}
-  token = token.trim();
   btn.disabled = true;
   msg.style.color = '#444';
   msg.textContent = 'Starting re-index\u2026';
@@ -1503,8 +1503,8 @@ function triggerExpiringCrawl() {{
   var token = saved || window.prompt(
     'Enter the crawl admin token (ADMIN_CRAWL_TOKEN) to re-crawl expiring pages:'
   );
+  token = (token || '').trim();
   if (!token) {{ return; }}
-  token = token.trim();
   btn.disabled = true;
   msg.style.color = '#444';
   msg.textContent = 'Starting targeted crawl\u2026';
