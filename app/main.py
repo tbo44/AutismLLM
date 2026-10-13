@@ -1551,8 +1551,8 @@ function triggerTestAlert() {{
   var msg = document.getElementById('testAlertMsg');
   var saved = _getSavedToken();
   var token = saved || window.prompt('Enter the crawl admin token (ADMIN_CRAWL_TOKEN) to send a test email:');
+  token = (token || '').trim();
   if (!token) {{ return; }}
-  token = token.trim();
   btn.disabled = true;
   msg.style.color = '#444';
   msg.textContent = 'Sending test email\u2026';

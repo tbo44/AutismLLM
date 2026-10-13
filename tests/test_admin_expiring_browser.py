@@ -114,6 +114,100 @@ def targeted_server(tmp_path, monkeypatch):
 
 
 @pytest.mark.browser
+@pytest.mark.parametrize(
+    "prompt_input", [None, "", "   ", "\t  \t"],
+    ids=["dismissed", "empty", "spaces", "tabs-and-spaces"],
+)
+def test_dashboard_test_alert_ignores_blank_token_then_retries(
+    targeted_server, monkeypatch, prompt_input,
+):
+    server = targeted_server
+    delivery = Mock(return_value={
+        "sent": True, "configured": True,
+        "recipient": "isolated@example.test", "error": None,
+    })
+    # Exercise the real authenticated endpoint, but never an email transport.
+    monkeypatch.setattr(main.notifications, "send_test_alert", delivery)
+    token_key = "maya_admin_crawl_token"
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            headless=True, executable_path=shutil.which("chromium"),
+        )
+        try:
+            page = browser.new_page()
+            page.goto(server.url + "/admin")
+            page.get_by_label("Admin password").fill(server.token)
+            page.get_by_role("button", name="Sign in").click()
+            page.wait_for_url(server.url + "/admin")
+            button = page.get_by_role("button", name="Send test email")
+            message = page.locator("#testAlertMsg")
+            expect(button).to_be_enabled()
+            initial_message = message.text_content()
+            # Record attempted fetches synchronously, so a wrongly issued POST
+            # cannot slip past the assertions while its response is in flight.
+            page.evaluate("""() => {
+                window.alertPosts = [];
+                const originalFetch = window.fetch;
+                window.fetch = function(url, options) {
+                    if (url === '/admin/alerts/test' && options.method === 'POST') {
+                        window.alertPosts.push({
+                            url: url, authorization: options.headers.Authorization
+                        });
+                    }
+                    return originalFetch.apply(this, arguments);
+                };
+            }""")
+            requests = []
+            page.on("request", lambda request: requests.append(request)
+                    if request.url.endswith("/admin/alerts/test")
+                    and request.method == "POST" else None)
+            prompts = []
+            tokens = iter([prompt_input, "  " + server.token + "  "])
+
+            def enter_token(dialog):
+                assert dialog.type == "prompt"
+                prompts.append(dialog.message)
+                token = next(tokens)
+                if token is None:
+                    dialog.dismiss()
+                else:
+                    dialog.accept(token)
+
+            page.on("dialog", enter_token)
+            button.click()
+            assert len(prompts) == 1
+            assert page.evaluate("window.alertPosts") == []
+            assert requests == []
+            delivery.assert_not_called()
+            assert page.evaluate("(key) => sessionStorage.getItem(key)", token_key) is None
+            assert page.evaluate("(key) => localStorage.getItem(key)", token_key) is None
+            assert page.evaluate("_crawlToken") == ""
+            expect(button).to_be_enabled()
+            expect(message).to_have_text(initial_message)
+
+            with page.expect_response(
+                lambda r: r.url.endswith("/admin/alerts/test") and r.request.method == "POST"
+            ) as sent:
+                button.click()
+            assert sent.value.status == 200
+            assert sent.value.json()["sent"] is True
+            expect(message).to_have_text("Email sent to isolated@example.test.")
+            expect(button).to_be_enabled()
+            assert len(prompts) == 2
+            assert page.evaluate("window.alertPosts") == [{
+                "url": "/admin/alerts/test", "authorization": "Bearer " + server.token,
+            }]
+            assert len(requests) == 1
+            assert requests[0].headers["authorization"] == "Bearer " + server.token
+            delivery.assert_called_once_with()
+            assert page.evaluate("(key) => sessionStorage.getItem(key)", token_key) is None
+            assert page.evaluate("(key) => localStorage.getItem(key)", token_key) is None
+            assert page.evaluate("_crawlToken") == ""
+        finally:
+            browser.close()
+
+
+@pytest.mark.browser
 @pytest.mark.parametrize("failed", [False, True], ids=["success", "failed-page-refresh"])
 def test_dashboard_targeted_crawl_through_completion(targeted_server, failed):
     server = targeted_server
