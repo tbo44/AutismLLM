@@ -502,7 +502,7 @@ class TestCrawlUrlCachingPaths:
             "etag": etag,
             "last_modified": None,
             "content_hash": content_hash,
-            "cached_at": "2026-08-15T00:00:00+01:00",
+            "cached_at": datetime.now(timezone.utc).isoformat(),
             "chunks": chunks,
         }
 
