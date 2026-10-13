@@ -48,7 +48,9 @@ class TestAlertAttemptStore:
                 "SELECT 1 FROM test_alert_attempts WHERE key = ?", (key,),
             ).fetchone():
                 return False
-            count = connection.execute("SELECT COUNT(*) FROM test_alert_attempts").fetchone()[0]
+            count = connection.execute(
+                "SELECT COUNT(*) FROM test_alert_attempts WHERE state != 'archived'"
+            ).fetchone()[0]
             if count >= self.limit:
                 raise AttemptCapacityError
             connection.execute(
@@ -82,3 +84,39 @@ class TestAlertAttemptStore:
                 "UPDATE test_alert_attempts SET state = 'uncertain' WHERE key = ? AND state = 'pending'",
                 (key,),
             )
+
+    def review(self):
+        """Read unresolved claims without expiring or reclaiming anything."""
+        with closing(self._connect()) as connection, connection:
+            rows = connection.execute(
+                "SELECT key, state FROM test_alert_attempts WHERE state IN ('pending', 'uncertain') ORDER BY key"
+            ).fetchall()
+            active, archived = connection.execute(
+                """SELECT COUNT(CASE WHEN state != 'archived' THEN 1 END),
+                          COUNT(CASE WHEN state = 'archived' THEN 1 END)
+                   FROM test_alert_attempts"""
+            ).fetchone()
+        return {
+            "attempts": [{"key": key, "state": state} for key, state in rows],
+            "retained": active, "archived": archived, "limit": self.limit,
+        }
+
+    def resolve(self, key: str, resolution: str):
+        """Archive after manual review; preserve the key forever, without delivery."""
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT state, result FROM test_alert_attempts WHERE key = ?", (key,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(key)
+            if row[0] == "archived":
+                return json.loads(row[1])
+            if row[0] not in ("pending", "uncertain"):
+                raise ValueError("Only unresolved attempts can be archived.")
+            result = {"resolution": resolution, "resolved_at": time.time(), "inbox_checked": True}
+            connection.execute(
+                "UPDATE test_alert_attempts SET state = 'archived', result = ? WHERE key = ?",
+                (json.dumps(result), key),
+            )
+            return result

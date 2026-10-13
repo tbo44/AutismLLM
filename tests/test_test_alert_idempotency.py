@@ -53,6 +53,187 @@ def test_replay_result_and_allow_new_attempt(alert_attempts, sent):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("authorization, status", [(None, 401), ("Bearer wrong", 403)])
+def test_review_and_resolution_require_admin(alert_attempts, authorization, status):
+    store = main._test_alert_store
+    store.claim("protected-attempt")
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+        ) as client:
+            auth = {"Authorization": authorization} if authorization else {}
+            review = await client.get("/admin/alerts/test/attempts", headers=auth)
+            resolve = await client.post(
+                "/admin/alerts/test/attempts/protected-attempt/resolve",
+                headers=auth, json={"inbox_checked": True, "resolution": "delivered"},
+            )
+            assert review.status_code == resolve.status_code == status
+            assert store.read("protected-attempt") == ("pending", None)
+            alert_attempts.assert_not_called()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("state", ["pending", "uncertain"])
+@pytest.mark.parametrize("resolution", ["delivered", "not_found", "unknown"])
+def test_archive_frees_capacity_without_unprotecting_original_key(
+    alert_attempts, monkeypatch, state, resolution,
+):
+    store = main._test_alert_store
+    store.limit = 1
+    store.ttl = -1  # Elapsed retention must not evict unresolved or archived claims.
+    store.claim("protected-attempt")
+    if state == "uncertain":
+        store.mark_uncertain("protected-attempt")
+    monkeypatch.setattr(main, "_TEST_ALERT_RETRY_WAIT", 0)
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+        ) as client:
+            review = await client.get("/admin/alerts/test/attempts", headers=headers())
+            assert review.json() == {
+                "attempts": [{"key": "protected-attempt", "state": state}],
+                "retained": 1, "archived": 0, "limit": 1,
+            }
+            assert (await client.post("/admin/alerts/test", headers=headers("new-attempt-key"))).status_code == 503
+            url = "/admin/alerts/test/attempts/protected-attempt/resolve"
+            payload = {"inbox_checked": True, "resolution": resolution}
+            resolved = await client.post(url, headers=headers(), json=payload)
+            assert resolved.status_code == 200
+            assert resolved.json()["resolution"] == resolution
+            # Repeated manual requests replay the original resolution, not overwrite it.
+            repeated = await client.post(url, headers=headers(), json={
+                "inbox_checked": True, "resolution": "unknown",
+            })
+            assert repeated.json() == resolved.json()
+            alert_attempts.assert_not_called()
+            assert (await client.get("/admin/alerts/test/attempts", headers=headers())).json() == {
+                "attempts": [], "retained": 0, "archived": 1, "limit": 1,
+            }
+            # Fresh store object represents restart; archive survives TTL and pruning.
+            monkeypatch.setattr(main, "_test_alert_store", TestAlertAttemptStore(store.path, ttl=-1, limit=1))
+            for _ in range(2):
+                replay = await client.post("/admin/alerts/test", headers=headers("protected-attempt"))
+                assert replay.status_code == 409
+                assert "permanently" in replay.json()["detail"] or "protected" in replay.json()["detail"]
+            alert_attempts.assert_not_called()
+            new = await client.post("/admin/alerts/test", headers=headers("new-attempt-key"))
+            assert new.status_code == 200
+            alert_attempts.assert_called_once_with()
+            assert not main._test_alert_store.claim("protected-attempt")
+            assert main._test_alert_store.read("protected-attempt")[0] == "archived"
+
+    asyncio.run(scenario())
+
+
+def test_resolution_validation_and_storage_fail_closed(alert_attempts, monkeypatch):
+    store = main._test_alert_store
+    store.claim("protected-attempt")
+    store.claim("completed-attempt")
+    store.finish("completed-attempt", alert_attempts.return_value)
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+        ) as client:
+            url = "/admin/alerts/test/attempts/protected-attempt/resolve"
+            for payload, status in [
+                ({"inbox_checked": False, "resolution": "delivered"}, 400),
+                ({"inbox_checked": "yes", "resolution": "delivered"}, 422),
+                ({"resolution": "delivered"}, 422),
+                ({"inbox_checked": True, "resolution": "delete"}, 422),
+            ]:
+                response = await client.post(url, headers=headers(), json=payload)
+                assert response.status_code == status
+                assert store.read("protected-attempt") == ("pending", None)
+            payload = {"inbox_checked": True, "resolution": "unknown"}
+            for key, status in [("missing-attempt", 404), ("completed-attempt", 409)]:
+                response = await client.post(
+                    f"/admin/alerts/test/attempts/{key}/resolve", headers=headers(), json=payload,
+                )
+                assert response.status_code == status
+            monkeypatch.setattr(store, "_connect", Mock(side_effect=OSError("Mock storage failure")))
+            assert (await client.get("/admin/alerts/test/attempts", headers=headers())).status_code == 503
+            assert (await client.post(url, headers=headers(), json=payload)).status_code == 503
+            monkeypatch.delenv("ADMIN_CRAWL_TOKEN")
+            assert (await client.get("/admin/alerts/test/attempts", headers=headers())).status_code == 503
+            assert (await client.post(url, headers=headers(), json=payload)).status_code == 503
+            alert_attempts.assert_not_called()
+
+    asyncio.run(scenario())
+
+
+def test_archive_at_default_capacity_keeps_all_claims(alert_attempts, monkeypatch):
+    store = main._test_alert_store
+    assert store.limit == 1024
+    store.claim("protected-attempt")
+    with sqlite3.connect(store.path) as connection:
+        connection.executemany(
+            "INSERT INTO test_alert_attempts (key, state) VALUES (?, 'uncertain')",
+            [(f"capacity-{i:04d}",) for i in range(1023)],
+        )
+    monkeypatch.setattr(main, "_TEST_ALERT_RETRY_WAIT", 0)
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+        ) as client:
+            assert (await client.post("/admin/alerts/test", headers=headers())).status_code == 503
+            response = await client.post(
+                "/admin/alerts/test/attempts/protected-attempt/resolve", headers=headers(),
+                json={"inbox_checked": True, "resolution": "unknown"},
+            )
+            assert response.status_code == 200
+            alert_attempts.assert_not_called()
+            assert (await client.post("/admin/alerts/test", headers=headers())).status_code == 200
+            # Full active capacity must still replay an archived key safely.
+            assert (await client.post("/admin/alerts/test", headers=headers("protected-attempt"))).status_code == 409
+            assert store.review()["retained"] == 1024
+            assert store.review()["archived"] == 1
+            with sqlite3.connect(store.path) as connection:
+                assert connection.execute("SELECT COUNT(*) FROM test_alert_attempts").fetchone()[0] == 1025
+            alert_attempts.assert_called_once_with()
+
+    asyncio.run(scenario())
+
+
+def test_resolving_during_delivery_preserves_archive(alert_attempts, monkeypatch):
+    release = threading.Event()
+    started = threading.Event()
+
+    def delivery():
+        started.set()
+        assert release.wait(5)
+        return {"sent": True, "configured": True, "error": None}
+
+    alert_attempts.side_effect = delivery
+    monkeypatch.setattr(main, "_TEST_ALERT_RETRY_WAIT", 0)
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+        ) as client:
+            send = asyncio.create_task(client.post("/admin/alerts/test", headers=headers()))
+            try:
+                assert await asyncio.to_thread(started.wait, 5)
+                resolved = await client.post(
+                    "/admin/alerts/test/attempts/isolated-attempt-1/resolve", headers=headers(),
+                    json={"inbox_checked": True, "resolution": "not_found"},
+                )
+                assert resolved.status_code == 200
+                release.set()
+                assert (await send).status_code == 409
+                assert main._test_alert_store.read("isolated-attempt-1")[0] == "archived"
+                assert (await client.post("/admin/alerts/test", headers=headers())).status_code == 409
+                alert_attempts.assert_called_once_with()
+            finally:
+                release.set()
+
+    asyncio.run(scenario())
+
+
 def test_concurrent_retry_survives_cancelled_request(alert_attempts):
     release = threading.Event()
     started = threading.Event()

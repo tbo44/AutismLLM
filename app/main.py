@@ -2,7 +2,8 @@ from fastapi import FastAPI, HTTPException, Header, Query as QueryParam, Cookie,
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
+from typing import Literal
 from enum import Enum
 import pytz
 from datetime import datetime, timezone, timedelta
@@ -854,6 +855,9 @@ def _fmt_uk_time(iso_str: str | None) -> str:
 
 def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
     """Build and return the admin dashboard as a self-contained HTML string."""
+    test_attempt_script = (
+        Path(__file__).resolve().parent.parent / "static" / "admin-test-attempts.js"
+    ).read_text(encoding="utf-8")
 
     def _esc(s: str) -> str:
         return (
@@ -1121,6 +1125,7 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
         <span id="emailAlertStatus">{email_status_html}</span>
         <div style="margin-top:0.55rem;">
           <button id="testAlertBtn" class="test-alert-btn" onclick="triggerTestAlert()">Send test email</button>
+          <button id="newTestAlertBtn" class="test-alert-btn" onclick="triggerTestAlert(true)">Start a new attempt</button>
           <span id="testAlertMsg" class="test-alert-msg"></span>
         </div>
       </div>
@@ -1131,6 +1136,20 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
     </div>
   </div>
   <p id="kbDetails" style="font-size:0.85rem;color:#555;margin:0 0 1rem;">{f'Details: {last_detail}' if last_detail else ''}</p>
+  <details class="cache-details">
+    <summary>Review unresolved test emails</summary>
+    <p>Pending or uncertain attempts may already have delivered email, or may still be
+       sending. Check the recipient's inbox before resolving one. Archiving frees
+       capacity but permanently protects the original key. It does not cancel or send email.</p>
+    <button class="test-alert-btn" onclick="loadTestAlertAttempts()">Refresh attempts</button>
+    <p id="testAttemptReviewMsg" role="status"></p>
+    <div class="cache-page-list">
+      <table aria-label="Unresolved test email attempts">
+        <thead><tr><th>Attempt key</th><th>Status</th><th>Inbox review</th><th>Action</th></tr></thead>
+        <tbody id="testAttemptRows"></tbody>
+      </table>
+    </div>
+  </details>
   <details class="cache-details" id="cacheExpiryDetails">
     <summary>Review expiring pages (<span id="cacheDetailCount">{cache_expiring}</span>)</summary>
     <p>Includes pages already expired. Expected expiry is based on the cache age limit.
@@ -1549,7 +1568,7 @@ function triggerExpiringCrawl() {{
 
 /* ── Test alert email button ──────────────────────────────────────────────── */
 var _testAlertKey = '';
-function triggerTestAlert() {{
+function triggerTestAlert(newAttempt) {{
   var btn = document.getElementById('testAlertBtn');
   var msg = document.getElementById('testAlertMsg');
   if (btn.disabled) {{ return; }}
@@ -1557,6 +1576,10 @@ function triggerTestAlert() {{
   var token = saved || window.prompt('Enter the crawl admin token (ADMIN_CRAWL_TOKEN) to send a test email:');
   token = (token || '').trim();
   if (!token) {{ return; }}
+  if (newAttempt || !_testAlertKey) {{
+    if (!window.confirm("Start a new test-email attempt? A previous attempt may already have delivered email or may still be sending. This can cause duplicate delivery. Check the recipient's inbox first. Continue only if you deliberately want another email.")) {{ return; }}
+    _testAlertKey = '';
+  }}
   if (!_testAlertKey) {{
     var bytes = new Uint8Array(16);
     window.crypto.getRandomValues(bytes);
@@ -1565,6 +1588,7 @@ function triggerTestAlert() {{
   btn.disabled = true;
   msg.style.color = '#444';
   msg.textContent = 'Sending test email\u2026';
+  document.getElementById('newTestAlertBtn').disabled = true;
   fetch('/admin/alerts/test', {{
     method: 'POST',
     headers: {{ 'Authorization': 'Bearer ' + token, 'Idempotency-Key': _testAlertKey }}
@@ -1573,6 +1597,7 @@ function triggerTestAlert() {{
   .then(function (res) {{
     btn.disabled = false;
     if (res.ok || res.status === 401 || res.status === 403) {{ _testAlertKey = ''; }}
+    document.getElementById('newTestAlertBtn').disabled = false;
     if (res.ok && res.body && res.body.sent) {{
       msg.style.color = '#1b7a3d';
       msg.textContent = 'Email sent to ' + (res.body.recipient || 'the configured recipient') + '.';
@@ -1591,6 +1616,7 @@ function triggerTestAlert() {{
     btn.disabled = false;
     msg.style.color = '#b00020';
     msg.textContent = 'Could not confirm whether the test email was sent. Check your connection, then click Send test email again.';
+    document.getElementById('newTestAlertBtn').disabled = false;
   }});
 }}
 
@@ -1745,6 +1771,7 @@ document.addEventListener('DOMContentLoaded', function() {{
     .catch(function(err) {{ _showAcronymMsg('Error: ' + err, '#b00020'); }});
   }});
 }});
+{test_attempt_script}
 </script>
 </body>
 </html>"""
@@ -2390,6 +2417,41 @@ def _test_alert_task_done(task: asyncio.Task):
         task.exception()  # Retrieve failures even when the requester disconnected.
 
 
+class TestAlertResolution(BaseModel):
+    inbox_checked: StrictBool
+    resolution: Literal["delivered", "not_found", "unknown"]
+
+
+@app.get("/admin/alerts/test/attempts")
+async def admin_test_alert_attempts(authorization: str | None = Header(default=None)):
+    _verify_admin_token(authorization)
+    try:
+        return await asyncio.to_thread(_test_alert_store.review)
+    except Exception:
+        logger.exception("Could not review test email attempts.")
+        raise HTTPException(status_code=503, detail="Test email attempt storage unavailable.")
+
+
+@app.post("/admin/alerts/test/attempts/{key}/resolve")
+async def admin_resolve_test_alert(
+    key: str, payload: TestAlertResolution,
+    authorization: str | None = Header(default=None),
+):
+    _verify_admin_token(authorization)
+    if not payload.inbox_checked:
+        raise HTTPException(status_code=400, detail="Check the recipient's inbox before archiving.")
+    try:
+        result = await asyncio.to_thread(_test_alert_store.resolve, key, payload.resolution)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Test email attempt not found.")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception:
+        logger.exception("Could not archive test email attempt.")
+        raise HTTPException(status_code=503, detail="Test email attempt storage unavailable. Resolution not confirmed.")
+    return {"key": key, "state": "archived", **result}
+
+
 @app.post("/admin/alerts/test")
 async def admin_test_alert(
     authorization: str | None = Header(default=None),
@@ -2432,7 +2494,7 @@ async def admin_test_alert(
     try:
         claimed = await asyncio.to_thread(store.claim, idempotency_key)
     except AttemptCapacityError:
-        raise HTTPException(status_code=503, detail="Test email retry capacity reached. Try again later.")
+        raise HTTPException(status_code=503, detail="Test email retry capacity reached. Review unresolved attempts and archive only after checking the inbox.")
     except Exception:
         logger.exception("Test email attempt storage unavailable.")
         raise HTTPException(status_code=503, detail="Test email retry storage unavailable. No email was sent.")
@@ -2451,6 +2513,8 @@ async def admin_test_alert(
             raise HTTPException(status_code=503, detail="Could not confirm test email delivery. Retry storage unavailable.")
         if state == "completed":
             return result
+        if state == "archived":
+            raise HTTPException(status_code=409, detail="This attempt was manually archived. Its original key remains protected and will not be resent. A new attempt may cause duplicate delivery; check the inbox first.")
         if state == "uncertain" or time.monotonic() >= deadline:
             raise HTTPException(status_code=409, detail=_TEST_ALERT_UNCERTAIN)
         await asyncio.sleep(0.02)
