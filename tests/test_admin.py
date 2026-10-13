@@ -121,6 +121,21 @@ def test_admin_rendered_javascript_is_valid(admin_token, tmp_path):
         assert result.returncode == 0, result.stderr
 
 
+def test_test_email_pending_key_survives_reload(admin_token):
+    """Exercise real rendered controls with mocked HTTP, never real delivery."""
+    resp = client.get("/admin", headers={"X-Admin-Token": VALID_TOKEN})
+    assert resp.status_code == 200
+    scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", resp.text, re.DOTALL)
+    logout = re.search(r'<a href="/admin/logout" onclick="([^"]+)"', resp.text)
+    assert scripts and logout
+    result = subprocess.run(
+        ["node", str(Path(__file__).with_name("admin_test_alert_retry_runner.cjs"))],
+        input=json.dumps({"script": "\n".join(scripts), "logout": logout.group(1)}),
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 # ── live re-index status history ──────────────────────────────────────
 
 

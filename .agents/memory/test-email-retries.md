@@ -15,6 +15,16 @@ delivery is unconfirmed, and require a deliberate new attempt after checking the
 inbox. File-backed coordination only covers workers using the same persistent
 filesystem; isolated replicas require a shared backend, not independent copies.
 
+An authentication rejection on a retry is not evidence that the original
+delivery completed. Preserve the pending attempt while asking for a new token.
+
+**Why:** The original send may have reached the mail provider before the
+connection was lost; rotating a token does not resolve that uncertainty.
+
+**How to apply:** Treat credential cleanup separately from attempt cleanup.
+Confirmed results, deliberate new-attempt confirmation, and sign-out are the
+boundaries for discarding a pending browser attempt.
+
 Manual inbox review may remove an attempt from active capacity, but it must not
 make the original key reusable. A staff resolution is not proof that delivery
 stopped: an in-flight send can finish after the review.

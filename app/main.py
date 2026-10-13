@@ -1073,7 +1073,7 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
 </head>
 <body>
 <h1>Maya Admin Dashboard</h1>
-<p class="meta">Generated: {generated_at} &nbsp;·&nbsp; Data is anonymised — no personal information is stored. &nbsp;·&nbsp; <a href="/admin/logout" onclick="try{{sessionStorage.removeItem('maya_admin_crawl_token');}}catch(e){{}}">Sign out</a></p>
+<p class="meta">Generated: {generated_at} &nbsp;·&nbsp; Data is anonymised — no personal information is stored. &nbsp;·&nbsp; <a href="/admin/logout" onclick="clearAdminSession()">Sign out</a></p>
 
 <div class="cards">
   <div class="card">
@@ -1570,7 +1570,22 @@ function triggerExpiringCrawl() {{
 }}
 
 /* ── Test alert email button ──────────────────────────────────────────────── */
+var _TEST_ALERT_KEY = 'maya_admin_pending_test_alert';
 var _testAlertKey = '';
+try {{ _testAlertKey = sessionStorage.getItem(_TEST_ALERT_KEY) || ''; }} catch (e) {{ }}
+if (_testAlertKey) {{
+  document.getElementById('testAlertMsg').textContent =
+    'A test-email attempt is still unconfirmed. Click Send test email to retry the same attempt, or check the inbox before starting a new attempt.';
+}}
+function clearTestAlertKey() {{
+  _testAlertKey = '';
+  try {{ sessionStorage.removeItem(_TEST_ALERT_KEY); }} catch (e) {{ }}
+}}
+function clearAdminSession() {{
+  clearTestAlertKey();
+  _crawlToken = '';
+  try {{ sessionStorage.removeItem(_TOKEN_KEY); }} catch (e) {{ }}
+}}
 function triggerTestAlert(newAttempt) {{
   var btn = document.getElementById('testAlertBtn');
   var msg = document.getElementById('testAlertMsg');
@@ -1581,12 +1596,19 @@ function triggerTestAlert(newAttempt) {{
   if (!token) {{ return; }}
   if (newAttempt || !_testAlertKey) {{
     if (!window.confirm("Start a new test-email attempt? A previous attempt may already have delivered email or may still be sending. This can cause duplicate delivery. Check the recipient's inbox first. Continue only if you deliberately want another email.")) {{ return; }}
-    _testAlertKey = '';
+    clearTestAlertKey();
   }}
   if (!_testAlertKey) {{
     var bytes = new Uint8Array(16);
     window.crypto.getRandomValues(bytes);
     _testAlertKey = Array.from(bytes, function (b) {{ return b.toString(16).padStart(2, '0'); }}).join('');
+  }}
+  /* Save before sending: a reload or lost response must reuse this attempt. */
+  try {{ sessionStorage.setItem(_TEST_ALERT_KEY, _testAlertKey); }}
+  catch (e) {{
+    msg.style.color = '#b00020';
+    msg.textContent = 'No email was sent. Browser session storage is unavailable, so the retry key cannot be preserved across reloads.';
+    return;
   }}
   btn.disabled = true;
   msg.style.color = '#444';
@@ -1599,7 +1621,7 @@ function triggerTestAlert(newAttempt) {{
   .then(function (r) {{ return r.json().then(function (d) {{ return {{ ok: r.ok, status: r.status, body: d }}; }}); }})
   .then(function (res) {{
     btn.disabled = false;
-    if (res.ok || res.status === 401 || res.status === 403) {{ _testAlertKey = ''; }}
+    if (res.ok && res.body && typeof res.body.sent === 'boolean') {{ clearTestAlertKey(); }}
     document.getElementById('newTestAlertBtn').disabled = false;
     if (res.ok && res.body && res.body.sent) {{
       msg.style.color = '#1b7a3d';
