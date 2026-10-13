@@ -1,10 +1,16 @@
 ---
 name: Test-email retry scope
-description: Why test-email retry protection is scoped to a running server and ambiguous browser responses.
+description: Durable retry protection must preserve ambiguous delivery claims without automatically resending.
 ---
 
-Test-email retry protection is intentionally lightweight and process-local rather than introducing a new persistent delivery store.
+Persist ownership before external delivery and never automatically reclaim an
+unresolved attempt, even after its normal result-retention window expires.
 
-**Why:** The requested failure is a browser response lost after delivery, and the current service runs in one server process. Durable recovery and coordination across multiple workers are separate work, not an exactly-once guarantee that ordinary SMTP can provide.
+**Why:** A crash can occur after SMTP accepted the email but before success was
+recorded. Restart recovery cannot safely infer that a missing result means the
+email was not sent. Ordinary SMTP cannot provide an exactly-once guarantee.
 
-**How to apply:** Preserve the same attempt when browser delivery confirmation is ambiguous. If adding restarts or multiple workers to the guarantee, use shared durable attempt tracking and explicitly handle uncertain sends rather than assuming it is safe to resend.
+**How to apply:** Preserve the browser's key on uncertain responses, show that
+delivery is unconfirmed, and require a deliberate new attempt after checking the
+inbox. File-backed coordination only covers workers using the same persistent
+filesystem; isolated replicas require a shared backend, not independent copies.

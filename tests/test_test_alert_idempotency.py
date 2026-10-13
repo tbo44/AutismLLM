@@ -1,18 +1,24 @@
 """Retry protection tests; delivery is always mocked, never real email."""
 import asyncio
+import multiprocessing
+import os
+import sqlite3
 import threading
+import time
+from pathlib import Path
 from unittest.mock import Mock
 
 import httpx
 import pytest
 
 from app import main
+from app.test_alert_attempts import TestAlertAttemptStore
 
 
 @pytest.fixture
-def alert_attempts(monkeypatch):
+def alert_attempts(monkeypatch, tmp_path):
     monkeypatch.setenv("ADMIN_CRAWL_TOKEN", "isolated-alert-token")
-    monkeypatch.setattr(main, "_test_alert_requests", {})
+    monkeypatch.setattr(main, "_test_alert_store", TestAlertAttemptStore(tmp_path / "attempts.sqlite3"))
     delivery = Mock(return_value={"sent": True, "configured": True, "error": None})
     monkeypatch.setattr(main.notifications, "send_test_alert", delivery)
     return delivery
@@ -83,7 +89,7 @@ def test_concurrent_retry_survives_cancelled_request(alert_attempts):
 
 
 def test_invalid_keys_capacity_and_expiry(alert_attempts, monkeypatch):
-    monkeypatch.setattr(main, "_TEST_ALERT_LIMIT", 1)
+    main._test_alert_store.limit = 1
 
     async def scenario():
         async with httpx.AsyncClient(
@@ -102,13 +108,190 @@ def test_invalid_keys_capacity_and_expiry(alert_attempts, monkeypatch):
             response = await client.post("/admin/alerts/test", headers=headers())
             assert response.status_code == 200
             alert_attempts.assert_called_once_with()
-            key = "isolated-attempt-1"
-            created, task = main._test_alert_requests[key]
-            main._test_alert_requests[key] = (created - main._TEST_ALERT_TTL, task)
+            with sqlite3.connect(main._test_alert_store.path) as connection:
+                connection.execute(
+                    "UPDATE test_alert_attempts SET completed_at = completed_at - ?",
+                    (main._test_alert_store.ttl,),
+                )
             response = await client.post(
                 "/admin/alerts/test", headers=headers("isolated-attempt-2"),
             )
             assert response.status_code == 200
+            assert alert_attempts.call_count == 2
+
+    asyncio.run(scenario())
+
+
+def _worker(path, mode, output, start=None):
+    """Fresh interpreter/worker. Delivery is mocked in every subprocess."""
+    os.environ["ADMIN_CRAWL_TOKEN"] = "isolated-alert-token"
+    main._test_alert_store = TestAlertAttemptStore(Path(path))
+    main._TEST_ALERT_RETRY_WAIT = 5
+    result = {"sent": True, "configured": True, "error": None}
+
+    def delivery():
+        output.put("delivery")
+        time.sleep(0.15)  # Keep ownership pending while the other worker retries.
+        return result
+
+    mock = Mock(side_effect=delivery)
+    main.notifications.send_test_alert = mock
+    if mode == "crash":
+        # Mock delivery succeeded, then the process died before saving success.
+        def crash_before_recording(*args):
+            os._exit(17)
+        main._test_alert_store.finish = crash_before_recording
+    if start is not None:
+        assert start.wait(10)
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+        ) as client:
+            response = await client.post("/admin/alerts/test", headers=headers())
+            if mode == "replay":
+                mock.assert_not_called()
+            output.put((response.status_code, response.json()))
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("sent", [True, False])
+def test_result_survives_fresh_process_restart(alert_attempts, sent):
+    alert_attempts.return_value["sent"] = sent
+
+    async def initial_send():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+        ) as client:
+            response = await client.post("/admin/alerts/test", headers=headers())
+            assert response.status_code == 200
+            assert response.json() == alert_attempts.return_value
+
+    asyncio.run(initial_send())
+    context = multiprocessing.get_context("spawn")
+    output = context.Queue()
+    path = str(main._test_alert_store.path)
+    second = context.Process(target=_worker, args=(path, "replay", output))
+    second.start()
+    second.join(15)
+    assert second.exitcode == 0
+    assert output.get(timeout=5) == (200, alert_attempts.return_value)
+    alert_attempts.assert_called_once_with()
+
+
+def test_separate_workers_coordinate_one_delivery(alert_attempts):
+    context = multiprocessing.get_context("spawn")
+    output = context.Queue()
+    start = context.Event()
+    workers = [
+        context.Process(target=_worker, args=(str(main._test_alert_store.path), "send", output, start))
+        for _ in range(2)
+    ]
+    try:
+        for worker in workers:
+            worker.start()
+        start.set()
+        for worker in workers:
+            worker.join(15)
+            assert worker.exitcode == 0
+        messages = [output.get(timeout=5) for _ in range(3)]
+        assert messages.count("delivery") == 1
+        assert messages.count((200, alert_attempts.return_value)) == 2
+        alert_attempts.assert_not_called()
+    finally:
+        for worker in workers:
+            if worker.is_alive():
+                worker.terminate()
+                worker.join()
+
+
+def test_crash_after_external_delivery_does_not_resend(alert_attempts, monkeypatch):
+    context = multiprocessing.get_context("spawn")
+    output = context.Queue()
+    process = context.Process(
+        target=_worker, args=(str(main._test_alert_store.path), "crash", output),
+    )
+    process.start()
+    process.join(15)
+    assert process.exitcode == 17
+    monkeypatch.setattr(main, "_TEST_ALERT_RETRY_WAIT", 0)
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+        ) as client:
+            for _ in range(2):
+                response = await client.post("/admin/alerts/test", headers=headers())
+                assert response.status_code == 409
+                assert "will not be resent" in response.json()["detail"]
+            alert_attempts.assert_not_called()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", ["delivery", "record", "record_and_uncertainty"])
+def test_unexpected_failure_stays_uncertain(alert_attempts, monkeypatch, failure):
+    store = main._test_alert_store
+    if failure == "delivery":
+        alert_attempts.side_effect = RuntimeError("Mock delivery interrupted")
+    else:
+        monkeypatch.setattr(store, "finish", Mock(side_effect=OSError("Mock disk failure")))
+    if failure == "record_and_uncertainty":
+        monkeypatch.setattr(store, "mark_uncertain", Mock(side_effect=OSError("Mock disk failure")))
+    monkeypatch.setattr(main, "_TEST_ALERT_RETRY_WAIT", 0)
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+        ) as client:
+            for _ in range(2):
+                response = await client.post("/admin/alerts/test", headers=headers())
+                assert response.status_code == 409
+                assert "will not be resent" in response.json()["detail"]
+            alert_attempts.assert_called_once_with()
+
+    asyncio.run(scenario())
+
+
+def test_pending_claim_never_expires_or_is_evicted(alert_attempts, monkeypatch):
+    store = main._test_alert_store
+    store.limit = 1
+    store.ttl = -1  # Even an elapsed retention window cannot discard a pending claim.
+    assert store.claim("isolated-attempt-1")
+    monkeypatch.setattr(main, "_TEST_ALERT_RETRY_WAIT", 0)
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+        ) as client:
+            retry = await client.post("/admin/alerts/test", headers=headers())
+            assert retry.status_code == 409
+            new = await client.post("/admin/alerts/test", headers=headers("isolated-attempt-2"))
+            assert new.status_code == 503
+            alert_attempts.assert_not_called()
+
+    asyncio.run(scenario())
+
+
+def test_storage_failure_fails_closed_but_keyless_behavior_is_unchanged(alert_attempts, monkeypatch):
+    monkeypatch.setattr(
+        main._test_alert_store, "claim", Mock(side_effect=OSError("Mock storage unavailable")),
+    )
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+        ) as client:
+            response = await client.post("/admin/alerts/test", headers=headers())
+            assert response.status_code == 503
+            alert_attempts.assert_not_called()
+            for _ in range(2):
+                response = await client.post(
+                    "/admin/alerts/test",
+                    headers={"Authorization": "Bearer isolated-alert-token"},
+                )
+                assert response.status_code == 200
             assert alert_attempts.call_count == 2
 
     asyncio.run(scenario())

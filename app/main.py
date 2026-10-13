@@ -19,6 +19,7 @@ from pathlib import Path
 from collections import Counter
 
 from app import notifications
+from app.test_alert_attempts import AttemptCapacityError, TestAlertAttemptStore
 
 # Configure logging
 logging.basicConfig(
@@ -1583,7 +1584,7 @@ function triggerTestAlert() {{
       msg.textContent = 'Token rejected \u2014 please click Send test email again and enter the current token.';
     }} else {{
       msg.style.color = '#b00020';
-      msg.textContent = (res.body && res.body.error) || 'Test email was not sent.';
+      msg.textContent = (res.body && (res.body.error || res.body.detail)) || 'Test email was not sent.';
     }}
   }})
   .catch(function (e) {{
@@ -2354,11 +2355,39 @@ async def admin_crawl_status(authorization: str | None = Header(default=None)):
     }
 
 
-# Process-local, bounded retry protection. Keep in-flight tasks even if their
-# HTTP request disconnects; never evict a recent result to make room for a send.
-_TEST_ALERT_TTL = 24 * 60 * 60
-_TEST_ALERT_LIMIT = 1024
-_test_alert_requests: dict[str, tuple[float, asyncio.Task]] = {}
+# All workers must use the same persistent SQLite file. Local tasks only keep
+# delivery alive after disconnect; ownership and results live in the database.
+_test_alert_store = TestAlertAttemptStore(
+    Path(os.environ.get("TEST_ALERT_ATTEMPTS_PATH", "logs/test_alert_attempts.sqlite3"))
+)
+_test_alert_tasks: set[asyncio.Task] = set()
+_TEST_ALERT_RETRY_WAIT = 1.0
+_TEST_ALERT_UNCERTAIN = (
+    "Could not confirm whether this test email was sent. Delivery may still be "
+    "in progress or may have been interrupted. This attempt will not be resent. "
+    "Check the recipient's inbox before deliberately starting a new attempt."
+)
+
+
+def _deliver_test_alert(store: TestAlertAttemptStore, key: str):
+    try:
+        result = notifications.send_test_alert()
+        store.finish(key, result)
+        return result
+    except Exception:
+        logger.exception("Could not confirm test email delivery.")
+        try:
+            store.mark_uncertain(key)
+        except Exception:
+            logger.exception("Could not record uncertain test email attempt.")
+        # The original pending claim still blocks resending if this write failed.
+        raise HTTPException(status_code=409, detail=_TEST_ALERT_UNCERTAIN)
+
+
+def _test_alert_task_done(task: asyncio.Task):
+    _test_alert_tasks.discard(task)
+    if not task.cancelled():
+        task.exception()  # Retrieve failures even when the requester disconnected.
 
 
 @app.post("/admin/alerts/test")
@@ -2375,9 +2404,10 @@ async def admin_test_alert(
     so no real failure alert will be suppressed as a result.
 
     Requires Bearer token matching ADMIN_CRAWL_TOKEN environment variable.
-    Optional Idempotency-Key reuses an attempt's result for 24 hours within this
-    server process, including concurrent retries. Requests without a key retain
-    the original behaviour. Protection does not survive a server restart.
+    Optional Idempotency-Key reuses a completed result for 24 hours, including
+    restarts and workers sharing TEST_ALERT_ATTEMPTS_PATH. Interrupted/uncertain
+    attempts are never automatically resent (409). Requests without a key retain
+    the original behaviour.
 
     Example:
         curl -X POST https://<host>/admin/alerts/test \\
@@ -2398,21 +2428,32 @@ async def admin_test_alert(
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", idempotency_key):
         raise HTTPException(status_code=400, detail="Invalid Idempotency-Key.")
 
-    now = time.monotonic()
-    for key, (created, task) in list(_test_alert_requests.items()):
-        if task.done() and now - created >= _TEST_ALERT_TTL:
-            del _test_alert_requests[key]
-    entry = _test_alert_requests.get(idempotency_key)
-    if entry is None:
-        if len(_test_alert_requests) >= _TEST_ALERT_LIMIT:
-            raise HTTPException(status_code=503, detail="Test email retry capacity reached. Try again later.")
-        task = asyncio.create_task(asyncio.to_thread(notifications.send_test_alert))
-        _test_alert_requests[idempotency_key] = (now, task)
-    else:
-        _, task = entry
-    # Cancellation of a disconnected request must not cancel the delivery task
-    # and allow a retry to send the same email a second time.
-    return await asyncio.shield(task)
+    store = _test_alert_store
+    try:
+        claimed = await asyncio.to_thread(store.claim, idempotency_key)
+    except AttemptCapacityError:
+        raise HTTPException(status_code=503, detail="Test email retry capacity reached. Try again later.")
+    except Exception:
+        logger.exception("Test email attempt storage unavailable.")
+        raise HTTPException(status_code=503, detail="Test email retry storage unavailable. No email was sent.")
+    if claimed:
+        task = asyncio.create_task(asyncio.to_thread(_deliver_test_alert, store, idempotency_key))
+        _test_alert_tasks.add(task)
+        task.add_done_callback(_test_alert_task_done)
+        return await asyncio.shield(task)
+
+    deadline = time.monotonic() + _TEST_ALERT_RETRY_WAIT
+    while True:
+        try:
+            state, result = await asyncio.to_thread(store.read, idempotency_key)
+        except Exception:
+            logger.exception("Could not read test email attempt.")
+            raise HTTPException(status_code=503, detail="Could not confirm test email delivery. Retry storage unavailable.")
+        if state == "completed":
+            return result
+        if state == "uncertain" or time.monotonic() >= deadline:
+            raise HTTPException(status_code=409, detail=_TEST_ALERT_UNCERTAIN)
+        await asyncio.sleep(0.02)
 
 
 @app.post("/admin/reindex")

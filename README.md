@@ -413,6 +413,27 @@ This list evolves — check the project task board (or ask the maintainer) for c
 
 ## 17. Privacy
 
+### Test-email retry tracking
+
+Keyed requests to `/admin/alerts/test` save delivery claims and results in SQLite
+at `TEST_ALERT_ATTEMPTS_PATH` (default `logs/test_alert_attempts.sqlite3`).
+All workers must share this file on persistent storage. This protects retries
+across server process restarts and workers on that shared filesystem, not
+isolated instances with separate disks. SQLite uses a committed exclusive claim
+before delivery; an unavailable/full store prevents sending rather than silently
+falling back to process-local tracking.
+
+Completed results (including recipient and error information) are retained for
+24 hours from completion and cleaned up on the next keyed request. Interrupted
+attempts remain protected indefinitely: if delivery started but its result was
+not saved, retries return HTTP 409 and never automatically resend. A slow
+in-flight retry can also return 409 after a short wait; retrying the same key
+later will recover the completed result if it was saved. Check the inbox before
+deliberately starting a new attempt (reload the dashboard to reset its key).
+Unresolved attempts count towards the 1,024-attempt limit and must not be deleted
+just to allow retries. This is duplicate-retry protection, not exactly-once SMTP
+delivery. Requests without an `Idempotency-Key` keep the original behavior.
+
 Maya logs question text and retrieved source IDs to `logs/questions.log` to help
 improve the service. No user identity (IP address, name, session ID) is ever stored.
 Feedback submissions record only the issue type — not free-text comments or identity.

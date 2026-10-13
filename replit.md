@@ -50,6 +50,7 @@ Maya utilizes dual knowledge sources:
 - When a re-index (nightly or manual) fails, Maya emails staff with the error detail so a stale knowledge base doesn't go unnoticed.
 - **REINDEX_ALERT_EMAIL_TO**: comma-separated staff addresses (needs `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`), or the special value `replit` to use Replit's built-in mailer (sends to the Repl owner, no SMTP setup). Unset = alerts off (no-op).
 - **REINDEX_ALERT_THROTTLE_HOURS** (default 24): repeated failures send at most one email per window; a successful refresh resets the throttle. Implemented in `app/notifications.py`.
+- **Test-email retries**: keyed `/admin/alerts/test` requests persist claims and results in SQLite at `TEST_ALERT_ATTEMPTS_PATH` (default `logs/test_alert_attempts.sqlite3`). Workers must share the same file on storage that survives restarts; separate instances with separate disks are NOT coordinated. Completed results are retained for 24 hours from completion, then pruned on the next keyed request. Pending/uncertain attempts never expire or resend automatically, even after a crash between delivery and recording success. Retrying these returns 409 with an inbox-check warning. The store has a 1,024-attempt limit and fails closed when full/unavailable. Do not delete unresolved records merely to free space; they may have delivered email. Keyless callers retain their original non-idempotent behavior.
 
 ## Testing Architecture
 - **Test Coverage**: Comprehensive tests for endpoints, guardrails, and static assets.
