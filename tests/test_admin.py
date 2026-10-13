@@ -293,10 +293,28 @@ def test_dashboard_polling_renders_completed_history_without_reload(admin_token)
     assert 'class="ok">SUCCESS' in output["historyHtml"]
     assert output["pollingStopped"] is True
 
-
-# ── log parsing helpers ───────────────────────────────────────────────
-
-
+def test_dashboard_email_throttle_updates_and_expires_without_reload():
+    """Exercise emitted JS with polled status changes and a controlled clock."""
+    html = main._render_admin_html([], {
+        "top_sources": [], "questions_7d": 0, "total_questions": 0,
+    }, {
+        "email_alerts": {
+            "configured": True,
+            "recipient_display": "staff@example.org",
+            "last_sent_at": "2026-09-10T00:00:00Z",
+            "throttled": True,
+            "next_allowed_at": "2026-09-10T00:00:01Z",
+        },
+        "schedule": {"enabled": False},
+        "history": [],
+    })
+    scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", html, re.DOTALL)
+    result = subprocess.run(
+        ["node", str(Path(__file__).parent / "admin_email_throttle_runner.cjs")],
+        input=json.dumps({"script": scripts[0]}),
+        capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
 @pytest.fixture
 def logs_dir(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)

@@ -954,6 +954,7 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
 
     # ── Email alert status ─────────────────────────────────────────────────
     email_alerts = kb.get("email_alerts") or {}
+    email_alerts_json = json.dumps(email_alerts).replace("<", "\\u003c")
     if email_alerts.get("configured"):
         recipient = _esc(email_alerts.get("recipient_display") or "unknown")
         email_status_html = f'<span class="badge badge-ok">On</span> &nbsp;<span style="font-size:0.85rem;font-weight:400;color:#444">{recipient}</span>'
@@ -1115,7 +1116,7 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
     <div class="kb-item">
       <div class="kb-label">Email alerts</div>
       <div class="kb-val" style="font-size:0.9rem;">
-        {email_status_html}
+        <span id="emailAlertStatus">{email_status_html}</span>
         <div style="margin-top:0.55rem;">
           <button id="testAlertBtn" class="test-alert-btn" onclick="triggerTestAlert()">Send test email</button>
           <span id="testAlertMsg" class="test-alert-msg"></span>
@@ -1124,7 +1125,7 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
     </div>
     <div class="kb-item">
       <div class="kb-label">Last alert sent</div>
-      <div class="kb-val" style="font-size:0.9rem;font-weight:500;">{last_alert_str}</div>
+      <div class="kb-val" id="emailLastSent" style="font-size:0.9rem;font-weight:500;">{last_alert_str}</div>
     </div>
   </div>
   <p id="kbDetails" style="font-size:0.85rem;color:#555;margin:0 0 1rem;">{f'Details: {last_detail}' if last_detail else ''}</p>
@@ -1215,6 +1216,7 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
 var _crawlToken = '';
 var _pollTimer  = null;
 var _pollInterval = 4000; // ms between status checks
+var _emailThrottleTimer = null;
 
 /* Stable sessionStorage key — cleared automatically when the tab closes. */
 var _TOKEN_KEY = 'maya_admin_crawl_token';
@@ -1299,6 +1301,41 @@ function _renderHistoryRows(history) {{
   tbody.innerHTML = html;
 }}
 
+function _renderEmailAlerts(alerts) {{
+  if (_emailThrottleTimer !== null) {{
+    clearTimeout(_emailThrottleTimer);
+    _emailThrottleTimer = null;
+  }}
+  var html;
+  if (alerts.configured) {{
+    html = '<span class="badge badge-ok">On</span> &nbsp;'
+         + '<span style="font-size:0.85rem;font-weight:400;color:#444">'
+         + _esc(alerts.recipient_display || 'unknown') + '</span>';
+    var until = Date.parse(alerts.next_allowed_at);
+    if (alerts.throttled && (!Number.isFinite(until) || until > Date.now())) {{
+      html += ' &nbsp;<span style="font-size:0.8rem;font-weight:400;color:#9a5b00">'
+            + 'throttled until ' + _esc(_fmtUkTime(alerts.next_allowed_at)) + '</span>';
+      if (Number.isFinite(until)) {{
+        // Independent of crawl polling, which stops when a run finishes.
+        // Cap long delays to the browser's signed 32-bit timer limit.
+        _emailThrottleTimer = setTimeout(function () {{
+          _emailThrottleTimer = null;
+          _renderEmailAlerts(alerts);
+        }}, Math.min(until - Date.now(), 2147483647));
+      }}
+    }}
+  }} else {{
+    html = '<span class="badge badge-none">Off</span> &nbsp;'
+         + '<span style="font-size:0.8rem;color:#777">'
+         + 'Set <code>REINDEX_ALERT_EMAIL_TO</code> in Secrets to enable</span>';
+  }}
+  document.getElementById('emailAlertStatus').innerHTML = html;
+  document.getElementById('emailLastSent').textContent =
+    alerts.configured && alerts.last_sent_at ? _fmtUkTime(alerts.last_sent_at) : '\u2014';
+}}
+
+_renderEmailAlerts({email_alerts_json});
+
 function _applyStatus(data) {{
   var running    = data.running;
   var lastResult = data.last_result || null;
@@ -1337,6 +1374,9 @@ function _applyStatus(data) {{
 
   if (data.history) {{
     _renderHistoryRows(data.history);
+  }}
+  if (data.email_alerts) {{
+    _renderEmailAlerts(data.email_alerts);
   }}
 
   var msg = document.getElementById('reindexMsg');
