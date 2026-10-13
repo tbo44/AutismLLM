@@ -108,6 +108,23 @@ class PostgresTestAlertAttemptStore:
             "limit": self.limit,
         }
 
+    def history(self, limit: int = 25, offset: int = 0):
+        """Read permanent archives from a consistent, read-only snapshot."""
+        with self._connect() as connection:
+            connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            total = connection.execute(
+                "SELECT COUNT(*) FROM public.maya_test_alert_attempts WHERE state = 'archived'"
+            ).fetchone()[0]
+            rows = connection.execute(
+                """SELECT key, result FROM public.maya_test_alert_attempts
+                   WHERE state = 'archived' ORDER BY key LIMIT %s OFFSET %s""",
+                (limit, offset),
+            ).fetchall()
+        return {
+            "attempts": [{"key": key, **result} for key, result in rows],
+            "total": total, "limit": limit, "offset": offset,
+        }
+
     def resolve(self, key: str, resolution: str):
         with self._connect() as connection:
             row = connection.execute(

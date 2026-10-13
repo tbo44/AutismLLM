@@ -101,6 +101,23 @@ class TestAlertAttemptStore:
             "retained": active, "archived": archived, "limit": self.limit,
         }
 
+    def history(self, limit: int = 25, offset: int = 0):
+        """Read permanent archives in key order, without pruning any claims."""
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN")
+            total = connection.execute(
+                "SELECT COUNT(*) FROM test_alert_attempts WHERE state = 'archived'"
+            ).fetchone()[0]
+            rows = connection.execute(
+                """SELECT key, result FROM test_alert_attempts
+                   WHERE state = 'archived' ORDER BY key LIMIT ? OFFSET ?""",
+                (limit, offset),
+            ).fetchall()
+        return {
+            "attempts": [{"key": key, **json.loads(result)} for key, result in rows],
+            "total": total, "limit": limit, "offset": offset,
+        }
+
     def resolve(self, key: str, resolution: str):
         """Archive after manual review; preserve the key forever, without delivery."""
         with closing(self._connect()) as connection, connection:

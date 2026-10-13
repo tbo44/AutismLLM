@@ -1153,6 +1153,22 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
       </table>
     </div>
   </details>
+  <details class="cache-details">
+    <summary>Review archived test-email outcomes</summary>
+    <p>Read-only history, ordered by attempt key. Outcomes record the original manual
+       inbox review, not delivery confirmation. Original keys stay permanently protected.
+       Viewing history never sends email.</p>
+    <button id="testAttemptHistoryRefresh" class="test-alert-btn" onclick="loadTestAlertHistory(0)">Refresh history</button>
+    <p id="testAttemptHistoryMsg" role="status"></p>
+    <div class="cache-page-list">
+      <table aria-label="Archived test-email outcomes">
+        <thead><tr><th scope="col">Attempt key</th><th scope="col">Original inbox outcome</th><th scope="col">Resolved at (UTC)</th></tr></thead>
+        <tbody id="testAttemptHistoryRows"></tbody>
+      </table>
+    </div>
+    <button id="testAttemptHistoryPrevious" class="test-alert-btn" disabled onclick="loadTestAlertHistory(_testAttemptHistoryOffset - 25)">Previous</button>
+    <button id="testAttemptHistoryNext" class="test-alert-btn" disabled onclick="loadTestAlertHistory(_testAttemptHistoryOffset + 25)">Next</button>
+  </details>
   <details class="cache-details" id="cacheExpiryDetails">
     <summary>Review expiring pages (<span id="cacheDetailCount">{cache_expiring}</span>)</summary>
     <p>Includes pages already expired. Expected expiry is based on the cache age limit.
@@ -2452,6 +2468,20 @@ async def admin_test_alert_attempts(authorization: str | None = Header(default=N
         return await asyncio.to_thread(_test_alert_store.review)
     except Exception:
         logger.exception("Could not review test email attempts.")
+        raise HTTPException(status_code=503, detail="Test email attempt storage unavailable.")
+
+
+@app.get("/admin/alerts/test/attempts/history")
+async def admin_test_alert_history(
+    authorization: str | None = Header(default=None),
+    limit: int = QueryParam(default=25, ge=1, le=100),
+    offset: int = QueryParam(default=0, ge=0),
+):
+    _verify_admin_token(authorization)
+    try:
+        return await asyncio.to_thread(_test_alert_store.history, limit, offset)
+    except Exception:
+        logger.exception("Could not review archived test email attempts.")
         raise HTTPException(status_code=503, detail="Test email attempt storage unavailable.")
 
 

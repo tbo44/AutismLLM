@@ -19,6 +19,51 @@ async function testAttemptRequest(path, options) {
   return body;
 }
 
+var _testAttemptHistoryOffset = 0;
+var _testAttemptHistoryLoading = false;
+
+async function loadTestAlertHistory(offset) {
+  if (_testAttemptHistoryLoading) { return; }
+  _testAttemptHistoryLoading = true;
+  var msg = document.getElementById('testAttemptHistoryMsg');
+  var rows = document.getElementById('testAttemptHistoryRows');
+  var refresh = document.getElementById('testAttemptHistoryRefresh');
+  var previous = document.getElementById('testAttemptHistoryPrevious');
+  var next = document.getElementById('testAttemptHistoryNext');
+  refresh.disabled = previous.disabled = next.disabled = true;
+  rows.textContent = '';
+  msg.textContent = 'Loading archived history…';
+  try {
+    var body = await testAttemptRequest('/admin/alerts/test/attempts/history?limit=25&offset=' +
+      Math.max(0, offset || 0));
+    _testAttemptHistoryOffset = body.offset;
+    var outcomes = { delivered: 'Email found', not_found: 'Email not found', unknown: 'Still uncertain' };
+    body.attempts.forEach(function (attempt) {
+      var row = document.createElement('tr');
+      var resolved = new Date(attempt.resolved_at * 1000).toISOString();
+      [attempt.key, outcomes[attempt.resolution] || attempt.resolution,
+        resolved.replace('T', ' ').replace('Z', ' UTC')].forEach(function (text) {
+        var cell = document.createElement('td');
+        cell.textContent = text;
+        row.appendChild(cell);
+      });
+      rows.appendChild(row);
+    });
+    msg.textContent = body.attempts.length
+      ? 'Showing ' + (body.offset + 1) + '–' + (body.offset + body.attempts.length) +
+        ' of ' + body.total + ' archived attempts. Original keys remain permanently protected.'
+      : (body.total ? 'No archived attempts on this page. Use Previous or refresh history.'
+        : 'No archived test-email attempts.');
+    previous.disabled = body.offset === 0;
+    next.disabled = body.offset + body.limit >= body.total;
+  } catch (error) {
+    msg.textContent = error.message;
+  } finally {
+    refresh.disabled = false;
+    _testAttemptHistoryLoading = false;
+  }
+}
+
 async function loadTestAlertAttempts() {
   var msg = document.getElementById('testAttemptReviewMsg');
   var rows = document.getElementById('testAttemptRows');

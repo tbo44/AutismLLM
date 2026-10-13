@@ -60,6 +60,33 @@ def store(postgres_url):
     return PostgresTestAlertAttemptStore(postgres_url)
 
 
+def test_read_only_history_paginates_original_archives(store, monkeypatch):
+    delivery = Mock()
+    monkeypatch.setattr(main.notifications, "send_test_alert", delivery)
+    expected = []
+    for key, outcome in [("c-history", "unknown"), ("a-history", "delivered"), ("b-history", "not_found")]:
+        store.claim(key)
+        result = store.resolve(key, outcome)
+        assert store.resolve(key, "unknown") == result
+        expected.append({"key": key, **result})
+    expected.sort(key=lambda row: row["key"])
+    store.claim("pending-history")
+    store.claim("completed-history")
+    store.finish("completed-history", RESULT)
+    before = store.review()
+    restarted = PostgresTestAlertAttemptStore(store._database_url, ttl=-1)
+    for offset, rows in [(0, expected[:2]), (2, expected[2:]), (4, [])]:
+        assert restarted.history(2, offset) == {
+            "attempts": rows, "total": 3, "limit": 2, "offset": offset,
+        }
+    assert store.review() == before
+    assert store.read("completed-history") == ("completed", RESULT)
+    for row in expected:
+        assert not store.claim(row["key"])
+        assert store.read(row["key"]) == ("archived", {k: v for k, v in row.items() if k != "key"})
+    delivery.assert_not_called()
+
+
 def _worker(url, disk, mode, pipe, start=None, key="independent-attempt", limit=1024):
     """Fresh interpreter and private filesystem, but the same durable database."""
     os.chdir(disk)
