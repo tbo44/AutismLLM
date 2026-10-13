@@ -1580,7 +1580,7 @@ function triggerTestAlert() {{
   .catch(function (e) {{
     btn.disabled = false;
     msg.style.color = '#b00020';
-    msg.textContent = 'Error: ' + e;
+    msg.textContent = 'Could not confirm whether the test email was sent. Check your connection, then click Send test email again.';
   }});
 }}
 

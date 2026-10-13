@@ -343,7 +343,10 @@ def test_dashboard_test_alert_failure_allows_successful_retry(
                     predicate=lambda r: r.url.endswith("/admin/alerts/test") and r.method == "POST",
                 ):
                     button.click()
-                expect(message).to_have_text("Error: TypeError: Failed to fetch")
+                expect(message).to_have_text(
+                    "Could not confirm whether the test email was sent. "
+                    "Check your connection, then click Send test email again."
+                )
                 delivery.assert_not_called()
             else:
                 with page.expect_response(
