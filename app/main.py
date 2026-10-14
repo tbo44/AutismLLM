@@ -21,6 +21,7 @@ from collections import Counter
 
 from app import notifications
 from app.github_backup_status import render_status as render_github_backup_status
+from app.github_backup_alerts import monitor_backup_alerts
 from app.test_alert_attempts import AttemptCapacityError, TestAlertAttemptStore
 from app.postgres_test_alert_attempts import (
     PostgresTestAlertAttemptStore, create_test_alert_attempt_store,
@@ -173,7 +174,20 @@ async def startup_event():
         logger.info("⏰ Scheduled re-index disabled (SCHEDULED_REINDEX_ENABLED=false).")
     _load_login_lockouts()
     asyncio.create_task(_login_attempts_pruner_loop())
+    if _env_bool("GITHUB_BACKUP_MONITOR_ENABLED", True):
+        app.state.github_backup_monitor = asyncio.create_task(monitor_backup_alerts())
     logger.info("✅ Server startup event complete – background task spawned")
+
+
+@app.on_event("shutdown")
+async def stop_backup_monitor():
+    task = getattr(app.state, "github_backup_monitor", None)
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 def _load_rag_system():
