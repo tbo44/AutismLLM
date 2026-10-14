@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Header, Query as QueryParam, Cookie, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, StrictBool
 from typing import Literal
 from enum import Enum
@@ -2401,6 +2401,27 @@ async def admin_acknowledge_backup_history(
     except (OSError, ValueError, KeyError, TypeError, OverflowError):
         raise HTTPException(status_code=503, detail="Acknowledgement unavailable. Ask a maintainer to check diagnostic storage privately.")
     return {"acknowledged": True, "at": record["at"], "missing_history_recovered": False}
+
+
+@app.get("/admin/backup/history/acknowledgements/export")
+async def admin_export_backup_acknowledgements(
+    x_admin_token: str | None = Header(default=None),
+    admin_session: str | None = Cookie(default=None),
+):
+    # No credentials in download URLs; normal dashboard sign-in or header only.
+    _check_admin_token(None, x_admin_token, admin_session)
+    from app.github_backup_ack_archive import export_snapshot, download_chunks
+    try:
+        snapshot = await asyncio.to_thread(export_snapshot, BACKUP_STATUS_PATH)
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
+        raise HTTPException(status_code=503, detail="Acknowledgement export unavailable. Ask a maintainer to check diagnostic storage privately.")
+    return StreamingResponse(
+        download_chunks(snapshot), media_type="application/x-ndjson",
+        headers={
+            "Content-Disposition": 'attachment; filename="backup-warning-acknowledgements.jsonl"',
+            "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @app.post("/admin/crawl")

@@ -47,3 +47,14 @@ cannot prove which individual staff member acted.
 **How to apply:** Scope acknowledgements to the reviewed failure generation,
 reject stale actions, and retain independent corruption and unsaved-marker
 warnings. Describe the audit actor as an authenticated admin, not a named user.
+
+Long-term diagnostic review and export must not hold the delivery lock while
+scanning retained history.
+
+**Why:** Unlike bounded active diagnostics, permanent review archives grow
+indefinitely; reading them under the sender's lock can delay or suppress alert
+attempts even though staff are only downloading an audit.
+
+**How to apply:** Keep archival publication short and crash-safe, and use
+read-only snapshots for exports. Validate the complete download before returning
+success; never offer a partial audit as if it were complete.

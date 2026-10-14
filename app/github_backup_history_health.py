@@ -68,17 +68,19 @@ def _read_acknowledgements(path):
     if (raw["version"] != 1 or not isinstance(raw["acknowledgements"], list)
             or len(raw["acknowledgements"]) > ACK_LIMIT):
         raise ValueError("Invalid acknowledgement history")
-    records = []
-    for row in raw["acknowledgements"]:
-        if row["actor"] != "authenticated_admin" or row["missing_history_recovered"] is not False:
-            raise ValueError("Invalid acknowledgement")
-        records.append({
-            "warning_id": _warning_id(row["warning_id"]),
-            "last_failed_update": status._notification_attempt(row["last_failed_update"]),
-            "at": status._timestamp(row["at"]).isoformat(),
-            "actor": "authenticated_admin", "missing_history_recovered": False,
-        })
-    return records
+    return [_ack_record(row) for row in raw["acknowledgements"]]
+
+
+def _ack_record(row):
+    """Project only safe fields, including when reading older archives."""
+    if row["actor"] != "authenticated_admin" or row["missing_history_recovered"] is not False:
+        raise ValueError("Invalid acknowledgement")
+    return {
+        "warning_id": _warning_id(row["warning_id"]),
+        "last_failed_update": status._notification_attempt(row["last_failed_update"]),
+        "at": status._timestamp(row["at"]).isoformat(),
+        "actor": "authenticated_admin", "missing_history_recovered": False,
+    }
 
 
 def acknowledge_warning(path, warning_id, *, now=None):
@@ -102,6 +104,11 @@ def acknowledge_warning(path, warning_id, *, now=None):
             **marker, "at": (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(),
             "actor": "authenticated_admin", "missing_history_recovered": False,
         }
+        # Archive first. A failed active replacement leaves overlap, not lost
+        # audit rows; the immutable archive and export are retry-safe.
+        from app.github_backup_ack_archive import archive_record
+        for older in (records + [record])[:-ACK_LIMIT]:
+            archive_record(path, older)
         status.atomic_write_json(_ack_path(path), {
             "version": 1, "acknowledgements": (records + [record])[-ACK_LIMIT:],
         })
@@ -129,7 +136,8 @@ def record_failed_update(path, attempt):
 
 def render_completeness(path, attempts):
     """Read-only comparison of safe diagnostics with the latest durable claim."""
-    messages = []
+    from app.github_backup_ack_archive import render_retention
+    messages = [render_retention(path)]
     try:
         marker = _read_marker(path)
     except (OSError, ValueError, KeyError, TypeError, OverflowError):
