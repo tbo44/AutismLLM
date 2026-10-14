@@ -137,6 +137,64 @@ def test_process_crash_after_reservation_does_not_resend(delivery, monkeypatch):
     with pytest.raises(SystemExit):
         alerts.check_backup_alerts(path, now=NOW)
     assert alerts.check_backup_alerts(path, now=NOW) == "throttled"
+    summary = status.notification_summary(path, NOW)
+    assert summary["last_notification"]["outcome"] == "reserved"
+    assert summary["throttled_until"] == (NOW + timedelta(hours=24)).isoformat()
+
+
+@pytest.mark.parametrize("result", [True, False, "exception"])
+def test_safe_outcome_persists_without_changing_claim(delivery, monkeypatch, result):
+    path, _ = delivery
+    status.write_result(path, failure="sync", now=NOW)
+    def send(*args):
+        reserved = status.notification_summary(path, NOW)["last_notification"]
+        assert reserved == {"at": NOW.isoformat(), "kind": "problem", "outcome": "reserved"}
+        if result == "exception":
+            raise RuntimeError("private-secret")
+        return result
+    monkeypatch.setattr(notifications, "send_github_backup_alert", send)
+    expected = "sent" if result is True else "delivery_uncertain"
+    assert alerts.check_backup_alerts(path, now=NOW) == expected
+    state_path = path.with_name(path.name + ".alerts.json")
+    state = alerts._read_state(state_path)
+    assert state["last_attempt"] == NOW.isoformat() and state["incident"] is True
+    assert state["last_notification"]["outcome"] == expected
+    assert "private-secret" not in state_path.read_text()
+    assert state_path.stat().st_mode & 0o777 == 0o600
+    assert alerts.check_backup_alerts(path, now=NOW) == "throttled"
+    assert alerts._read_state(state_path) == state
+
+
+def test_outcome_write_failure_retains_unknown_reservation(delivery, monkeypatch):
+    path, calls = delivery
+    status.write_result(path, failure="sync", now=NOW)
+    write = alerts.atomic_write_json
+    def fail_result(path, record):
+        if record["last_notification"]["outcome"] != "reserved":
+            raise OSError("private-secret")
+        write(path, record)
+    monkeypatch.setattr(alerts, "atomic_write_json", fail_result)
+    assert alerts.check_backup_alerts(path, now=NOW) == "unavailable"
+    assert len(calls) == 1
+    summary = status.notification_summary(path, NOW)
+    assert summary["last_notification"]["outcome"] == "reserved"
+    assert alerts.check_backup_alerts(path, now=NOW) == "throttled"
+
+
+def test_uncertain_recovery_history_survives_healthy_checks(delivery, monkeypatch):
+    path, _ = delivery
+    status.write_result(path, failure="sync", now=NOW)
+    assert alerts.check_backup_alerts(path, now=NOW) == "sent"
+    success(path, NOW + timedelta(minutes=1))
+    monkeypatch.setattr(notifications, "send_github_backup_alert", lambda *args: False)
+    when = NOW + timedelta(minutes=1)
+    assert alerts.check_backup_alerts(path, now=when) == "delivery_uncertain"
+    assert alerts.check_backup_alerts(path, now=when) == "healthy"
+    summary = status.notification_summary(path, when)
+    assert summary["last_notification"] == {
+        "at": when.isoformat(), "kind": "recovery", "outcome": "delivery_uncertain",
+    }
+    assert summary["throttled_until"] is None
 
 
 def test_concurrent_processes_send_once(delivery, monkeypatch, tmp_path):

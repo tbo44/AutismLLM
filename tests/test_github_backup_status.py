@@ -118,12 +118,20 @@ def test_dashboard_status_requires_admin_and_has_no_sync_side_effects(tmp_path, 
         reads.append(True)
         return status.render_status(path, now=NOW)
     monkeypatch.setattr(main, "render_github_backup_status", render)
+    notification_reads = []
+    def render_notifications():
+        notification_reads.append(True)
+        return status.render_notification_status(path, now=NOW)
+    monkeypatch.setattr(main, "render_backup_notification_status", render_notifications)
     def forbidden(*args, **kwargs):
         pytest.fail("Dashboard must not run git, push, write status, or obtain authorization")
     monkeypatch.setattr(sync, "sync_once", forbidden)
     monkeypatch.setattr(sync, "_get_github_token", forbidden)
     monkeypatch.setattr(sync, "_run", forbidden)
     monkeypatch.setattr(status, "write_result", forbidden)
+    monkeypatch.setattr(status, "atomic_write_json", forbidden)
+    from app import notifications
+    monkeypatch.setattr(notifications, "send_github_backup_alert", forbidden)
     before = path.read_bytes()
     # No lifespan startup: these checks must not launch RAG/crawl background work.
     client = TestClient(main.app)
@@ -146,11 +154,81 @@ def test_dashboard_status_requires_admin_and_has_no_sync_side_effects(tmp_path, 
     if auth in ("missing", "invalid", "browser"):
         assert response.status_code == {"missing": 401, "invalid": 403, "browser": 303}[auth]
         assert not reads
+        assert not notification_reads
         assert WORKSPACE_COMMIT not in response.text
     else:
         assert response.status_code == 200
         assert reads == [True]
+        assert notification_reads == [True]
+        assert "Backup warning emails" in response.text
+        assert "Disabled" in response.text
         assert "GitHub backup" in response.text
         assert WORKSPACE_COMMIT in response.text and REMOTE_TIP in response.text
         assert "test-backup-admin" not in response.text
     assert path.read_bytes() == before
+
+
+def test_notification_summary_disabled_preserves_history_and_is_read_only(tmp_path, monkeypatch):
+    path = tmp_path / "receipt.json"
+    claim = path.with_name(path.name + ".alerts.json")
+    claim.write_text(json.dumps({
+        "version": 1, "incident": True, "last_attempt": NOW.isoformat(),
+        "last_notification": {"at": NOW.isoformat(), "kind": "problem", "outcome": "delivery_uncertain"},
+        "recipient": "private-secret", "error": "<script>private-secret</script>",
+    }))
+    before = claim.read_bytes()
+    html = status.render_notification_status(path, NOW)
+    assert "Disabled" in html and "Last reserved attempt" in html
+    assert "Delivery failed or is uncertain" in html and "throttled" in html
+    assert "private-secret" not in html and "<button" not in html and "<form" not in html
+    monkeypatch.setenv("REINDEX_ALERT_EMAIL_TO", "private-secret")
+    html = status.render_notification_status(path, NOW + timedelta(hours=24))
+    assert "Enabled" in html and "private-secret" not in html
+    assert "Problem reminders throttled" not in html
+    assert claim.read_bytes() == before and list(tmp_path.iterdir()) == [claim]
+
+
+def test_legacy_claim_is_unknown_and_upgrades_safely(tmp_path, monkeypatch):
+    from app import github_backup_alerts as alerts, notifications
+    monkeypatch.setenv("REINDEX_ALERT_EMAIL_TO", "synthetic-destination")
+    monkeypatch.setattr(notifications, "send_github_backup_alert", lambda *args: True)
+    path = tmp_path / "receipt.json"
+    claim = path.with_name(path.name + ".alerts.json")
+    claim.write_text(json.dumps({"version": 1, "incident": True, "last_attempt": NOW.isoformat()}))
+    html = status.render_notification_status(path, NOW)
+    assert "delivery is unknown" in html
+    assert alerts.check_backup_alerts(path, now=NOW) == "throttled"
+    assert alerts.check_backup_alerts(path, now=NOW + timedelta(hours=24)) == "sent"
+    assert status.notification_summary(path, NOW + timedelta(hours=24))["last_notification"]["outcome"] == "sent"
+
+
+@pytest.mark.parametrize("contents", [
+    "private-secret", "[]", "{}",
+    json.dumps({"version": 1, "incident": True, "last_attempt": NOW.isoformat(),
+                "last_notification": {"at": NOW.isoformat(), "kind": "problem", "outcome": "private-secret"}}),
+])
+def test_unreadable_notification_tracking_fails_closed(tmp_path, monkeypatch, contents):
+    from app import github_backup_alerts as alerts, notifications
+    monkeypatch.setenv("REINDEX_ALERT_EMAIL_TO", "synthetic-destination")
+    monkeypatch.setattr(notifications, "send_github_backup_alert", lambda *args: pytest.fail("must not send"))
+    path = tmp_path / "receipt.json"
+    claim = path.with_name(path.name + ".alerts.json")
+    claim.write_text(contents)
+    html = status.render_notification_status(path, NOW)
+    assert "Notification tracking unavailable" in html
+    assert "private-secret" not in html
+    assert alerts.check_backup_alerts(path, now=NOW) == "unavailable"
+    assert claim.read_text() == contents
+
+
+def test_no_attempt_and_dispatched_labels(tmp_path, monkeypatch):
+    path = tmp_path / "receipt.json"
+    assert "No reserved backup email attempt" in status.render_notification_status(path, NOW)
+    claim = path.with_name(path.name + ".alerts.json")
+    claim.write_text(json.dumps({
+        "version": 1, "incident": False, "last_attempt": None,
+        "last_notification": {"at": NOW.isoformat(), "kind": "recovery", "outcome": "sent"},
+    }))
+    html = status.render_notification_status(path, NOW)
+    assert "Dispatched to the mail service; inbox delivery is not confirmed" in html
+    assert "recovery notice" in html
