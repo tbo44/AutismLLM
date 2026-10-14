@@ -7,33 +7,21 @@ Every sender/monitor must share the receipt and claim filesystem.
 """
 import asyncio
 import fcntl
-import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
 from app import notifications
-from app.github_backup_status import STATUS_PATH, STALE_SECONDS, atomic_write_json, backup_health, _timestamp
+from app.github_backup_status import (
+    STATUS_PATH, STALE_SECONDS, THROTTLE_SECONDS, atomic_write_json,
+    backup_health, _timestamp, read_alert_state,
+)
 
 logger = logging.getLogger(__name__)
-THROTTLE_SECONDS = 24 * 60 * 60
 POLL_SECONDS = 60
 
 
-def _read_state(path):
-    try:
-        with path.open() as handle:
-            raw = json.loads(handle.read(4097))
-    except FileNotFoundError:
-        return {"version": 1, "incident": False, "last_attempt": None}
-    if raw["version"] != 1 or type(raw["incident"]) is not bool:
-        raise ValueError("Invalid backup alert state")
-    stamp = raw["last_attempt"]
-    if stamp is not None:
-        stamp = _timestamp(stamp).isoformat()
-    if raw["incident"] and stamp is None:
-        raise ValueError("Missing backup alert claim")
-    return {"version": 1, "incident": raw["incident"], "last_attempt": stamp}
+_read_state = read_alert_state
 
 
 def check_backup_alerts(path=None, *, now=None, missing_ready=True):
@@ -72,10 +60,22 @@ def check_backup_alerts(path=None, *, now=None, missing_ready=True):
                     if elapsed < THROTTLE_SECONDS:
                         return "throttled"
                 state.update(incident=True, last_attempt=now.isoformat())
+            state["last_notification"] = {
+                "at": now.isoformat(), "kind": "recovery" if health == "healthy" else "problem",
+                "outcome": "reserved",
+            }
             atomic_write_json(state_path, state)
             # The reserved attempt survives SMTP timeout, process death, restart
             # and concurrent checks. Exceptions must not undo the reservation.
-            return "sent" if notifications.send_github_backup_alert(health) else "delivery_uncertain"
+            try:
+                outcome = "sent" if notifications.send_github_backup_alert(health) else "delivery_uncertain"
+            except Exception:
+                outcome = "delivery_uncertain"
+            state["last_notification"]["outcome"] = outcome
+            # If this write fails, the durable reserved/unknown outcome remains.
+            # Never undo or recreate a pre-send claim to record a result.
+            atomic_write_json(state_path, state)
+            return outcome
     except Exception:
         logger.warning("GitHub backup alert check unavailable; check alert tracking storage and delivery privately.")
         return "unavailable"

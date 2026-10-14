@@ -3,12 +3,18 @@ import json
 import os
 import re
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 
 STATUS_PATH = Path(__file__).resolve().parents[1] / "logs" / "github_backup_status.json"
 STALE_SECONDS = 15 * 60
+THROTTLE_SECONDS = 24 * 60 * 60
+NOTIFICATION_OUTCOMES = {
+    "reserved": "Attempt reserved; delivery is unknown (it may still be in progress or was interrupted).",
+    "sent": "Dispatched to the mail service; inbox delivery is not confirmed.",
+    "delivery_uncertain": "Delivery failed or is uncertain; the message may have been accepted.",
+}
 FAILURES = {
     "authorization": "GitHub authorization is unavailable. Ask the workspace owner to check the connection.",
     "conflict": (
@@ -36,6 +42,98 @@ def _commit(value):
     if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value):
         raise ValueError("Invalid commit")
     return value
+
+
+def read_alert_state(path):
+    """Read only safe claim fields, including legacy claims without outcomes.
+
+    Missing state is distinct from corrupt state; callers must never reset an
+    unreadable claim. Outcome metadata cannot change the reservation.
+    """
+    try:
+        with Path(path).open() as handle:
+            raw = json.loads(handle.read(4097))
+    except FileNotFoundError:
+        return {"version": 1, "incident": False, "last_attempt": None}
+    if raw["version"] != 1 or type(raw["incident"]) is not bool:
+        raise ValueError("Invalid backup alert state")
+    stamp = raw["last_attempt"]
+    if stamp is not None:
+        stamp = _timestamp(stamp).isoformat()
+    if raw["incident"] and stamp is None:
+        raise ValueError("Missing backup alert claim")
+    state = {"version": 1, "incident": raw["incident"], "last_attempt": stamp}
+    attempt = raw.get("last_notification")
+    if attempt is not None:
+        if attempt["kind"] not in ("problem", "recovery") or attempt["outcome"] not in NOTIFICATION_OUTCOMES:
+            raise ValueError("Invalid backup notification outcome")
+        state["last_notification"] = {
+            "at": _timestamp(attempt["at"]).isoformat(),
+            "kind": attempt["kind"], "outcome": attempt["outcome"],
+        }
+    return state
+
+
+def notification_summary(path=STATUS_PATH, now=None):
+    """Credential-free, read-only snapshot; no mail, locking or writes."""
+    from app import notifications
+
+    now = now or datetime.now(timezone.utc)
+    summary = {
+        "configured": notifications.is_configured(), "tracking": "available",
+        "last_notification": None, "throttled_until": None,
+    }
+    try:
+        state = read_alert_state(Path(path).with_name(Path(path).name + ".alerts.json"))
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
+        summary["tracking"] = "unavailable"
+        return summary
+    summary["last_notification"] = state.get("last_notification")
+    if summary["last_notification"] is None and state["last_attempt"] is not None:
+        summary["last_notification"] = {
+            "at": state["last_attempt"], "kind": "problem", "outcome": "reserved",
+        }
+    if state["incident"] and state["last_attempt"]:
+        try:
+            until = _timestamp(state["last_attempt"]) + timedelta(seconds=THROTTLE_SECONDS)
+        except OverflowError:
+            summary["tracking"] = "unavailable"
+            return summary
+        # Recovery is exempt from the problem-alert throttle.
+        if now < until and backup_health(path, now) != "healthy":
+            summary["throttled_until"] = until.isoformat()
+    return summary
+
+
+def render_notification_status(path=STATUS_PATH, now=None):
+    summary = notification_summary(path, now)
+    result = "<section id='githubBackupNotifications'><h2>Backup warning emails</h2>"
+    if not summary["configured"]:
+        result += "<p><strong>Disabled — no staff email destination is configured.</strong> No new backup emails will be attempted.</p>"
+    else:
+        result += "<p>Enabled — uses the staff email configuration. This does not confirm that the mail service is reachable.</p>"
+    if summary["tracking"] == "unavailable":
+        result += "<p><strong>Notification tracking unavailable.</strong> Attempts and delivery cannot be read safely. Sending fails closed when tracking cannot be read or written; ask a maintainer to check storage privately.</p>"
+    attempt = summary["last_notification"]
+    if attempt:
+        result += (
+            f"<p>Last reserved attempt (UTC): {escape(attempt['at'])} "
+            f"— {attempt['kind']} notice.</p>"
+            f"<p><strong>{NOTIFICATION_OUTCOMES[attempt['outcome']]}</strong></p>"
+        )
+    elif summary["tracking"] == "available":
+        result += "<p>No reserved backup email attempt is recorded here.</p>"
+    if summary["throttled_until"]:
+        result += (
+            "<p><strong>Problem reminders throttled</strong> until (UTC): "
+            f"{escape(summary['throttled_until'])}. Recovery can still be attempted once.</p>"
+        )
+    result += (
+        "<p>Problem attempts are limited to once per 24 hours; recovery is attempted once per incident. "
+        "Failed, interrupted or uncertain sends keep their reservations. Do not delete tracking to force a resend.</p>"
+        "<p>Local tracking only, separate from re-index email status. Reload to refresh; viewing this page never sends email.</p></section>"
+    )
+    return result
 
 
 def read_record(path=STATUS_PATH):
