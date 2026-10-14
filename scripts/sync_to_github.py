@@ -32,6 +32,7 @@ GITHUB_URL = f"https://github.com/{GITHUB_REPO}.git"
 if WORKSPACE not in sys.path:
     sys.path.insert(0, WORKSPACE)
 from app.github_backup_status import STATUS_PATH, write_result
+from app.github_backup_alerts import check_backup_alerts
 
 
 class BackupFailure(RuntimeError):
@@ -45,6 +46,7 @@ def _record_failure(category):
         write_result(STATUS_PATH, failure=category)
     except (OSError, ValueError):
         print("Backup status could not be saved; check status storage.", flush=True)
+    check_backup_alerts(STATUS_PATH)
 
 
 def _get_github_token() -> str:
@@ -207,6 +209,7 @@ def _sync_once() -> str:
             raise BackupFailure("verification", "GitHub verification failed: main changed during the sync.")
 
         write_result(STATUS_PATH, workspace_commit=local_head, remote_tip=combined_head)
+        check_backup_alerts(STATUS_PATH)
         print(f"Verified GitHub main at {combined_head} "
               f"(workspace main {local_head}).", flush=True)
         return local_head

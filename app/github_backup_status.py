@@ -80,6 +80,11 @@ def write_result(path, *, workspace_commit=None, remote_tip=None, failure=None, 
             "at": stamp, "workspace_commit": _commit(workspace_commit),
             "remote_tip": _commit(remote_tip),
         })
+    atomic_write_json(path, record)
+
+
+def atomic_write_json(path, record):
+    """Durably replace local runtime state with owner-only permissions."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=".github-backup-", dir=path.parent)
@@ -97,6 +102,21 @@ def write_result(path, *, workspace_commit=None, remote_tip=None, failure=None, 
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def backup_health(path=STATUS_PATH, now=None):
+    """Return only fixed health codes; never return arbitrary receipt contents."""
+    try:
+        record = read_record(path)
+    except FileNotFoundError:
+        return "missing"
+    except (OSError, ValueError, KeyError, TypeError):
+        return "unavailable"
+    if record["outcome"] == "failure":
+        return record["last_failure"]["category"]
+    success = record["last_success"]
+    age = ((now or datetime.now(timezone.utc)) - _timestamp(success["at"])).total_seconds()
+    return "healthy" if 0 <= age <= STALE_SECONDS else "stale"
 
 
 def render_status(path=STATUS_PATH, now=None):

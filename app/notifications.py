@@ -213,6 +213,47 @@ def _send_replit_mail(subject: str, body: str) -> None:
             raise RuntimeError(f"Replit mailer returned HTTP {resp.status}")
 
 
+def send_github_backup_alert(health: str) -> bool:
+    """Safe backup messages using the existing staff destinations and transports.
+
+    Throttling/claims belong to github_backup_alerts, not the re-index throttle.
+    No exception, command, recipient or environment detail is logged here.
+    """
+    from app.github_backup_status import FAILURES
+
+    messages = {
+        **FAILURES,
+        "stale": "No fresh GitHub backup verification is recorded (15-minute limit). Check that the GitHub Sync workflow is running.",
+        "missing": "No GitHub backup receipt is available. Check that the GitHub Sync workflow is running and status storage is intact.",
+        "unavailable": "GitHub backup status cannot be read safely. Ask a maintainer to check status storage.",
+        "healthy": "GitHub backup has recovered. A fresh successful backup has been verified.",
+    }
+    if health not in messages:
+        raise ValueError("Invalid backup alert health")
+    recipients = _recipients()
+    if not recipients:
+        return False
+    subject = "[Maya] GitHub backup " + ("RECOVERED" if health == "healthy" else "NEEDS ATTENTION")
+    body = (
+        messages[health] + "\n\n"
+        "Visit /admin for the read-only GitHub backup status.\n"
+        "Backups cover committed workspace main only, not unfinished edits or deployment.\n"
+        "Do not force-push or reset the running workspace.\n\n"
+        "Problem alerts are limited to one attempt every 24 hours until a fresh verified "
+        "backup clears the incident. Recovery is notified once per incident.\n"
+    )
+    try:
+        if recipients == ["replit"]:
+            _send_replit_mail(subject, body)
+        else:
+            _send_smtp(recipients, subject, body)
+        logger.info("GitHub backup notification dispatched.")
+        return True
+    except Exception:
+        logger.warning("GitHub backup notification delivery failed or is uncertain; retry protection remains active.")
+        return False
+
+
 def _test_alert_error(exc: Exception, recipients: list[str]) -> str:
     """Map transport failures to safe, actionable configuration guidance."""
     if recipients == ["replit"]:

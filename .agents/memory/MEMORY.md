@@ -3,6 +3,7 @@
 - [Seed schema normalisation](seed-schema.md) — importer normalises date_added/last_reviewed/content from legacy field names; ChromaDB metadata must be scalar (tags serialised as JSON string)
 - [Retrieval threshold & coverage gap](retrieval-threshold.md) — 0.8 cosine cut-off silently drops short natural questions for in-seed topics; acronym expansion + coverage test guard it
 - [GitHub sync method](github-sync.md) — main-agent git writes are blocked; push via /tmp clone + connector proxy token (see file).
+- [Backup alert safety](github-backup-alert-safety.md) — reserve before delivery; uncertain sends remain protected; local monitoring needs shared persistent receipt/claim storage.
 - [Rendered dashboard checks](rendered-dashboard-checks.md) — successful login and HTTP responses can hide invalid JavaScript emitted by Python templates.
 - [TestClient background tasks](testclient-background-tasks.md) — separate sync requests may cancel create_task work; keep trigger-and-poll scenarios in one event loop.
 - [Touch tooltip verification](touch-tooltip-verification.md) — assert computed visibility, not just open state; mobile hover/focus can keep a dismissed tooltip visible.

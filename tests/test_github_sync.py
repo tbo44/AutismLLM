@@ -10,6 +10,7 @@ from app.github_backup_status import read_record
 @pytest.fixture(autouse=True)
 def isolated_status(tmp_path, monkeypatch):
     monkeypatch.setattr(sync, "STATUS_PATH", tmp_path / "backup-status.json")
+    monkeypatch.delenv("REINDEX_ALERT_EMAIL_TO", raising=False)
 
 
 def git(path, *args):

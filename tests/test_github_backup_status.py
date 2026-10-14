@@ -15,6 +15,11 @@ WORKSPACE_COMMIT = "a" * 40
 REMOTE_TIP = "b" * 40
 
 
+@pytest.fixture(autouse=True)
+def no_live_email(monkeypatch):
+    monkeypatch.delenv("REINDEX_ALERT_EMAIL_TO", raising=False)
+
+
 def successful(path, now=NOW):
     status.write_result(path, workspace_commit=WORKSPACE_COMMIT, remote_tip=REMOTE_TIP, now=now)
 
