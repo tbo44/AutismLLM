@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app import notifications
+from app.github_backup_history_health import record_failed_update
 from app.github_backup_status import (
     STATUS_PATH, STALE_SECONDS, THROTTLE_SECONDS, atomic_write_json,
     backup_health, _timestamp, read_alert_state, record_notification_history,
@@ -30,6 +31,7 @@ def _record_history(path, attempt):
         record_notification_history(path, attempt, wait_for_lock=False)
     except Exception:
         # Never leak exception text or let diagnostic storage affect claims.
+        record_failed_update(path, attempt)
         logger.warning("GitHub backup email history unavailable; check history storage privately.")
 
 

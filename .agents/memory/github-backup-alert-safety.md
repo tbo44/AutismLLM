@@ -22,3 +22,15 @@ reconstruct or clear reservations from rotated or missing history.
 
 **Why:** Losing diagnostics must not suppress warnings or cause duplicate mail;
 a history lock held by another process must not stall a reserved delivery.
+
+Successful diagnostic writes do not establish that earlier missing history was
+repaired. Retain completeness warnings rather than clearing them on recovery;
+an unknown reserved outcome alone is not proof of a recording gap.
+
+**Why:** A later attempt can replace the latest send metadata while an older
+missing row or terminal outcome remains invisible. An interrupted send and a
+failed history update are different problems and require different staff advice.
+
+**How to apply:** Compare available diagnostic evidence conservatively, never
+reconstruct transport outcomes, and disclose when all persistent evidence could
+not be saved. Any future acknowledgement must remain separate from send claims.

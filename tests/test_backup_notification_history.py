@@ -7,8 +7,14 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app import github_backup_alerts as alerts, github_backup_status as status, notifications
+from app import github_backup_history_health as health
 
 NOW = datetime(2026, 10, 14, 12, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def isolated_completeness_memory(monkeypatch):
+    monkeypatch.setattr(health, "_marker_write_failed", False)
 
 
 def attempt(index=0, kind="problem", outcome="reserved"):
@@ -129,6 +135,9 @@ def test_crash_keeps_reserved_history_and_claim(sender, monkeypatch):
         alerts.check_backup_alerts(sender, now=NOW)
     assert status.read_notification_history(sender) == [attempt()]
     assert alerts.check_backup_alerts(sender, now=NOW) == "throttled"
+    html = status.render_notification_history(sender)
+    assert "was interrupted; a history gap is not established" in html
+    assert "missing row" not in html
 
 
 @pytest.mark.parametrize("failure", ["corrupt", "write", "read"])
@@ -175,6 +184,114 @@ def test_busy_history_lock_does_not_delay_delivery(sender, monkeypatch, caplog):
         assert alerts.check_backup_alerts(sender, now=NOW) == "throttled"
     assert "history unavailable" in caplog.text
     assert status.notification_summary(sender, NOW)["last_notification"]["outcome"] == "sent"
+    assert "missing row" in status.render_notification_history(sender)
+    # Another successful send must not hide the older missed row after lock recovery.
+    assert alerts.check_backup_alerts(sender, now=NOW + timedelta(hours=24)) == "sent"
+    assert len(status.read_notification_history(sender)) == 1
+    html = status.render_notification_history(sender)
+    assert "History recording has failed" in html
+    assert "missing row for the latest" not in html
+    assert health._marker_path(sender).stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("stage", ["reserved", "sent", "both"])
+def test_write_failure_recovers_without_hiding_gaps(sender, monkeypatch, stage):
+    original = status.atomic_write_json
+    calls = []
+
+    def fail(path, data):
+        if path == status._history_path(sender):
+            outcome = data["attempts"][-1]["outcome"]
+            if stage == "both" or stage == outcome:
+                raise OSError("private-secret")
+        return original(path, data)
+
+    monkeypatch.setattr(status, "atomic_write_json", fail)
+    monkeypatch.setattr(notifications, "send_github_backup_alert",
+                        lambda *_: calls.append(1) or True)
+    assert alerts.check_backup_alerts(sender, now=NOW) == "sent"
+    assert alerts.check_backup_alerts(sender, now=NOW) == "throttled"
+    html = status.render_notification_history(sender)
+    assert "History recording has failed" in html
+    if stage == "sent":
+        assert "History is missing the latest terminal outcome" in html
+    elif stage == "both":
+        assert "History has a missing row" in html
+    else:
+        assert status.read_notification_history(sender) == [attempt(outcome="sent")]
+    monkeypatch.setattr(status, "atomic_write_json", original)
+    assert alerts.check_backup_alerts(sender, now=NOW + timedelta(hours=24)) == "sent"
+    assert calls == [1, 1]
+    # Reads remain warning-bearing even after successful writes and a fresh process.
+    import subprocess
+    import sys
+    result = subprocess.run([
+        sys.executable, "-c",
+        "from app.github_backup_status import render_notification_history; "
+        "import sys; print(render_notification_history(sys.argv[1]))", str(sender),
+    ], capture_output=True, text=True, check=True)
+    assert "History recording has failed" in result.stdout
+    assert "private-secret" not in result.stdout
+    assert health._marker_path(sender).stat().st_size < health.MARKER_BYTES
+
+
+def test_marker_failure_is_explicit_and_does_not_block_delivery(sender, monkeypatch, caplog):
+    original = status.atomic_write_json
+    def fail(path, data):
+        if path in (status._history_path(sender), health._marker_path(sender)):
+            raise PermissionError("private-secret")
+        return original(path, data)
+    monkeypatch.setattr(status, "atomic_write_json", fail)
+    monkeypatch.setattr(notifications, "send_github_backup_alert", lambda *_: True)
+    assert alerts.check_backup_alerts(sender, now=NOW) == "sent"
+    assert alerts.check_backup_alerts(sender, now=NOW) == "throttled"
+    assert "warning could not be saved" in status.render_notification_history(sender)
+    monkeypatch.setattr(status, "atomic_write_json", original)
+    assert alerts.check_backup_alerts(sender, now=NOW + timedelta(hours=24)) == "sent"
+    html = status.render_notification_history(sender)
+    assert "Completeness cannot be confirmed" in html
+    assert "private-secret" not in html + caplog.text
+
+
+@pytest.mark.parametrize("raw", [
+    "private-secret", "[]", "{}",
+    json.dumps({"version": 2, "last_failed_update": attempt()}),
+    json.dumps({"version": 1, "last_failed_update": attempt(outcome="private-secret")}),
+    " " * (health.MARKER_BYTES + 1),
+])
+def test_marker_corruption_remains_explicit_and_is_not_replaced(sender, raw):
+    health._marker_path(sender).write_text(raw)
+    html = status.render_notification_history(sender)
+    assert "completeness tracking unavailable or corrupt" in html
+    assert "private-secret" not in html
+    health.record_failed_update(sender, attempt())
+    assert health._marker_path(sender).read_text() == raw
+
+
+def test_completeness_projection_rotation_and_read_only(sender, monkeypatch):
+    health.record_failed_update(sender, dict(attempt(), token="private-secret"))
+    assert "private-secret" not in health._marker_path(sender).read_text()
+    monkeypatch.setattr(notifications, "send_github_backup_alert", lambda *_: True)
+    assert alerts.check_backup_alerts(sender, now=NOW) == "sent"
+    for index in range(1, 102):
+        status.record_notification_history(sender, attempt(index, outcome="sent"))
+    before = {file.name: file.read_bytes() for file in sender.parent.iterdir()}
+    html = status.render_notification_history(sender)
+    assert "History recording has failed" in html
+    assert "missing row for the latest" not in html
+    assert before == {file.name: file.read_bytes() for file in sender.parent.iterdir()}
+
+
+def test_claim_corruption_and_unavailable_marker_read_are_explicit(sender, monkeypatch):
+    claim = sender.with_name(sender.name + ".alerts.json")
+    claim.write_text("private-secret")
+    assert "Latest send tracking unavailable or corrupt" in status.render_notification_history(sender)
+    def fail(*_):
+        raise PermissionError("private-secret")
+    monkeypatch.setattr(health, "_read_marker", fail)
+    html = status.render_notification_history(sender)
+    assert "completeness tracking unavailable or corrupt" in html
+    assert "private-secret" not in html
 
 
 def test_admin_history_is_authenticated_private_and_read_only(sender, monkeypatch):
@@ -199,6 +316,10 @@ def test_admin_history_is_authenticated_private_and_read_only(sender, monkeypatc
     assert "githubBackupNotificationHistory" in response.text
     assert NOW.isoformat() in response.text
     assert status.NOTIFICATION_OUTCOMES["delivery_uncertain"] in response.text
+    health.record_failed_update(sender, attempt(outcome="sent"))
+    response = client.get("/admin", headers={"X-Admin-Token": "synthetic-admin-token"})
+    assert "githubBackupHistoryCompleteness" in response.text
+    assert "History recording has failed" in response.text
     assert history_path.read_bytes() == before
     history_path.write_text("private-secret")
     response = client.get("/admin", headers={"X-Admin-Token": "synthetic-admin-token"})

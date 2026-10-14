@@ -168,6 +168,8 @@ def record_notification_history(path, attempt, *, wait_for_lock=True):
 
 
 def render_notification_history(path=STATUS_PATH):
+    from app.github_backup_history_health import render_completeness
+
     result = (
         "<section id='githubBackupNotificationHistory'><h2>Backup warning email history</h2>"
         f"<p>Last {NOTIFICATION_HISTORY_LIMIT} reserved backup email attempts, newest first. "
@@ -182,6 +184,7 @@ def render_notification_history(path=STATUS_PATH):
             "<p><strong>Backup email history unavailable.</strong> Ask a maintainer to check "
             "history storage privately. Do not delete send tracking to force a resend.</p></section>"
         )
+    result += render_completeness(path, attempts)
     if not attempts:
         return result + "<p>No backup email history recorded yet. Earlier attempts are not reconstructed.</p></section>"
     result += "<table><thead><tr><th>Attempt (UTC)</th><th>Notice</th><th>Outcome</th></tr></thead><tbody>"
