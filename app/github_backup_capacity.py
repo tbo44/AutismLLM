@@ -1,12 +1,15 @@
 """Read-only filesystem and operator quota hints; never email eligibility."""
+import json
 import os
 import re
+import stat
 from datetime import datetime, timezone
 
 LOW_FREE_BYTES = 1024 ** 3
 LOW_FREE_FILES = 1000
 LOW_FREE_PERCENT = 10
 QUOTA_MAX_AGE_SECONDS = 24 * 60 * 60
+QUOTA_SNAPSHOT_MAX_BYTES = 4096
 
 
 def _space(value):
@@ -15,12 +18,53 @@ def _space(value):
     return f"{value / 1024 ** 2:.1f} MiB"
 
 
-def _quota_bytes(name):
+def _quota_bytes(raw):
     # Bound parsing and formatting; never echo operator input or parse errors.
-    raw = os.environ.get(name, "")
+    if type(raw) is int:
+        raw = str(raw)
+    if not isinstance(raw, str):
+        raise ValueError("Quota bytes unavailable")
     if not re.fullmatch(r"[0-9]{1,20}", raw):
         raise ValueError("Quota bytes unavailable")
     return int(raw)
+
+
+def _unique_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate quota field")
+        result[key] = value
+    return result
+
+
+def _operator_quota():
+    """Read one bounded inode per request; atomic replacement needs no lock."""
+    path = os.environ.get("BACKUP_STORAGE_QUOTA_SNAPSHOT_PATH", "")
+    if not path:
+        return {
+            "limit_bytes": os.environ.get("BACKUP_STORAGE_QUOTA_LIMIT_BYTES", ""),
+            "used_bytes": os.environ.get("BACKUP_STORAGE_QUOTA_USED_BYTES", ""),
+            "measured_at": os.environ.get("BACKUP_STORAGE_QUOTA_MEASURED_AT", ""),
+        }
+    # Nonblocking open avoids hanging on an accidentally configured FIFO.
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > QUOTA_SNAPSHOT_MAX_BYTES:
+            raise ValueError("Quota snapshot unavailable")
+        with os.fdopen(fd, "rb") as snapshot:
+            fd = None  # The stream owns the descriptor from here.
+            raw = snapshot.read(QUOTA_SNAPSHOT_MAX_BYTES + 1)
+        if len(raw) > QUOTA_SNAPSHOT_MAX_BYTES:
+            raise ValueError("Quota snapshot too large")
+        result = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_fields)
+        if not isinstance(result, dict):
+            raise ValueError("Invalid quota snapshot")
+        return result
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def render_quota(*, now=None):
@@ -34,13 +78,14 @@ def render_quota(*, now=None):
     )
     limit_text = ""
     try:
-        limit = _quota_bytes("BACKUP_STORAGE_QUOTA_LIMIT_BYTES")
+        snapshot = _operator_quota()
+        limit = _quota_bytes(snapshot.get("limit_bytes"))
         if limit <= 0:
             raise ValueError("Invalid quota limit")
         limit_text = f" Known operator-configured limit: {_space(limit)}."
-        used = _quota_bytes("BACKUP_STORAGE_QUOTA_USED_BYTES")
-        raw_time = os.environ.get("BACKUP_STORAGE_QUOTA_MEASURED_AT", "")
-        if len(raw_time) > 64:
+        used = _quota_bytes(snapshot.get("used_bytes"))
+        raw_time = snapshot.get("measured_at")
+        if not isinstance(raw_time, str) or len(raw_time) > 64:
             raise ValueError("Invalid quota timestamp")
         measured = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
         if measured.tzinfo is None:
@@ -49,7 +94,7 @@ def render_quota(*, now=None):
         age = ((now or datetime.now(timezone.utc)) - measured).total_seconds()
         if not 0 <= age <= QUOTA_MAX_AGE_SECONDS:
             raise ValueError("Quota measurement not current")
-    except (ValueError, OverflowError):
+    except (OSError, ValueError, OverflowError, UnicodeError, RecursionError):
         return (
             "<p role='alert'><strong>Backup review storage quota unavailable.</strong>"
             f"{limit_text} Quota headroom cannot be established; this does not mean "

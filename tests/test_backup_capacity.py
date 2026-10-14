@@ -1,4 +1,6 @@
 """Capacity reads must warn safely without modifying audits or sending email."""
+import json
+import os
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
@@ -13,7 +15,7 @@ NOW = datetime(2026, 10, 14, 12, tzinfo=timezone.utc)
 
 @pytest.fixture(autouse=True)
 def clear_operator_quota(monkeypatch):
-    for key in ("LIMIT_BYTES", "USED_BYTES", "MEASURED_AT"):
+    for key in ("LIMIT_BYTES", "USED_BYTES", "MEASURED_AT", "SNAPSHOT_PATH"):
         monkeypatch.delenv("BACKUP_STORAGE_QUOTA_" + key, raising=False)
 
 
@@ -21,6 +23,140 @@ def configure_quota(monkeypatch, used=20 * GIB, limit=100 * GIB, measured=NOW):
     monkeypatch.setenv("BACKUP_STORAGE_QUOTA_LIMIT_BYTES", str(limit))
     monkeypatch.setenv("BACKUP_STORAGE_QUOTA_USED_BYTES", str(used))
     monkeypatch.setenv("BACKUP_STORAGE_QUOTA_MEASURED_AT", measured.isoformat())
+
+
+def snapshot_data(used=20 * GIB, limit=100 * GIB, measured=NOW):
+    return {"limit_bytes": limit, "used_bytes": used, "measured_at": measured.isoformat()}
+
+
+def publish_snapshot(path, data):
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(data), encoding="utf-8")
+    temporary.replace(path)
+
+
+@pytest.mark.parametrize("used,warning", [
+    (0, None), (20 * GIB, None), (90 * GIB, "nearly full"),
+    (GIB, "nearly full"), (101 * GIB, "reached or exceeded"),
+])
+def test_file_quota_overrides_environment(tmp_path, monkeypatch, used, warning):
+    path = tmp_path / "quota.json"
+    limit = 2 * GIB if used == GIB else 100 * GIB
+    publish_snapshot(path, snapshot_data(used=used, limit=limit))
+    monkeypatch.setenv("BACKUP_STORAGE_QUOTA_SNAPSHOT_PATH", str(path))
+    configure_quota(monkeypatch, used=100 * GIB)
+    before = path.read_bytes()
+    html = capacity.render_quota(now=NOW)
+    assert "quota unavailable" not in html
+    assert ("role='alert'" in html) is bool(warning)
+    if warning:
+        assert f"quota is {warning}" in html
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("content,known_limit", [
+    (b"", False), (b"private-secret <script>", False),
+    (b"\xff", False), (b"[]", False), (b"null", False),
+    (b'{"limit_bytes": 1, "limit_bytes": 2}', False),
+    (b"[" * 2000, False),
+    (b"x" * (capacity.QUOTA_SNAPSHOT_MAX_BYTES + 1), False),
+    (json.dumps({"limit_bytes": 100 * GIB}).encode(), True),
+    (json.dumps({**snapshot_data(), "used_bytes": True}).encode(), True),
+    (json.dumps({**snapshot_data(), "used_bytes": -1}).encode(), True),
+    (json.dumps({**snapshot_data(), "used_bytes": 1.5}).encode(), True),
+    (json.dumps({**snapshot_data(), "used_bytes": "9" * 21}).encode(), True),
+    (json.dumps({**snapshot_data(), "limit_bytes": False}).encode(), False),
+    (json.dumps({**snapshot_data(), "limit_bytes": 0}).encode(), False),
+    (json.dumps({**snapshot_data(), "measured_at": None}).encode(), True),
+    (json.dumps({**snapshot_data(), "measured_at": "private-secret <script>"}).encode(), True),
+    (json.dumps({**snapshot_data(), "measured_at": "2026-10-14T12:00:00"}).encode(), True),
+    (json.dumps({**snapshot_data(), "measured_at": "x" * 65}).encode(), True),
+])
+def test_corrupt_file_is_sanitized_without_environment_fallback(
+        tmp_path, monkeypatch, content, known_limit):
+    path = tmp_path / "private-path.json"
+    path.write_bytes(content)
+    monkeypatch.setenv("BACKUP_STORAGE_QUOTA_SNAPSHOT_PATH", str(path))
+    configure_quota(monkeypatch)
+    html = capacity.render_quota(now=NOW)
+    assert "quota unavailable" in html
+    assert ("Known operator-configured limit: 100.0 GiB" in html) is known_limit
+    assert "private-path" not in html and "private-secret" not in html
+    assert "<script>" not in html and str(tmp_path) not in html
+    assert path.read_bytes() == content
+
+
+@pytest.mark.parametrize("kind", ["missing", "directory", "fifo", "unreadable"])
+def test_unreadable_file_is_unavailable_and_does_not_create_storage(
+        tmp_path, monkeypatch, kind):
+    path = tmp_path / "private-path.json"
+    if kind == "directory":
+        path.mkdir()
+    elif kind == "fifo":
+        os.mkfifo(path)
+    elif kind == "unreadable":
+        def denied(*_, **__):
+            raise PermissionError("private-secret")
+        monkeypatch.setattr(capacity.os, "open", denied)
+    monkeypatch.setenv("BACKUP_STORAGE_QUOTA_SNAPSHOT_PATH", str(path))
+    configure_quota(monkeypatch)
+    before = list(tmp_path.iterdir())
+    html = capacity.render_quota(now=NOW)
+    assert "quota unavailable" in html
+    assert "Known operator-configured limit" not in html
+    assert "private" not in html and str(tmp_path) not in html
+    assert list(tmp_path.iterdir()) == before
+
+
+@pytest.mark.parametrize("age,available", [
+    (0, True), (24 * 3600, True), (24 * 3600 + 1, False), (-1, False),
+])
+def test_file_measurement_freshness(tmp_path, monkeypatch, age, available):
+    path = tmp_path / "quota.json"
+    publish_snapshot(path, snapshot_data(measured=NOW - timedelta(seconds=age)))
+    monkeypatch.setenv("BACKUP_STORAGE_QUOTA_SNAPSHOT_PATH", str(path))
+    html = capacity.render_quota(now=NOW)
+    assert ("quota unavailable" not in html) is available
+    if not available:
+        assert "Known operator-configured limit: 100.0 GiB" in html
+
+
+def test_concurrent_atomic_replacement_reads_one_complete_snapshot(tmp_path, monkeypatch):
+    path = tmp_path / "quota.json"
+    publish_snapshot(path, snapshot_data())
+    monkeypatch.setenv("BACKUP_STORAGE_QUOTA_SNAPSHOT_PATH", str(path))
+    original = capacity.os.fdopen
+    def replace_after_open(fd, *args, **kwargs):
+        publish_snapshot(path, snapshot_data(used=199 * GIB, limit=200 * GIB))
+        return original(fd, *args, **kwargs)
+    monkeypatch.setattr(capacity.os, "fdopen", replace_after_open)
+    html = capacity.render_quota(now=NOW)
+    assert "20.0 GiB used of 100.0 GiB" in html
+    monkeypatch.setattr(capacity.os, "fdopen", original)
+    html = capacity.render_quota(now=NOW)
+    assert "199.0 GiB used of 200.0 GiB" in html
+    assert "quota is nearly full" in html
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["quota.json"]
+
+
+def test_file_growth_after_stat_is_still_bounded(tmp_path, monkeypatch):
+    path = tmp_path / "quota.json"
+    publish_snapshot(path, snapshot_data())
+    monkeypatch.setenv("BACKUP_STORAGE_QUOTA_SNAPSHOT_PATH", str(path))
+    original = capacity.os.fdopen
+    reads = []
+    def grow_after_stat(fd, *args, **kwargs):
+        path.write_bytes(b" " * (capacity.QUOTA_SNAPSHOT_MAX_BYTES + 100))
+        stream = original(fd, *args, **kwargs)
+        original_read = stream.read
+        def bounded_read(size):
+            reads.append(size)
+            return original_read(size)
+        stream.read = bounded_read
+        return stream
+    monkeypatch.setattr(capacity.os, "fdopen", grow_after_stat)
+    assert "quota unavailable" in capacity.render_quota(now=NOW)
+    assert reads == [capacity.QUOTA_SNAPSHOT_MAX_BYTES + 1]
 
 
 @pytest.mark.parametrize("used,limit,low,reached", [
@@ -202,9 +338,10 @@ def test_existing_archive_uses_own_filesystem_even_when_corrupt(tmp_path, monkey
 
 
 @pytest.mark.parametrize("state", ["healthy", "low", "unavailable"])
-@pytest.mark.parametrize("quota_state", ["healthy", "low", "exceeded", "missing", "stale"])
+@pytest.mark.parametrize("quota_state", ["healthy", "low", "exceeded", "missing", "stale", "corrupt"])
+@pytest.mark.parametrize("source", ["environment", "file"])
 def test_authenticated_dashboard_and_export_preserve_files_without_mail(
-        tmp_path, monkeypatch, state, quota_state):
+        tmp_path, monkeypatch, state, quota_state, source):
     from fastapi.testclient import TestClient
     from app import main, notifications, github_backup_status as status
     from app import github_backup_history_health as health
@@ -217,7 +354,6 @@ def test_authenticated_dashboard_and_export_preserve_files_without_mail(
     path.with_name(path.name + ".alerts.json").write_text("untouched-send-protection")
     directory = archive.archive_path(path)
     directory.mkdir()
-    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     monkeypatch.setattr(main, "_ADMIN_TOKEN", "synthetic-admin")
     monkeypatch.setattr(main, "BACKUP_STATUS_PATH", path)
     monkeypatch.setattr(main, "render_backup_notification_history",
@@ -239,6 +375,16 @@ def test_authenticated_dashboard_and_export_preserve_files_without_mail(
             measured -= timedelta(days=2)
         used = {"low": 95 * GIB, "exceeded": 101 * GIB}.get(quota_state, 20 * GIB)
         configure_quota(monkeypatch, used=used, measured=measured)
+        if quota_state == "corrupt":
+            monkeypatch.setenv("BACKUP_STORAGE_QUOTA_USED_BYTES", "private-secret")
+    quota_path = tmp_path / "private-quota.json"
+    if source == "file":
+        monkeypatch.setenv("BACKUP_STORAGE_QUOTA_SNAPSHOT_PATH", str(quota_path))
+        if quota_state != "missing":
+            publish_snapshot(quota_path, snapshot_data(used=used, measured=measured))
+            if quota_state == "corrupt":
+                quota_path.write_text("private-secret")
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     # No lifespan startup: the independent mail watchdog must not run in this test.
     client = TestClient(main.app)
     assert client.get("/admin").status_code == 401
@@ -248,7 +394,7 @@ def test_authenticated_dashboard_and_export_preserve_files_without_mail(
     assert response.status_code == 200
     assert ("storage is nearly full" in response.text) is (state == "low")
     assert ("capacity unavailable" in response.text) is (state == "unavailable")
-    assert ("quota unavailable" in response.text) is (quota_state in ("missing", "stale"))
+    assert ("quota unavailable" in response.text) is (quota_state in ("missing", "stale", "corrupt"))
     assert ("quota is nearly full" in response.text) is (quota_state == "low")
     assert ("quota is reached or exceeded" in response.text) is (quota_state == "exceeded")
     assert "private-secret" not in response.text
@@ -258,3 +404,19 @@ def test_authenticated_dashboard_and_export_preserve_files_without_mail(
     assert download.status_code == 200
     assert len(download.text.splitlines()) == 1
     assert before == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    if source == "file":
+        # The same server sees new operator data, without changing export bytes.
+        publish_snapshot(quota_path, snapshot_data(
+            used=101 * GIB, measured=datetime.now(timezone.utc)))
+        before_reload = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+        refreshed = client.get("/admin", headers=auth)
+        assert refreshed.status_code == 200
+        assert "quota unavailable" not in refreshed.text
+        assert "quota is reached or exceeded" in refreshed.text
+        assert ("storage is nearly full" in refreshed.text) is (state == "low")
+        assert ("capacity unavailable" in refreshed.text) is (state == "unavailable")
+        again = client.get("/admin/backup/history/acknowledgements/export", headers=auth)
+        assert again.status_code == 200
+        assert again.content == download.content
+        assert again.headers["content-disposition"] == download.headers["content-disposition"]
+        assert before_reload == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
