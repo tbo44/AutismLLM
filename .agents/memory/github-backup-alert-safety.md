@@ -58,3 +58,12 @@ attempts even though staff are only downloading an audit.
 **How to apply:** Keep archival publication short and crash-safe, and use
 read-only snapshots for exports. Validate the complete download before returning
 success; never offer a partial audit as if it were complete.
+
+Storage warnings should account for capacity available to the running user and
+file-slot exhaustion, not just total free bytes.
+
+**Why:** Reserved filesystem space can be unusable by the app, and many small
+permanent review records can exhaust file metadata while byte capacity remains.
+
+**How to apply:** Keep capacity checks read-only and separate from send
+eligibility; unavailable measurements must not imply healthy storage.

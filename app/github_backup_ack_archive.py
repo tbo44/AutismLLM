@@ -4,6 +4,7 @@ import os
 import tempfile
 
 from app import github_backup_history_health as health
+from app.github_backup_capacity import render_capacity
 
 RECORD_BYTES = 1024
 
@@ -105,7 +106,7 @@ def download_chunks(snapshot):
 
 
 def render_retention(path):
-    explanation = (
+    explanation = render_capacity(archive_path(path)) + (
         f"<p>Acknowledgement retention: latest {health.ACK_LIMIT} reviews in this panel. "
         "Older reviews are archived locally with no automatic expiry from the time "
         "archiving was introduced; previously discarded reviews cannot be recovered. "
