@@ -33,4 +33,17 @@ failed history update are different problems and require different staff advice.
 
 **How to apply:** Compare available diagnostic evidence conservatively, never
 reconstruct transport outcomes, and disclose when all persistent evidence could
-not be saved. Any future acknowledgement must remain separate from send claims.
+not be saved. Acknowledgement must remain separate from send claims.
+
+Acknowledgement means staff investigated a particular historical warning, not
+that missing diagnostics were recovered or delivery was confirmed. Never let it
+cover a later failure, even when that failure has the same attempt timestamp
+and outcome.
+
+**Why:** A stale dashboard and a repeating failed update can otherwise make a
+new recording gap appear reviewed. Shared admin-token authentication also
+cannot prove which individual staff member acted.
+
+**How to apply:** Scope acknowledgements to the reviewed failure generation,
+reject stale actions, and retain independent corruption and unsaved-marker
+warnings. Describe the audit actor as an authenticated admin, not a named user.

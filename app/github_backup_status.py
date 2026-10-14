@@ -182,8 +182,8 @@ def render_notification_history(path=STATUS_PATH):
     except (OSError, ValueError, KeyError, TypeError, OverflowError):
         return result + (
             "<p><strong>Backup email history unavailable.</strong> Ask a maintainer to check "
-            "history storage privately. Do not delete send tracking to force a resend.</p></section>"
-        )
+            "history storage privately. Do not delete send tracking to force a resend.</p>"
+        ) + render_completeness(path, []) + "</section>"
     result += render_completeness(path, attempts)
     if not attempts:
         return result + "<p>No backup email history recorded yet. Earlier attempts are not reconstructed.</p></section>"

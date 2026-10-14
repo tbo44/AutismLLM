@@ -24,6 +24,8 @@ from app.github_backup_status import render_status as render_github_backup_statu
 from app.github_backup_status import render_notification_status as render_backup_notification_status
 from app.github_backup_status import render_notification_history as render_backup_notification_history
 from app.github_backup_alerts import monitor_backup_alerts
+from app import github_backup_history_health
+from app.github_backup_status import STATUS_PATH as BACKUP_STATUS_PATH
 from app.test_alert_attempts import AttemptCapacityError, TestAlertAttemptStore
 from app.postgres_test_alert_attempts import (
     PostgresTestAlertAttemptStore, create_test_alert_attempt_store,
@@ -1285,6 +1287,38 @@ var _emailThrottleTimer = null;
 /* Stable sessionStorage key — cleared automatically when the tab closes. */
 var _TOKEN_KEY = 'maya_admin_crawl_token';
 
+var _backupAckBtn = document.getElementById('githubBackupHistoryAck');
+if (_backupAckBtn) {{
+  _backupAckBtn.onclick = async function() {{
+    if (!window.confirm('Confirm you investigated this historical recording warning. ' +
+        'Acknowledgement does not recover missing rows, confirm delivery, or resend email.')) return;
+    var token = window.prompt('Enter the dashboard admin token (ADMIN_TOKEN) to acknowledge this warning:');
+    if (!token) return;
+    var result = document.getElementById('githubBackupHistoryAckResult');
+    _backupAckBtn.disabled = true;
+    result.textContent = 'Saving acknowledgement...';
+    try {{
+      var response = await fetch('/admin/backup/history/acknowledge', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json', 'X-Admin-Token': token}},
+        body: JSON.stringify({{warning_id: _backupAckBtn.dataset.warningId, investigated: true}})
+      }});
+      if (!response.ok) {{
+        result.textContent = response.status === 409
+          ? 'Warning changed or backup is busy. Reload and review before acknowledging again.'
+          : 'Acknowledgement not confirmed. Check your admin token and diagnostic storage, then reload.';
+        _backupAckBtn.disabled = false;
+        return;
+      }}
+      result.textContent = 'Historical warning acknowledged. Missing history was not recovered. Reload to view the audit.';
+      _backupAckBtn.textContent = 'Warning acknowledged';
+    }} catch (e) {{
+      result.textContent = 'Acknowledgement could not be confirmed. Reload to check the audit before retrying.';
+      _backupAckBtn.disabled = false;
+    }}
+  }};
+}}
+
 function _getSavedToken() {{
   try {{ return sessionStorage.getItem(_TOKEN_KEY) || ''; }}
   catch (e) {{ return ''; }}
@@ -2342,6 +2376,31 @@ async def _scheduled_reindex_loop():
             logger.error(f"❌ Scheduled re-index loop error: {e}", exc_info=True)
             # Back off briefly before recomputing the next run.
             await asyncio.sleep(300)
+
+
+@app.post("/admin/backup/history/acknowledge")
+async def admin_acknowledge_backup_history(
+    request: Request, x_admin_token: str | None = Header(default=None),
+):
+    # Explicit header authentication only: cookies/query tokens cannot authorize
+    # this write, so cross-site form submissions cannot acknowledge warnings.
+    _check_admin_token(None, x_admin_token, None)
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict) or payload.get("investigated") is not True:
+            raise ValueError("Explicit investigation confirmation required")
+        warning_id = github_backup_history_health._warning_id(payload.get("warning_id"))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Warning identifier and explicit investigation confirmation required.")
+    try:
+        record = await asyncio.to_thread(
+            github_backup_history_health.acknowledge_warning, BACKUP_STATUS_PATH, warning_id,
+        )
+    except (github_backup_history_health.WarningChanged, BlockingIOError):
+        raise HTTPException(status_code=409, detail="Warning changed or backup is busy. Reload and review before acknowledging.")
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
+        raise HTTPException(status_code=503, detail="Acknowledgement unavailable. Ask a maintainer to check diagnostic storage privately.")
+    return {"acknowledged": True, "at": record["at"], "missing_history_recovered": False}
 
 
 @app.post("/admin/crawl")

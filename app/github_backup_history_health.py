@@ -1,5 +1,10 @@
 """Bounded, best-effort diagnostics; never consulted for send eligibility."""
+import fcntl
+import hashlib
 import json
+import re
+import uuid
+from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 
@@ -9,6 +14,23 @@ from app import github_backup_status as status
 # A single sticky bit is bounded and contains no paths, errors or credentials.
 _marker_write_failed = False
 MARKER_BYTES = 1024
+ACK_LIMIT = 100
+ACK_BYTES = 32768
+
+
+class WarningChanged(Exception):
+    """The warning shown to staff is no longer the current warning."""
+
+
+def _ack_path(path):
+    marker = _marker_path(path)
+    return marker.with_name(marker.name + ".acknowledgements.json")
+
+
+def _warning_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ValueError("Invalid warning identifier")
+    return value
 
 
 def _marker_path(path):
@@ -25,9 +47,65 @@ def _read_marker(path):
     if len(content) > MARKER_BYTES:
         raise ValueError("Backup history completeness marker too large")
     raw = json.loads(content)
-    if raw["version"] != 1:
+    if raw["version"] not in (1, 2):
         raise ValueError("Invalid backup history completeness marker")
-    return status._notification_attempt(raw["last_failed_update"])
+    attempt = status._notification_attempt(raw["last_failed_update"])
+    # Legacy warnings can be acknowledged without rewriting their evidence.
+    warning_id = (hashlib.sha256(json.dumps(attempt, sort_keys=True).encode()).hexdigest()
+                  if raw["version"] == 1 else _warning_id(raw["warning_id"]))
+    return {"warning_id": warning_id, "last_failed_update": attempt}
+
+
+def _read_acknowledgements(path):
+    try:
+        with _ack_path(path).open() as handle:
+            content = handle.read(ACK_BYTES + 1)
+    except FileNotFoundError:
+        return []
+    if len(content) > ACK_BYTES:
+        raise ValueError("Acknowledgement history too large")
+    raw = json.loads(content)
+    if (raw["version"] != 1 or not isinstance(raw["acknowledgements"], list)
+            or len(raw["acknowledgements"]) > ACK_LIMIT):
+        raise ValueError("Invalid acknowledgement history")
+    records = []
+    for row in raw["acknowledgements"]:
+        if row["actor"] != "authenticated_admin" or row["missing_history_recovered"] is not False:
+            raise ValueError("Invalid acknowledgement")
+        records.append({
+            "warning_id": _warning_id(row["warning_id"]),
+            "last_failed_update": status._notification_attempt(row["last_failed_update"]),
+            "at": status._timestamp(row["at"]).isoformat(),
+            "actor": "authenticated_admin", "missing_history_recovered": False,
+        })
+    return records
+
+
+def acknowledge_warning(path, warning_id, *, now=None):
+    """Audit exactly the reviewed warning; never modify evidence or send state.
+
+    Use the sender's persistent delivery lock for compare-and-write, but never
+    wait for it. The sender already holds this lock when recording failures.
+    """
+    warning_id = _warning_id(warning_id)
+    path = Path(path)
+    with path.with_name(path.name + ".alerts.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        marker = _read_marker(path)
+        if not marker or marker["warning_id"] != warning_id:
+            raise WarningChanged()
+        records = _read_acknowledgements(path)  # Never recreate corrupt audit.
+        existing = next((row for row in records if row["warning_id"] == warning_id), None)
+        if existing:
+            return existing
+        record = {
+            **marker, "at": (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(),
+            "actor": "authenticated_admin", "missing_history_recovered": False,
+        }
+        status.atomic_write_json(_ack_path(path), {
+            "version": 1, "acknowledgements": (records + [record])[-ACK_LIMIT:],
+        })
+        return record
 
 
 def record_failed_update(path, attempt):
@@ -42,7 +120,8 @@ def record_failed_update(path, attempt):
         attempt = status._notification_attempt(attempt)
         _read_marker(path)  # Preserve corrupt diagnostics for private repair.
         status.atomic_write_json(_marker_path(path), {
-            "version": 1, "last_failed_update": attempt,
+            "version": 2, "last_failed_update": attempt,
+            "warning_id": hashlib.sha256(uuid.uuid4().bytes).hexdigest(),
         })
     except Exception:
         _marker_write_failed = True
@@ -60,12 +139,47 @@ def render_completeness(path, attempts):
         )
     else:
         if marker:
-            stage = "reservation row" if marker["outcome"] == "reserved" else "terminal outcome"
+            attempt = marker["last_failed_update"]
+            stage = "reservation row" if attempt["outcome"] == "reserved" else "terminal outcome"
             messages.append(
                 f"History recording has failed: the latest failed update was a {stage} "
-                f"at {escape(marker['at'])}. Earlier rows or outcomes may be missing, "
+                f"at {escape(attempt['at'])}. Earlier rows or outcomes may be missing, "
                 "even if later updates succeeded. This warning is retained across history rotation."
             )
+        try:
+            acknowledgements = _read_acknowledgements(path)
+        except (OSError, ValueError, KeyError, TypeError, OverflowError):
+            messages.append(
+                "Acknowledgement tracking unavailable or corrupt. No warning can be safely "
+                "acknowledged here; ask a maintainer to check diagnostic storage privately."
+            )
+        else:
+            current_ack = next((row for row in acknowledgements
+                                if marker and row["warning_id"] == marker["warning_id"]), None)
+            if current_ack:
+                messages.append(
+                    f"<strong>Historical warning acknowledged</strong> by an authenticated admin "
+                    f"at {escape(current_ack['at'])}. Missing rows or outcomes were not recovered. "
+                    "This does not confirm complete history or email delivery."
+                )
+            elif marker:
+                messages.append(
+                    "<strong>Unacknowledged history recording warning.</strong> "
+                    "Investigate the diagnostic storage before acknowledging."
+                    f"<button type='button' id='githubBackupHistoryAck' "
+                    f"data-warning-id='{marker['warning_id']}'>Acknowledge investigated warning</button>"
+                    "<p id='githubBackupHistoryAckResult' role='status' aria-live='polite'></p>"
+                )
+            if acknowledgements:
+                messages.append(
+                    f"<details><summary>Acknowledgement audit (last {ACK_LIMIT})</summary>"
+                    + "".join(
+                        f"<p>Authenticated admin acknowledged warning <code>{row['warning_id']}</code> "
+                        f"at {escape(row['at'])}; failed {row['last_failed_update']['outcome']} update "
+                        f"at {escape(row['last_failed_update']['at'])}. Missing history not recovered.</p>"
+                        for row in reversed(acknowledgements)
+                    ) + "</details>"
+                )
     if _marker_write_failed:
         messages.append(
             "A history completeness warning could not be saved in this process. "
@@ -112,5 +226,5 @@ def render_completeness(path, attempts):
             "history: earlier or legacy attempts are not reconstructed."
         )
     return "<div id='githubBackupHistoryCompleteness'>" + "".join(
-        f"<p>{message}</p>" for message in messages
+        f"<div>{message}</div>" for message in messages
     ) + "</div>"
