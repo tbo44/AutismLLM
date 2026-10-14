@@ -22,6 +22,7 @@ from collections import Counter
 from app import notifications
 from app.github_backup_status import render_status as render_github_backup_status
 from app.github_backup_status import render_notification_status as render_backup_notification_status
+from app.github_backup_status import render_notification_history as render_backup_notification_history
 from app.github_backup_alerts import monitor_backup_alerts
 from app.test_alert_attempts import AttemptCapacityError, TestAlertAttemptStore
 from app.postgres_test_alert_attempts import (
@@ -876,6 +877,7 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
     """Build and return the admin dashboard as a self-contained HTML string."""
     github_backup_html = render_github_backup_status()
     backup_notification_html = render_backup_notification_status()
+    backup_notification_history_html = render_backup_notification_history()
     test_attempt_script = (
         Path(__file__).resolve().parent.parent / "static" / "admin-test-attempts.js"
     ).read_text(encoding="utf-8")
@@ -1111,6 +1113,7 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
 
 {github_backup_html}
 {backup_notification_html}
+{backup_notification_history_html}
 <section>
   <h2>Knowledge Base</h2>
   {kb_alert_html}

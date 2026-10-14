@@ -1,4 +1,5 @@
 """Local, credential-free backup receipts. Reading never contacts GitHub."""
+import fcntl
 import json
 import os
 import re
@@ -10,6 +11,8 @@ from pathlib import Path
 STATUS_PATH = Path(__file__).resolve().parents[1] / "logs" / "github_backup_status.json"
 STALE_SECONDS = 15 * 60
 THROTTLE_SECONDS = 24 * 60 * 60
+NOTIFICATION_HISTORY_LIMIT = 100
+NOTIFICATION_HISTORY_BYTES = 32768
 NOTIFICATION_OUTCOMES = {
     "reserved": "Attempt reserved; delivery is unknown (it may still be in progress or was interrupted).",
     "sent": "Dispatched to the mail service; inbox delivery is not confirmed.",
@@ -103,6 +106,91 @@ def notification_summary(path=STATUS_PATH, now=None):
         if now < until and backup_health(path, now) != "healthy":
             summary["throttled_until"] = until.isoformat()
     return summary
+
+
+def _notification_attempt(raw):
+    """Project fixed codes and a normalized timestamp, never arbitrary text."""
+    if raw["kind"] not in ("problem", "recovery") or raw["outcome"] not in NOTIFICATION_OUTCOMES:
+        raise ValueError("Invalid backup notification history")
+    return {
+        "at": _timestamp(raw["at"]).isoformat(),
+        "kind": raw["kind"], "outcome": raw["outcome"],
+    }
+
+
+def _history_path(path):
+    path = Path(path)
+    return path.with_name(path.name + ".alerts.history.json")
+
+
+def read_notification_history(path=STATUS_PATH):
+    """Read a bounded allowlist without locks, writes, claims or delivery."""
+    try:
+        with _history_path(path).open() as handle:
+            content = handle.read(NOTIFICATION_HISTORY_BYTES + 1)
+    except FileNotFoundError:
+        return []
+    if len(content) > NOTIFICATION_HISTORY_BYTES:
+        raise ValueError("Backup notification history too large")
+    raw = json.loads(content)
+    if raw["version"] != 1 or not isinstance(raw["attempts"], list):
+        raise ValueError("Invalid backup notification history")
+    if len(raw["attempts"]) > NOTIFICATION_HISTORY_LIMIT:
+        raise ValueError("Backup notification history too long")
+    return [_notification_attempt(attempt) for attempt in raw["attempts"]]
+
+
+def record_notification_history(path, attempt, *, wait_for_lock=True):
+    """Rotate diagnostic history independently of permanent send reservations.
+
+    Writers share a separate persistent lock; readers see atomic snapshots.
+    A terminal outcome replaces its reserved row, so crashes remain unknown.
+    Corrupt/unwritable history is never silently replaced.
+    """
+    attempt = _notification_attempt(attempt)
+    history_path = _history_path(path)
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    with history_path.with_suffix(history_path.suffix + ".lock").open("a") as lock:
+        flags = fcntl.LOCK_EX if wait_for_lock else fcntl.LOCK_EX | fcntl.LOCK_NB
+        fcntl.flock(lock, flags)
+        attempts = read_notification_history(path)
+        for index in range(len(attempts) - 1, -1, -1):
+            previous = attempts[index]
+            if (attempt["outcome"] != "reserved" and previous["outcome"] == "reserved"
+                    and previous["at"] == attempt["at"] and previous["kind"] == attempt["kind"]):
+                attempts[index] = attempt
+                break
+        else:
+            attempts.append(attempt)
+        atomic_write_json(history_path, {
+            "version": 1, "attempts": attempts[-NOTIFICATION_HISTORY_LIMIT:],
+        })
+
+
+def render_notification_history(path=STATUS_PATH):
+    result = (
+        "<section id='githubBackupNotificationHistory'><h2>Backup warning email history</h2>"
+        f"<p>Last {NOTIFICATION_HISTORY_LIMIT} reserved backup email attempts, newest first. "
+        "Older rows are removed automatically; send reservations are not removed. "
+        "History is local and separate from test-email reviews. Reload to refresh. "
+        "Viewing history never sends email. History failures do not disable duplicate protection.</p>"
+    )
+    try:
+        attempts = read_notification_history(path)
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
+        return result + (
+            "<p><strong>Backup email history unavailable.</strong> Ask a maintainer to check "
+            "history storage privately. Do not delete send tracking to force a resend.</p></section>"
+        )
+    if not attempts:
+        return result + "<p>No backup email history recorded yet. Earlier attempts are not reconstructed.</p></section>"
+    result += "<table><thead><tr><th>Attempt (UTC)</th><th>Notice</th><th>Outcome</th></tr></thead><tbody>"
+    for attempt in reversed(attempts):
+        result += (
+            f"<tr><td>{escape(attempt['at'])}</td><td>{attempt['kind']}</td>"
+            f"<td>{NOTIFICATION_OUTCOMES[attempt['outcome']]}</td></tr>"
+        )
+    return result + "</tbody></table></section>"
 
 
 def render_notification_status(path=STATUS_PATH, now=None):

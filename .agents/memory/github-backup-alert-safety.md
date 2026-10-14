@@ -15,3 +15,10 @@ The server monitor and sync sender must share persistent receipt/claim storage;
 an unrelated server disk cannot establish workspace backup health. Independent
 monitoring is needed to detect a stopped watcher; neither local process can
 report an outage if both are stopped.
+
+Diagnostic history is best-effort, not a source of send eligibility. Keep its
+failures and lock contention independent of pre-send protection, and never
+reconstruct or clear reservations from rotated or missing history.
+
+**Why:** Losing diagnostics must not suppress warnings or cause duplicate mail;
+a history lock held by another process must not stall a reserved delivery.

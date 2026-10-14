@@ -14,7 +14,7 @@ from pathlib import Path
 from app import notifications
 from app.github_backup_status import (
     STATUS_PATH, STALE_SECONDS, THROTTLE_SECONDS, atomic_write_json,
-    backup_health, _timestamp, read_alert_state,
+    backup_health, _timestamp, read_alert_state, record_notification_history,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,15 @@ POLL_SECONDS = 60
 
 
 _read_state = read_alert_state
+
+
+def _record_history(path, attempt):
+    try:
+        # A stuck history writer must not delay a reserved email delivery.
+        record_notification_history(path, attempt, wait_for_lock=False)
+    except Exception:
+        # Never leak exception text or let diagnostic storage affect claims.
+        logger.warning("GitHub backup email history unavailable; check history storage privately.")
 
 
 def check_backup_alerts(path=None, *, now=None, missing_ready=True):
@@ -65,6 +74,7 @@ def check_backup_alerts(path=None, *, now=None, missing_ready=True):
                 "outcome": "reserved",
             }
             atomic_write_json(state_path, state)
+            _record_history(path, state["last_notification"])
             # The reserved attempt survives SMTP timeout, process death, restart
             # and concurrent checks. Exceptions must not undo the reservation.
             try:
@@ -72,6 +82,7 @@ def check_backup_alerts(path=None, *, now=None, missing_ready=True):
             except Exception:
                 outcome = "delivery_uncertain"
             state["last_notification"]["outcome"] = outcome
+            _record_history(path, state["last_notification"])
             # If this write fails, the durable reserved/unknown outcome remains.
             # Never undo or recreate a pre-send claim to record a result.
             atomic_write_json(state_path, state)
