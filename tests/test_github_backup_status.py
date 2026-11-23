@@ -151,11 +151,12 @@ def test_dashboard_status_requires_admin_and_has_no_sync_side_effects(tmp_path, 
         response = client.get(url, **kwargs)
     finally:
         client.close()
-    if auth in ("missing", "invalid", "browser"):
-        assert response.status_code == {"missing": 401, "invalid": 403, "browser": 303}[auth]
+    if auth in ("missing", "invalid", "browser", "query"):
+        assert response.status_code == {"missing": 401, "invalid": 403, "browser": 303, "query": 401}[auth]
         assert not reads
         assert not notification_reads
         assert WORKSPACE_COMMIT not in response.text
+        assert "test-backup-admin" not in response.text
     else:
         assert response.status_code == 200
         assert reads == [True]

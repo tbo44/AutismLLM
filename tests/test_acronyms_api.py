@@ -46,7 +46,9 @@ def test_mutations_reject_unauthenticated_requests(
     client, glossary_path, method, channel
 ):
     before = glossary_path.read_bytes()
-    auth = {} if channel == "missing" else credentials(client, channel, "wrong-token")
+    # Even the real password must not authenticate from a URL.
+    token = VALID_TOKEN if channel == "query" else "wrong-token"
+    auth = {} if channel == "missing" else credentials(client, channel, token)
     path = "/api/acronyms" if method == "POST" else "/api/acronyms/GP"
     body = (
         {"json": {"key": "GP", "definition": "Unauthorized change"}}
@@ -56,7 +58,8 @@ def test_mutations_reject_unauthenticated_requests(
 
     response = client.request(method, path, **body, **auth)
 
-    assert response.status_code == (401 if channel == "missing" else 403)
+    assert response.status_code == (401 if channel in ("missing", "query") else 403)
+    assert token not in response.text
     assert glossary_path.read_bytes() == before
 
 
@@ -102,7 +105,7 @@ def test_missing_entry_returns_404(client, glossary_path, method):
     assert glossary_path.read_bytes() == before
 
 
-@pytest.mark.parametrize("channel", ["query", "header", "cookie"])
+@pytest.mark.parametrize("channel", ["header", "cookie"])
 def test_add_update_delete_persists_each_change(client, glossary_path, channel):
     auth = credentials(client, channel, VALID_TOKEN)
     definition = "Education, Health and Care Plan"

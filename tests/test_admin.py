@@ -103,21 +103,19 @@ with patch.object(main, "initialize_rag_background"):
 
 def test_check_admin_token_missing_raises_401(admin_token):
     with pytest.raises(HTTPException) as exc:
-        _check_admin_token(None, None, None)
+        _check_admin_token(None)
     assert exc.value.status_code == 401
 
 
 def test_check_admin_token_wrong_raises_403(admin_token):
     with pytest.raises(HTTPException) as exc:
-        _check_admin_token("wrong-token", None, None)
+        _check_admin_token("wrong-token")
     assert exc.value.status_code == 403
 
 
 def test_check_admin_token_valid_passes(admin_token):
-    # Valid token in any position should not raise
-    _check_admin_token(VALID_TOKEN, None, None)
-    _check_admin_token(None, VALID_TOKEN, None)
-    _check_admin_token(None, None, VALID_TOKEN)
+    _check_admin_token(admin_token)
+    _check_admin_token(None, admin_token)
 
 
 # ── /admin endpoint auth ──────────────────────────────────────────────
@@ -128,9 +126,59 @@ def test_admin_no_token_returns_401(admin_token):
     assert resp.status_code == 401
 
 
-def test_admin_wrong_token_returns_403(admin_token):
-    resp = client.get("/admin?token=wrong-token")
-    assert resp.status_code == 403
+@pytest.mark.parametrize("query_token", [VALID_TOKEN, "wrong-token", ""])
+def test_admin_query_token_does_not_authenticate_scripts(admin_token, query_token):
+    resp = client.get("/admin", params={"token": query_token}, follow_redirects=False)
+    assert resp.status_code == 401
+    assert "X-Admin-Token" in resp.json()["detail"]
+    assert "location" not in resp.headers
+    assert "set-cookie" not in resp.headers
+    assert VALID_TOKEN not in resp.text
+    assert "wrong-token" not in resp.text
+    assert resp.headers["cache-control"] == "no-store"
+
+
+def test_legacy_bookmark_redirects_to_clean_sign_in_without_a_session(admin_token):
+    with closing(TestClient(app, base_url="https://localhost")) as browser:
+        resp = browser.get(
+            "/admin", params={"token": admin_token, "unused": "value"},
+            headers={"Accept": "text/html"}, follow_redirects=True,
+        )
+
+        assert [(r.status_code, r.headers["location"]) for r in resp.history] == [
+            (303, "/admin/login"),
+        ]
+        redirect = resp.history[0]
+        assert redirect.headers["referrer-policy"] == "no-referrer"
+        assert redirect.headers["cache-control"] == "no-store"
+        assert "set-cookie" not in redirect.headers
+        assert resp.status_code == 200
+        assert resp.url.path == "/admin/login"
+        assert not resp.url.query
+        assert "Admin password" in resp.text
+        assert admin_token not in resp.text
+        assert browser.get("/admin").status_code == 401
+
+
+@pytest.mark.parametrize("auth", ["header", "cookie"])
+def test_legacy_bookmark_cleans_url_when_already_authenticated(admin_token, auth):
+    with closing(TestClient(app, base_url="https://localhost")) as browser:
+        headers = {"Accept": "text/html"}
+        if auth == "header":
+            headers["X-Admin-Token"] = admin_token
+        else:
+            browser.cookies.set(main._ADMIN_COOKIE_NAME, admin_token)
+        resp = browser.get(
+            "/admin", params={"token": admin_token}, headers=headers, follow_redirects=True,
+        )
+    assert [(r.status_code, r.headers["location"]) for r in resp.history] == [(303, "/admin")]
+    assert resp.history[0].headers["referrer-policy"] == "no-referrer"
+    assert "set-cookie" not in resp.history[0].headers
+    assert resp.status_code == 200
+    assert resp.url.path == "/admin"
+    assert not resp.url.query
+    assert "Knowledge Base" in resp.text
+    assert admin_token not in resp.text
 
 
 def test_admin_wrong_header_token_returns_403(admin_token):
@@ -147,11 +195,15 @@ def test_admin_browser_no_token_redirects_to_login(admin_token):
     assert resp.headers["location"] == "/admin/login"
 
 
-def test_admin_valid_token_returns_dashboard(admin_token):
-    resp = client.get(f"/admin?token={VALID_TOKEN}")
+def test_admin_valid_header_token_returns_dashboard(admin_token):
+    resp = client.get("/admin", headers={"X-Admin-Token": admin_token})
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
+    assert not resp.request.url.query
+    assert admin_token not in str(resp.request.url)
+    assert "set-cookie" not in resp.headers
     body = resp.text
+    assert admin_token not in body
     assert "Knowledge Base" in body
     assert 'id="testAlertBtn"' in body
     assert "Send test email" in body
@@ -162,12 +214,6 @@ def test_admin_valid_token_returns_dashboard(admin_token):
     assert 'id="cacheExpiring"' in body
     assert "Re-crawl expiring pages" in body
     assert "fetch('/admin/crawl/expiring'" in body
-
-
-def test_admin_valid_token_via_header(admin_token):
-    resp = client.get("/admin", headers={"X-Admin-Token": VALID_TOKEN})
-    assert resp.status_code == 200
-    assert "Knowledge Base" in resp.text
 
 
 @pytest.mark.parametrize(("headers", "dashboard_status", "refresh_status"), [
@@ -464,7 +510,7 @@ def test_failed_seed_reindex_appears_in_live_status(tmp_path, monkeypatch):
 
 
 def test_dashboard_polling_renders_completed_history_without_reload(admin_token):
-    response = client.get(f"/admin?token={admin_token}")
+    response = client.get("/admin", headers={"X-Admin-Token": admin_token})
     scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", response.text, re.DOTALL)
     runner = str(Path(__file__).parent / "admin_history_runner.cjs")
     result = subprocess.run(
@@ -708,6 +754,8 @@ def test_login_get_shows_form(admin_token):
     body = resp.text
     assert "Sign in" in body
     assert "Admin password" in body
+    assert 'method="post" action="/admin/login"' in body
+    assert admin_token not in body
 
 
 def test_login_get_already_signed_in_redirects_to_admin(admin_token):
@@ -733,17 +781,30 @@ def clear_login_attempts():
 
 
 def test_login_post_correct_token_redirects_and_sets_cookie(admin_token, clear_login_attempts):
-    """Submitting the correct token redirects to /admin and sets the session cookie."""
-    resp = client.post(
-        "/admin/login",
-        data={"token": VALID_TOKEN},
-        follow_redirects=False,
-    )
-    assert resp.status_code == 303
-    assert resp.headers["location"] == "/admin"
-    # The session cookie must be present in the response
-    set_cookie = resp.headers.get("set-cookie", "")
-    assert main._ADMIN_COOKIE_NAME in set_cookie
+    """Submitting the password in the form reaches the dashboard on a clean URL."""
+    with closing(TestClient(app, base_url="https://localhost")) as browser:
+        resp = browser.post("/admin/login", data={"token": admin_token}, follow_redirects=True)
+
+    assert [(r.status_code, r.headers["location"]) for r in resp.history] == [(303, "/admin")]
+    submitted = resp.history[0]
+    assert submitted.request.method == "POST"
+    assert submitted.request.url.path == "/admin/login"
+    assert main._ADMIN_COOKIE_NAME in submitted.headers["set-cookie"]
+    assert resp.status_code == 200
+    assert resp.request.method == "GET"
+    assert resp.url.path == "/admin"
+    assert "Knowledge Base" in resp.text
+    for response in [submitted, resp]:
+        assert not response.request.url.query
+        assert admin_token not in str(response.request.url)
+        assert admin_token not in response.text
+
+
+def test_login_post_query_token_does_not_set_cookie(admin_token, clear_login_attempts):
+    resp = client.post("/admin/login", params={"token": admin_token}, follow_redirects=False)
+    assert resp.status_code == 401
+    assert "set-cookie" not in resp.headers
+    assert admin_token not in resp.text
 
 
 def test_login_post_wrong_token_rerenders_form_with_error(admin_token, clear_login_attempts):

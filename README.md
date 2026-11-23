@@ -262,7 +262,26 @@ curl -X POST https://<your-app>/admin/crawl -H "Authorization: Bearer $ADMIN_CRA
 
 `GET /admin` shows: question volume (7-day + total), feedback submissions, top-10 retrieved sources, knowledge-base health (chunk count, last re-index, schedule/next run, failure alerts), and re-index history.
 
-**Access**: staff sign in at `/admin/login` with `ADMIN_TOKEN` (session cookie, 12 h). The token also works via `?token=` or `X-Admin-Token` header for scripts. Set `ADMIN_TOKEN` in [your local shell](#6-running-locally) or in Replit **Secrets**, then restart. If it is unset or blank, Maya generates a private random fallback and does not print it.
+**Staff sign-in**: open `/admin/login` and enter `ADMIN_TOKEN` in the password
+form. The form submits the password in the request body, and the session cookie
+keeps you signed in for up to 12 hours. Set `ADMIN_TOKEN` in
+[your local shell](#6-running-locally) or in Replit **Secrets**, then restart.
+If it is unset or blank, Maya generates a private random fallback and does not
+print it.
+
+**Scripts**: use a clean URL and send `ADMIN_TOKEN` in the `X-Admin-Token`
+header. This also works for authenticated glossary edits.
+
+```bash
+curl -H "X-Admin-Token: $ADMIN_TOKEN" https://<your-app>/admin
+```
+
+**Moving off old links**: URLs containing `?token=…` no longer sign you in.
+Replace old bookmarks with `/admin/login` and update scripts to use the header
+before switching to this version. Old browser links to the dashboard redirect
+to sign-in (or to a clean dashboard URL when already authenticated). If a real
+password was ever used in a URL, rotate `ADMIN_TOKEN`: the change cannot remove
+it from browser history, saved links, or request logs that already recorded it.
 
 ---
 
