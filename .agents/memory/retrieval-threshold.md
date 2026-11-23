@@ -34,6 +34,16 @@ raising it is in-domain-but-wrong answers.
 - The coverage test is deterministic (no LLM): embeddings are deterministic, so
   borderline distances near 0.8 are stable, not flaky.
 
+Treat an embedding revision change as a retrieval calibration change, not a
+routine dependency update.
+
+**Why:** the relevance gates were calibrated on distances produced by a
+specific model; different weights can move relevant or unrelated topics
+across either threshold without a seed or code change.
+
+**How to apply:** evaluate the strict and second-tier recall and off-topic
+assertions with both revisions before updating the test baseline.
+
 ## Second-tier gate (July 2026)
 - Recall fix that closed all five original KNOWN_GAPS without touching 0.8: when
   nothing clears the strict bar, `apply_relevance_gate` may return the SINGLE

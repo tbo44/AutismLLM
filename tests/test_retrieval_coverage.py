@@ -25,8 +25,8 @@ query-expansion path the retriever uses, and assert coverage.
     unexpected pass (XPASS) and fails, forcing it to be promoted into
     CORE_TOPICS so the gain is locked in.
 
-The first run cold-loads the SentenceTransformer model and embeds the seed
-(~tens of seconds); subsequent runs are fast.
+Each run loads a pinned, pre-cached SentenceTransformer model and embeds the
+seed locally. See README.md for one-time cache setup; pytest never downloads it.
 
 Run with:
     pytest tests/test_retrieval_coverage.py -v
@@ -41,6 +41,10 @@ from rag.retriever import (
     SECOND_TIER_THRESHOLD,
     apply_relevance_gate,
     expand_query_with_synonyms,
+)
+from scripts.cache_retrieval_model import (
+    RetrievalModelCacheError,
+    cached_retrieval_model_path,
 )
 
 
@@ -57,8 +61,22 @@ def seed_store(tmp_path_factory):
     asserting coverage for topics we know are in the seed, so crawled pages that
     may or may not be present must not influence the result.
     """
+    try:
+        model_path = cached_retrieval_model_path()
+    except RetrievalModelCacheError as exc:
+        pytest.fail(
+            f"RETRIEVAL MODEL SETUP: {exc}\n"
+            "Run `python -m scripts.cache_retrieval_model` on a machine with "
+            "Hugging Face access, then run pytest with the same cache (see README.md). "
+            "No retrieval assertions ran.",
+            pytrace=False,
+        )
+
     persist_dir = tmp_path_factory.mktemp("chroma_coverage")
-    store = UKAutismVectorStore(persist_directory=str(persist_dir))
+    store = UKAutismVectorStore(
+        persist_directory=str(persist_dir),
+        embedding_model_path=str(model_path),
+    )
     store.initialize()
 
     chunks = import_structured_knowledge(SEED_FILE)

@@ -18,8 +18,15 @@ from .sources import SourceAuthority
 logger = logging.getLogger(__name__)
 
 class UKAutismVectorStore:
-    def __init__(self, persist_directory: str = "./chroma_db"):
+    def __init__(
+        self,
+        persist_directory: str = "./chroma_db",
+        *,
+        embedding_model_path: Optional[str] = None,
+    ):
+        """Use a local-only model when an explicit snapshot path is supplied."""
         self.persist_directory = persist_directory
+        self.embedding_model_path = embedding_model_path
         self.client = None
         self.collection = None
         self.embedder = None
@@ -38,10 +45,14 @@ class UKAutismVectorStore:
             )
         )
         
-        # Initialize sentence transformer - configurable via EMBEDDING_MODEL env var
-        embedding_model_name = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        # Normal app runs still use EMBEDDING_MODEL or the default model.
+        local_only = self.embedding_model_path is not None
+        embedding_model_name = (
+            self.embedding_model_path if local_only
+            else os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        )
         logger.info(f"Loading embedding model: {embedding_model_name}")
-        self.embedder = SentenceTransformer(embedding_model_name)
+        self.embedder = SentenceTransformer(embedding_model_name, local_files_only=local_only)
         
         # Create ChromaDB embedding function class
         class SentenceTransformerEmbeddingFunction:

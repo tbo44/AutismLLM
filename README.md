@@ -244,7 +244,7 @@ Prints a per-category chunk summary. Raw crawl output is saved to `data/raw/` wi
 
 ### Retrieval tuning
 
-`rag/retriever.py` defines `MIN_RELEVANCE_THRESHOLD = 0.8` (cosine distance). Lower = stricter. If natural phrasings of an in-seed topic fall through to the "no information" fallback, either add a broader entry or check `tests/test_retrieval_coverage.py`, which guards 8 core questions and tracks known gaps as expected-fail tests.
+`rag/retriever.py` defines `MIN_RELEVANCE_THRESHOLD = 0.8`. Lower = stricter. If natural phrasings of an in-seed topic fall through to the "no information" fallback, either add a broader entry or run the [offline retrieval checks](#offline-retrieval-coverage).
 
 ---
 
@@ -268,6 +268,8 @@ curl -X POST https://<your-app>/admin/crawl -H "Authorization: Bearer $ADMIN_CRA
 
 ## 10. Running tests
 
+Set up the [retrieval model cache](#offline-retrieval-coverage) once before running the full suite.
+
 ```bash
 pytest tests/ -v
 ```
@@ -279,10 +281,46 @@ pytest tests/ -v
 | `test_llm_live_budget.py` | Offline checks that the live attempt cap includes SDK retries and is shared across test cases |
 | `test_llm_answer_essentials.py` | Offline checks that complete paraphrases pass and fluent replies missing essential advice fail |
 | `test_llm_reading_comparison.py` | Offline checks of the live comparison's scoring, request limit, and provider failure reporting |
-| `test_retrieval_coverage.py` | Deterministic (no LLM): core questions must retrieve below threshold; known gaps tracked as xfail |
+| `test_retrieval_coverage.py` | Real, cached embeddings: core and compound questions, strict and second-tier thresholds, and off-topic rejection |
 | `test_policy.py` | Safety guardrail patterns |
 | `test_admin.py` | Admin auth (401/403/cookie/header) and log parsing |
 | `test_smoke.py`, `test_static_assets.py` | Basic endpoint and asset checks |
+
+### Offline retrieval coverage
+
+These checks embed the seed into a fresh ChromaDB collection using the real
+`sentence-transformers/all-MiniLM-L6-v2` model at the commit pinned in
+`scripts/cache_retrieval_model.py`. They don't use the live database, an LLM,
+or the app's `EMBEDDING_MODEL` setting.
+
+After installing the project's Python dependencies, run setup once from the
+project root on a machine that can reach Hugging Face:
+
+```bash
+python -m scripts.cache_retrieval_model
+```
+
+Setup downloads the pinned weights and model files to the Hugging Face Hub
+cache. Use the same cache for pytest. For an offline runner, set `HF_HUB_CACHE`
+to a shared or copied Hub cache directory before running pytest. If copying
+the cache, include both `snapshots/` and `blobs/` for the model, since the
+snapshot can contain links to the blobs. Don't commit model weights to Git.
+
+```bash
+python -m pytest tests/test_retrieval_coverage.py -v
+
+# Optional verification on Linux with unprivileged user namespaces enabled:
+unshare --user --map-root-user --net \
+  python -m pytest tests/test_retrieval_coverage.py -v
+```
+
+Pytest always loads the snapshot locally and never tries to fill the cache.
+`RETRIEVAL MODEL SETUP` means the pinned snapshot is missing or incomplete,
+not that Maya returned a wrong result. If setup cannot download the files,
+stage them from a connected machine. Retrieval, threshold, and precision
+assertions run only after the real model has loaded.
+
+### Live LLM checks
 
 Routine chat tests use controlled completions, so they don't need a provider
 key or an available model. To check the configured provider and model, opt in:
@@ -476,7 +514,7 @@ python -m pytest tests/test_github_sync.py -q
 
 ## 15. Contributing
 
-1. **Adding knowledge**: edit the seed JSONL (include all required fields, verify against official sources, set `reliability_score` honestly), then `python scripts/reindex.py` and run `pytest tests/test_retrieval_coverage.py`.
+1. **Adding knowledge**: edit the seed JSONL (include all required fields, verify against official sources, set `reliability_score` honestly), then `python scripts/reindex.py` and run the [offline retrieval checks](#offline-retrieval-coverage).
 2. **Changing answers/prompts**: the structured format and reading-level rules live in `rag/llm_client.py` (`synthesize_response`). Run `pytest tests/test_answers.py` after changes.
 3. **Changing guardrails**: patterns are in `app/main.py`; every change must keep `tests/test_policy.py` green. Crisis safety is non-negotiable — never weaken the crisis path.
 4. **Frontend**: keep 18px body text, 44px touch targets, reduced-motion gating, and the disclaimer banner. No frameworks.
