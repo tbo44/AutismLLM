@@ -155,16 +155,19 @@ def test_export_authenticated_readonly_no_cache_and_safe_errors(rotated, monkeyp
     path, rows = rotated
     monkeypatch.setattr(main, "_ADMIN_TOKEN", "synthetic-admin")
     monkeypatch.setattr(main, "BACKUP_STATUS_PATH", path)
-    client = TestClient(main.app)
+    client = TestClient(main.app, base_url="https://testserver")
     url = "/admin/backup/history/acknowledgements/export"
     assert client.get(url).status_code == 401
     assert client.get(url + "?token=synthetic-admin").status_code == 401
     assert client.get(url, headers={"X-Admin-Token": "wrong"}).status_code == 403
-    assert client.get(url, cookies={"admin_session": "wrong"}).status_code == 403
+    for value in ("wrong", "synthetic-admin"):
+        assert client.get(url, headers={"Cookie": f"{main._ADMIN_COOKIE_NAME}={value}"}).status_code == 403
+    assert client.get(url, headers={"Cookie": "admin_session=synthetic-admin"}).status_code == 401
     before = {p: p.read_bytes() for p in path.parent.rglob("*") if p.is_file()}
-    for auth in ({"headers": {"X-Admin-Token": "synthetic-admin"}},
-                 {"cookies": {"admin_session": "synthetic-admin"}}):
-        response = client.get(url, **auth)
+    by_header = client.get(url, headers={"X-Admin-Token": "synthetic-admin"})
+    login = client.post("/admin/login", data={"token": "synthetic-admin"}, follow_redirects=False)
+    assert login.status_code == 303
+    for response in (by_header, client.get(url)):
         assert response.status_code == 200
         assert len(response.text.splitlines()) == len(rows)
         assert response.headers["cache-control"] == "no-store"

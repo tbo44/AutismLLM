@@ -10,6 +10,7 @@ import sys
 import httpx
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from http.cookies import SimpleCookie
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -115,7 +116,7 @@ def test_check_admin_token_wrong_raises_403(admin_token):
 
 def test_check_admin_token_valid_passes(admin_token):
     _check_admin_token(admin_token)
-    _check_admin_token(None, admin_token)
+    _check_admin_token(admin_token, "invalid-session")
 
 
 # ── /admin endpoint auth ──────────────────────────────────────────────
@@ -161,13 +162,13 @@ def test_legacy_bookmark_redirects_to_clean_sign_in_without_a_session(admin_toke
 
 
 @pytest.mark.parametrize("auth", ["header", "cookie"])
-def test_legacy_bookmark_cleans_url_when_already_authenticated(admin_token, auth):
+def test_legacy_bookmark_cleans_url_when_already_authenticated(admin_token, clear_login_attempts, auth):
     with closing(TestClient(app, base_url="https://localhost")) as browser:
         headers = {"Accept": "text/html"}
         if auth == "header":
             headers["X-Admin-Token"] = admin_token
         else:
-            browser.cookies.set(main._ADMIN_COOKIE_NAME, admin_token)
+            assert browser.post("/admin/login", data={"token": admin_token}, follow_redirects=False).status_code == 303
         resp = browser.get(
             "/admin", params={"token": admin_token}, headers=headers, follow_redirects=True,
         )
@@ -260,7 +261,7 @@ def test_admin_provider_pause_is_unavailable_before_client_loads(admin_token, mo
     load_rag.assert_not_called()
 
 
-def test_admin_provider_pause_shows_current_local_snapshot(admin_token, monkeypatch, caplog):
+def test_admin_provider_pause_shows_current_local_snapshot(admin_token, clear_login_attempts, monkeypatch, caplog):
     from rag import llm_client as llm_module
 
     now = 100.0
@@ -272,7 +273,7 @@ def test_admin_provider_pause_shows_current_local_snapshot(admin_token, monkeypa
     llm_client = llm_module.UKAutismLLMClient()
     monkeypatch.setattr(main, "_rag_system", SimpleNamespace(llm_client=llm_client))
     with closing(TestClient(app, base_url="https://testserver")) as admin:
-        admin.cookies.set(main._ADMIN_COOKIE_NAME, admin_token)
+        assert admin.post("/admin/login", data={"token": admin_token}, follow_redirects=False).status_code == 303
         assert "No active pause" in admin.get("/admin").text
         assert admin.get("/admin/provider-pause").json()["label"] == "No active pause"
 
@@ -758,13 +759,9 @@ def test_login_get_shows_form(admin_token):
     assert admin_token not in body
 
 
-def test_login_get_already_signed_in_redirects_to_admin(admin_token):
+def test_login_get_already_signed_in_redirects_to_admin(signed_in_browser):
     """GET /admin/login with a valid session cookie goes straight to /admin."""
-    resp = client.get(
-        "/admin/login",
-        cookies={main._ADMIN_COOKIE_NAME: VALID_TOKEN},
-        follow_redirects=False,
-    )
+    resp = signed_in_browser.get("/admin/login", follow_redirects=False)
     assert resp.status_code == 303
     assert resp.headers["location"] == "/admin"
 
@@ -780,6 +777,14 @@ def clear_login_attempts():
     main._login_attempts.clear()
 
 
+@pytest.fixture
+def signed_in_browser(admin_token, clear_login_attempts):
+    with closing(TestClient(app, base_url="https://localhost")) as browser:
+        login = browser.post("/admin/login", data={"token": admin_token}, follow_redirects=False)
+        assert login.status_code == 303
+        yield browser
+
+
 def test_login_post_correct_token_redirects_and_sets_cookie(admin_token, clear_login_attempts):
     """Submitting the password in the form reaches the dashboard on a clean URL."""
     with closing(TestClient(app, base_url="https://localhost")) as browser:
@@ -789,7 +794,15 @@ def test_login_post_correct_token_redirects_and_sets_cookie(admin_token, clear_l
     submitted = resp.history[0]
     assert submitted.request.method == "POST"
     assert submitted.request.url.path == "/admin/login"
-    assert main._ADMIN_COOKIE_NAME in submitted.headers["set-cookie"]
+    set_cookie = submitted.headers["set-cookie"]
+    assert admin_token not in set_cookie
+    cookie = SimpleCookie(set_cookie)[main._ADMIN_COOKIE_NAME]
+    assert cookie.value
+    assert cookie["secure"] and cookie["httponly"]
+    assert cookie["samesite"].lower() == "lax"
+    assert cookie["path"] == "/"
+    assert int(cookie["max-age"]) == 12 * 60 * 60
+    assert submitted.headers["cache-control"] == "no-store"
     assert resp.status_code == 200
     assert resp.request.method == "GET"
     assert resp.url.path == "/admin"
@@ -946,16 +959,18 @@ def test_login_remaining_attempts_warning_shown(admin_token, monkeypatch, clear_
 # ── /admin/logout ─────────────────────────────────────────────────────
 
 
-def test_logout_clears_cookie_and_redirects(admin_token):
+def test_logout_clears_cookie_and_redirects(signed_in_browser):
     """GET /admin/logout deletes the session cookie and redirects to /admin/login."""
-    resp = client.get("/admin/logout", follow_redirects=False)
+    assert signed_in_browser.get("/admin").status_code == 200
+    resp = signed_in_browser.get("/admin/logout", follow_redirects=False)
     assert resp.status_code == 303
     assert resp.headers["location"] == "/admin/login"
-    # The cookie should be cleared (max-age=0 or expires in the past)
-    set_cookie = resp.headers.get("set-cookie", "")
-    assert main._ADMIN_COOKIE_NAME in set_cookie
-    # FastAPI's delete_cookie sets max-age=0
-    assert "max-age=0" in set_cookie.lower()
+    cookie = SimpleCookie(resp.headers["set-cookie"])[main._ADMIN_COOKIE_NAME]
+    assert cookie["max-age"] == "0"
+    assert cookie["path"] == "/"
+    assert main._ADMIN_COOKIE_NAME not in signed_in_browser.cookies
+    assert signed_in_browser.get("/admin").status_code == 401
+    assert "Admin password" in signed_in_browser.get(resp.headers["location"]).text
 
 
 def test_logout_works_without_existing_cookie(admin_token):
@@ -968,11 +983,61 @@ def test_logout_works_without_existing_cookie(admin_token):
 # ── Cookie-based /admin access ────────────────────────────────────────
 
 
-def test_admin_valid_cookie_returns_dashboard(admin_token):
-    """A valid session cookie grants access to /admin without a query param."""
-    resp = client.get(
-        "/admin",
-        cookies={main._ADMIN_COOKIE_NAME: VALID_TOKEN},
-    )
+def test_admin_valid_cookie_returns_dashboard(signed_in_browser):
+    resp = signed_in_browser.get("/admin")
     assert resp.status_code == 200
     assert "Knowledge Base" in resp.text
+
+
+def test_browser_session_expires_on_server_even_when_cookie_is_sent(admin_token, clear_login_attempts, monkeypatch):
+    now = 1_750_000_000
+    clock = Mock(wraps=main.time)
+    clock.time.side_effect = lambda: now
+    monkeypatch.setattr(main, "time", clock)
+    with closing(TestClient(app, base_url="https://localhost")) as browser:
+        login = browser.post("/admin/login", data={"token": admin_token}, follow_redirects=False)
+        assert login.status_code == 303
+        now += 12 * 60 * 60 - 1
+        assert browser.get("/admin").status_code == 200
+
+        now += 1
+        expired = browser.get("/admin/provider-pause")
+        assert main._ADMIN_COOKIE_NAME in expired.request.headers.get("cookie", "")
+        assert expired.status_code == 403
+        response = browser.get("/admin", headers={"Accept": "text/html"}, follow_redirects=True)
+        assert [(r.status_code, r.headers["location"]) for r in response.history] == [(303, "/admin/login")]
+        assert "Admin password" in response.text
+        assert main._ADMIN_COOKIE_NAME not in browser.cookies
+        assert browser.get("/admin", headers={"X-Admin-Token": admin_token}).status_code == 200
+
+
+def test_old_password_cookie_is_rejected_and_cleared(admin_token):
+    with closing(TestClient(app, base_url="https://localhost")) as browser:
+        headers = {"Cookie": f"{main._ADMIN_COOKIE_NAME}={admin_token}"}
+        assert browser.get("/admin").status_code == 401
+        assert browser.get("/admin", headers=headers).status_code == 403
+        assert browser.get("/admin/provider-pause", headers=headers).status_code == 403
+        login = browser.get("/admin/login", headers=headers, follow_redirects=False)
+        assert login.status_code == 200
+        assert SimpleCookie(login.headers["set-cookie"])[main._ADMIN_COOKIE_NAME]["max-age"] == "0"
+
+
+def test_session_cannot_extend_its_expiry_or_authenticate_as_a_script(signed_in_browser):
+    credential = signed_in_browser.cookies[main._ADMIN_COOKIE_NAME]
+    version, expiry, nonce, signature = credential.split(".")
+    altered = f"{version}.{int(expiry) + 3600}.{nonce}.{signature}"
+    with closing(TestClient(app, base_url="https://localhost")) as other:
+        assert other.get("/admin", headers={"Cookie": f"{main._ADMIN_COOKIE_NAME}={altered}"}).status_code == 403
+        assert other.get("/admin", headers={"X-Admin-Token": credential}).status_code == 403
+
+
+def test_password_change_invalidates_old_sessions(signed_in_browser, monkeypatch):
+    monkeypatch.setattr(main, "_ADMIN_TOKEN", "replacement-test-password")
+    assert signed_in_browser.get("/admin").status_code == 403
+
+
+def test_successive_logins_issue_distinct_session_credentials(signed_in_browser, admin_token):
+    first = signed_in_browser.cookies[main._ADMIN_COOKIE_NAME]
+    next_login = signed_in_browser.post("/admin/login", data={"token": admin_token}, follow_redirects=False)
+    assert next_login.status_code == 303
+    assert signed_in_browser.cookies[main._ADMIN_COOKIE_NAME] != first

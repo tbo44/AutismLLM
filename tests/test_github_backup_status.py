@@ -134,7 +134,7 @@ def test_dashboard_status_requires_admin_and_has_no_sync_side_effects(tmp_path, 
     monkeypatch.setattr(notifications, "send_github_backup_alert", forbidden)
     before = path.read_bytes()
     # No lifespan startup: these checks must not launch RAG/crawl background work.
-    client = TestClient(main.app)
+    client = TestClient(main.app, base_url="https://testserver")
     try:
         kwargs = {"follow_redirects": False}
         url = "/admin"
@@ -147,7 +147,8 @@ def test_dashboard_status_requires_admin_and_has_no_sync_side_effects(tmp_path, 
         elif auth == "query":
             url += "?token=test-backup-admin"
         elif auth == "cookie":
-            client.cookies.set(main._ADMIN_COOKIE_NAME, "test-backup-admin")
+            login = client.post("/admin/login", data={"token": "test-backup-admin"}, follow_redirects=False)
+            assert login.status_code == 303
         response = client.get(url, **kwargs)
     finally:
         client.close()

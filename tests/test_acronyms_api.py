@@ -26,7 +26,7 @@ def glossary_path(tmp_path, monkeypatch):
 def client(monkeypatch, glossary_path):
     monkeypatch.setattr(main, "_ADMIN_TOKEN", VALID_TOKEN)
     # Like test_admin.py, omit the lifespan context to avoid starting RAG/jobs.
-    api = TestClient(main.app)
+    api = TestClient(main.app, base_url="https://testserver")
     yield api
     api.close()
 
@@ -41,13 +41,13 @@ def credentials(client, channel, token):
 
 
 @pytest.mark.parametrize("method", ["POST", "PUT", "DELETE"])
-@pytest.mark.parametrize("channel", ["missing", "query", "header", "cookie"])
+@pytest.mark.parametrize("channel", ["missing", "query", "header", "cookie", "legacy_cookie"])
 def test_mutations_reject_unauthenticated_requests(
     client, glossary_path, method, channel
 ):
     before = glossary_path.read_bytes()
-    # Even the real password must not authenticate from a URL.
-    token = VALID_TOKEN if channel == "query" else "wrong-token"
+    # A password is neither a URL credential nor a session credential.
+    token = VALID_TOKEN if channel in ("query", "legacy_cookie") else "wrong-token"
     auth = {} if channel == "missing" else credentials(client, channel, token)
     path = "/api/acronyms" if method == "POST" else "/api/acronyms/GP"
     body = (
@@ -107,7 +107,12 @@ def test_missing_entry_returns_404(client, glossary_path, method):
 
 @pytest.mark.parametrize("channel", ["header", "cookie"])
 def test_add_update_delete_persists_each_change(client, glossary_path, channel):
-    auth = credentials(client, channel, VALID_TOKEN)
+    if channel == "cookie":
+        login = client.post("/admin/login", data={"token": VALID_TOKEN}, follow_redirects=False)
+        assert login.status_code == 303
+        auth = {}
+    else:
+        auth = credentials(client, channel, VALID_TOKEN)
     definition = "Education, Health and Care Plan"
     updated_definition = "A child’s updated education, health and care plan"
 

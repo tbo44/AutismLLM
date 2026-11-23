@@ -201,12 +201,14 @@ def test_endpoint_auth_confirmation_conflicts_and_storage_failure(warning, monke
     path, warning_id = warning
     monkeypatch.setattr(main, "_ADMIN_TOKEN", "synthetic-admin")
     monkeypatch.setattr(main, "BACKUP_STATUS_PATH", path)
-    client = TestClient(main.app)
+    client = TestClient(main.app, base_url="https://testserver")
     url = "/admin/backup/history/acknowledge"
     payload = {"warning_id": warning_id, "investigated": True}
     assert client.post(url, json=payload).status_code == 401
     assert client.post(url + "?token=synthetic-admin", json=payload).status_code == 401
-    assert client.post(url, json=payload, cookies={"admin_session": "synthetic-admin"}).status_code == 401
+    login = client.post("/admin/login", data={"token": "synthetic-admin"}, follow_redirects=False)
+    assert login.status_code == 303
+    assert client.post(url, json=payload).status_code == 401
     assert client.post(url, json=payload, headers={"X-Admin-Token": "wrong"}).status_code == 403
     assert client.get(url).status_code == 405
     assert not health._ack_path(path).exists()

@@ -10,6 +10,7 @@ from datetime import datetime, timezone, timedelta
 import logging
 import logging.handlers
 import json
+import hmac
 import math
 import os
 import re
@@ -111,6 +112,12 @@ if not _ADMIN_TOKEN_IS_PERSISTENT:
         "To enable staff sign-in, set ADMIN_TOKEN in your shell or in Replit "
         "(Tools → Secrets), then restart and sign in at /admin/login."
     )
+
+# Browser credentials are signed independently of the configured password.
+_ADMIN_COOKIE_NAME = "maya_admin"
+_ADMIN_SESSION_SECONDS = 12 * 60 * 60
+_ADMIN_SESSION_SECRET = os.environ.get("SESSION_SECRET", "").strip().encode() or secrets.token_bytes(32)
+_ADMIN_SESSION_PATTERN = re.compile(r"v1\.([0-9]{1,12})\.[A-Za-z0-9_-]{43}\.([0-9a-f]{64})")
 
 app = FastAPI(title="Maya – Autism Hounslow Assistant", version="2.0.0")
 
@@ -410,9 +417,6 @@ def _answer_chat(query: Query, deadline: float):
 # PUT  /api/acronyms/{key}  — admin; update an existing entry
 # DELETE /api/acronyms/{key}— admin; remove an entry
 # ──────────────────────────────────────────────────────────────────────
-# Name of the cookie used to keep staff signed in after /admin/login.
-_ADMIN_COOKIE_NAME = "maya_admin"
-
 _ACRONYMS_PATH = Path("data/acronyms.json")
 _acronyms_lock = asyncio.Lock()
 
@@ -484,10 +488,10 @@ async def get_acronyms():
 async def add_acronym(
     entry: AcronymEntry,
     x_admin_token: str | None = Header(default=None),
-    token_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
+    session_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
 ):
     """Add or overwrite a glossary entry. Requires admin authentication."""
-    _check_admin_token(x_admin_token, token_cookie)
+    _check_admin_token(x_admin_token, session_cookie)
     key = entry.key.strip().upper()
     definition = entry.definition.strip()
     if not key or not definition:
@@ -505,10 +509,10 @@ async def update_acronym(
     key: str,
     entry: AcronymEntry,
     x_admin_token: str | None = Header(default=None),
-    token_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
+    session_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
 ):
     """Update an existing glossary entry. Requires admin authentication."""
-    _check_admin_token(x_admin_token, token_cookie)
+    _check_admin_token(x_admin_token, session_cookie)
     key = key.strip().upper()
     definition = entry.definition.strip()
     if not definition:
@@ -527,10 +531,10 @@ async def update_acronym(
 async def delete_acronym(
     key: str,
     x_admin_token: str | None = Header(default=None),
-    token_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
+    session_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
 ):
     """Delete a glossary entry. Requires admin authentication."""
-    _check_admin_token(x_admin_token, token_cookie)
+    _check_admin_token(x_admin_token, session_cookie)
     key = key.strip().upper()
     async with _acronyms_lock:
         data = _load_acronyms()
@@ -681,18 +685,47 @@ def _token_is_valid(token: str | None) -> bool:
     """Constant-time check of a candidate token against ADMIN_TOKEN."""
     if not token:
         return False
-    return secrets.compare_digest(token.strip(), _ADMIN_TOKEN)
+    return secrets.compare_digest(token.strip().encode(), _ADMIN_TOKEN.encode())
+
+
+def _sign_admin_session(payload: str) -> str:
+    # Bind the signature to the current admin password so changing it also
+    # invalidates existing sessions, without putting the password in the cookie.
+    message = b"maya/admin-session\0" + payload.encode("ascii") + b"\0" + _ADMIN_TOKEN.encode()
+    return hmac.digest(_ADMIN_SESSION_SECRET, message, "sha256").hex()
+
+
+def _new_admin_session() -> str:
+    expires_at = int(time.time()) + _ADMIN_SESSION_SECONDS
+    payload = f"v1.{expires_at}.{secrets.token_urlsafe(32)}"
+    return f"{payload}.{_sign_admin_session(payload)}"
+
+
+def _admin_session_is_valid(cookie: str | None) -> bool:
+    if not cookie:
+        return False
+    match = _ADMIN_SESSION_PATTERN.fullmatch(cookie)
+    if not match:
+        return False
+    expiry, signature = match.groups()
+    if time.time() >= int(expiry):
+        return False
+    payload = cookie.rsplit(".", 1)[0]
+    return secrets.compare_digest(signature, _sign_admin_session(payload))
+
+
+def _admin_is_authenticated(token_header: str | None, session_cookie: str | None) -> bool:
+    return _token_is_valid(token_header) or _admin_session_is_valid(session_cookie)
 
 
 def _check_admin_token(
     token_header: str | None,
-    token_cookie: str | None = None,
+    session_cookie: str | None = None,
 ):
-    """Raise 401/403 unless the header or session cookie matches ADMIN_TOKEN."""
-    for candidate in (token_header, token_cookie):
-        if _token_is_valid(candidate):
-            return
-    if not any((token_header, token_cookie)):
+    """Require the script password header or a valid browser session."""
+    if _admin_is_authenticated(token_header, session_cookie):
+        return
+    if not any((token_header, session_cookie)):
         raise HTTPException(status_code=401, detail="Admin token required (sign in at /admin/login).")
     raise HTTPException(status_code=403, detail="Invalid admin token.")
 
@@ -2013,12 +2046,15 @@ def _render_login_html(error: str | None = None) -> str:
 
 @app.get("/admin/login", response_class=HTMLResponse)
 async def admin_login_form(
-    token_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
+    session_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
 ):
     """Show the admin sign-in form (or go straight to the dashboard if already signed in)."""
-    if _token_is_valid(token_cookie):
+    if _admin_session_is_valid(session_cookie):
         return RedirectResponse(url="/admin", status_code=303)
-    return HTMLResponse(content=_render_login_html())
+    response = HTMLResponse(content=_render_login_html(), headers={"Cache-Control": "no-store"})
+    if session_cookie is not None:
+        _delete_admin_cookie(response)
+    return response
 
 
 def _get_client_ip(request: Request) -> str:
@@ -2090,7 +2126,7 @@ def _clear_failed_attempts(ip: str) -> None:
 
 @app.post("/admin/login")
 async def admin_login_submit(request: Request, token: str = Form(default="")):
-    """Validate the submitted token and, on success, store it in a session cookie."""
+    """Validate the submitted password and issue a separate session credential."""
     ip = _get_client_ip(request)
 
     # Check lockout before doing anything else
@@ -2124,11 +2160,11 @@ async def admin_login_submit(request: Request, token: str = Form(default="")):
 
     # Successful login — clear any failure record
     _clear_failed_attempts(ip)
-    response = RedirectResponse(url="/admin", status_code=303)
+    response = RedirectResponse(url="/admin", status_code=303, headers={"Cache-Control": "no-store"})
     response.set_cookie(
         key=_ADMIN_COOKIE_NAME,
-        value=token.strip(),
-        max_age=60 * 60 * 12,  # 12 hours
+        value=_new_admin_session(),
+        max_age=_ADMIN_SESSION_SECONDS,
         httponly=True,
         samesite="lax",
         secure=True,
@@ -2136,11 +2172,15 @@ async def admin_login_submit(request: Request, token: str = Form(default="")):
     return response
 
 
+def _delete_admin_cookie(response: HTMLResponse | RedirectResponse) -> None:
+    response.delete_cookie(key=_ADMIN_COOKIE_NAME, secure=True, httponly=True, samesite="lax")
+
+
 @app.get("/admin/logout")
 async def admin_logout():
     """Clear the admin session cookie and return to the sign-in form."""
-    response = RedirectResponse(url="/admin/login", status_code=303)
-    response.delete_cookie(key=_ADMIN_COOKIE_NAME)
+    response = RedirectResponse(url="/admin/login", status_code=303, headers={"Cache-Control": "no-store"})
+    _delete_admin_cookie(response)
     return response
 
 
@@ -2148,7 +2188,7 @@ async def admin_logout():
 async def admin_dashboard(
     request: Request,
     x_admin_token: str | None = Header(default=None),
-    token_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
+    session_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
     accept: str | None = Header(default=None),
 ):
     """
@@ -2161,7 +2201,7 @@ async def admin_dashboard(
         # Old bookmarks get a clean destination, without forwarding the original
         # URL in a Referer. The query value is never used to sign anyone in.
         headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
-        if any(_token_is_valid(c) for c in (x_admin_token, token_cookie)):
+        if _admin_is_authenticated(x_admin_token, session_cookie):
             return RedirectResponse(url="/admin", status_code=303, headers=headers)
         if browser:
             return RedirectResponse(url="/admin/login", status_code=303, headers=headers)
@@ -2170,9 +2210,12 @@ async def admin_dashboard(
             detail="Admin passwords are not accepted in URLs. Sign in at /admin/login or send the X-Admin-Token header.",
             headers=headers,
         )
-    if browser and not any((x_admin_token, token_cookie)):
-        return RedirectResponse(url="/admin/login", status_code=303)
-    _check_admin_token(x_admin_token, token_cookie)
+    try:
+        _check_admin_token(x_admin_token, session_cookie)
+    except HTTPException:
+        if browser and not x_admin_token:
+            return RedirectResponse(url="/admin/login", status_code=303)
+        raise
     feedback = _read_feedback_log(limit=50)
     stats = _read_questions_stats()
     kb = _read_kb_health()
@@ -2183,10 +2226,10 @@ async def admin_dashboard(
 @app.get("/admin/provider-pause", response_class=JSONResponse)
 async def admin_provider_pause(
     x_admin_token: str | None = Header(default=None),
-    token_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
+    session_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
 ):
     """Return only the serving process's pause snapshot for an in-place refresh."""
-    _check_admin_token(x_admin_token, token_cookie)
+    _check_admin_token(x_admin_token, session_cookie)
     return JSONResponse(
         _provider_pause_display(_provider_pause_seconds()),
         headers={"Cache-Control": "no-store"},
@@ -2518,10 +2561,10 @@ async def admin_acknowledge_backup_history(
 @app.get("/admin/backup/history/acknowledgements/export")
 async def admin_export_backup_acknowledgements(
     x_admin_token: str | None = Header(default=None),
-    admin_session: str | None = Cookie(default=None),
+    session_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
 ):
     # No credentials in download URLs; normal dashboard sign-in or header only.
-    _check_admin_token(x_admin_token, admin_session)
+    _check_admin_token(x_admin_token, session_cookie)
     from app.github_backup_ack_archive import export_snapshot, download_chunks
     try:
         snapshot = await asyncio.to_thread(export_snapshot, BACKUP_STATUS_PATH)

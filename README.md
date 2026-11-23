@@ -191,6 +191,7 @@ LLM_MODEL=gpt-4o
 | Variable | Default | Description |
 |---|---|---|
 | `ADMIN_TOKEN` | private random fallback per server process | Set this to sign in to `/admin` |
+| `SESSION_SECRET` | private random signing key per server process | Set a strong random secret distinct from `ADMIN_TOKEN`, shared by all app instances that serve staff. |
 | `ADMIN_CRAWL_TOKEN` | — | Separate Bearer token for `/admin/crawl` and re-index endpoints |
 | `SCHEDULED_REINDEX_ENABLED` | `true` | Nightly automatic re-index on/off |
 | `REINDEX_SCHEDULE_HOUR` | `2` | UK-local hour for the nightly run |
@@ -263,11 +264,19 @@ curl -X POST https://<your-app>/admin/crawl -H "Authorization: Bearer $ADMIN_CRA
 `GET /admin` shows: question volume (7-day + total), feedback submissions, top-10 retrieved sources, knowledge-base health (chunk count, last re-index, schedule/next run, failure alerts), and re-index history.
 
 **Staff sign-in**: open `/admin/login` and enter `ADMIN_TOKEN` in the password
-form. The form submits the password in the request body, and the session cookie
-keeps you signed in for up to 12 hours. Set `ADMIN_TOKEN` in
+form. The password is submitted only in the request body. The browser receives
+a separate signed session cookie that expires after 12 hours. Existing cookies
+that contained the password are no longer accepted; sign in again to replace
+them. Signing out clears the cookie from that browser. Set `ADMIN_TOKEN` in
 [your local shell](#6-running-locally) or in Replit **Secrets**, then restart.
 If it is unset or blank, Maya generates a private random fallback and does not
 print it.
+
+Set `SESSION_SECRET` to a strong random secret shared by all serving instances
+so browser sessions work across autoscale instances and restarts. Without it,
+each process generates its own private signing key and users may need to sign
+in again after a restart or when routed to another instance. Rotating either
+`ADMIN_TOKEN` or `SESSION_SECRET` invalidates previously issued sessions.
 
 **Scripts**: use a clean URL and send `ADMIN_TOKEN` in the `X-Admin-Token`
 header. This also works for authenticated glossary edits.
@@ -403,7 +412,7 @@ interrupted comparison return a nonzero exit status.
 1. Open the Repl → **Deploy** tab → choose **Autoscale**.
 2. Run command: `uvicorn app.main:app --host 0.0.0.0 --port 5000`
 3. Health check path: `/health`.
-4. Add all secrets (see §5) — especially `ADMIN_TOKEN` and your LLM key.
+4. Add all secrets (see §5) — especially `ADMIN_TOKEN`, `SESSION_SECRET`, and your LLM key.
 5. Deploy. The app is served at a `.replit.app` URL.
 
 > ChromaDB (`./chroma_db/`) persists within a running instance but is rebuilt from the seed file on cold start via background initialisation.
