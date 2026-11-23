@@ -23,6 +23,12 @@ Treat provider retry hints as advice for admission of new calls, not as permissi
 
 **How to apply:** Preserve the operator's minimum and explicit off switch when adding provider-specific hints. Bound only the provider's contribution so existing operator settings still work.
 
+Treat provider error text as untrusted request data in rate-limit diagnostics.
+
+**Why:** Provider errors can echo prompts or authorization data. A new provider 429 is evidence of upstream throttling, while a locally skipped call is not.
+
+**How to apply:** Log only fixed stage names and derived timing data. Log fresh 429s separately from the first locally skipped call; in-flight responses can lengthen the same pause without opening another suppression log window.
+
 Keep application answer tests separate from live model evaluations.
 
 **Why:** The chat route can return HTTP 200 with a user-friendly fallback after provider failure. Canned completions cannot demonstrate actual model quality, and model availability should not determine whether the app's prompt and response handling pass.

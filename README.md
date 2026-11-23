@@ -165,6 +165,11 @@ per server process, not shared across replicas or preserved after a restart.
 Already-running provider calls are not cancelled. Change the setting before
 starting the server.
 
+In the server logs, `llm_provider_429` marks a fresh provider response. It shows
+the stage, effective wait in seconds (`0` if disabled), and whether this response's
+hint lengthened the pause. `llm_cooldown_suppressed` marks the first locally
+skipped call per uninterrupted pause and shows the remaining wait.
+
 ```bash
 # Ollama with Qwen (no-keys default)
 LLM_PROVIDER=ollama

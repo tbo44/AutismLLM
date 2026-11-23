@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from functools import partial
+import logging
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -84,6 +85,13 @@ def _successful_completion_response(content="PIP benefits"):
     })
 
 
+def _cooldown_log_records(caplog):
+    return [
+        (level, message) for logger, level, message in caplog.record_tuples
+        if logger == llm_module.__name__ and message.startswith("event=llm_")
+    ]
+
+
 @pytest.mark.parametrize(
     ("headers", "configured", "wait"),
     [
@@ -100,7 +108,7 @@ def _successful_completion_response(content="PIP benefits"):
         pytest.param({"Retry-After": "99999"}, None, 300, id="seconds-capped"),
         pytest.param({"Retry-After": "9" * 4500}, None, 300, id="huge-integer-capped"),
         pytest.param({"Retry-After": "99999"}, "400", 400, id="configured-above-cap"),
-        pytest.param({"Retry-After": "bad value"}, "12.5", 12.5, id="malformed-with-custom-default"),
+        pytest.param({"Retry-After": "PRIVATE-RETRY-HINT"}, "12.5", 12.5, id="malformed-with-custom-default"),
         pytest.param({"Retry-After": ""}, None, 30, id="blank"),
         pytest.param({"Retry-After": "-60"}, None, 30, id="negative"),
         pytest.param({"Retry-After": "90.5"}, None, 30, id="fractional"),
@@ -111,33 +119,54 @@ def _successful_completion_response(content="PIP benefits"):
     ],
 )
 def test_first_http_429_starts_shared_cooldown_without_retry(
-    transport_client, clock, wall_clock, monkeypatch, headers, configured, wait,
+    transport_client, clock, wall_clock, monkeypatch, caplog, headers, configured, wait,
 ):
     def unexpected_sleep(*args):
         pytest.fail("The SDK must not sleep or retry after a 429")
 
     monkeypatch.setattr(llm_module.time, "sleep", unexpected_sleep)
+    caplog.set_level(logging.INFO)
     attempts = []
+    question = "PRIVATE-QUESTION about PIP support"
 
     def respond(request):
         attempts.append(request.url.path)
         if len(attempts) == 1:
-            return httpx.Response(429, headers=headers, json={"error": {"message": "Too many requests"}})
+            response_headers = httpx.Headers(headers)
+            response_headers["x-private-trace"] = "PRIVATE-TRACE-HEADER"
+            # A provider error can echo sensitive request data. Use fake values
+            # across the request, response headers, and SDK error body.
+            echoed_auth = request.headers["authorization"]
+            return httpx.Response(429, headers=response_headers, json={
+                "error": {"message": f"PRIVATE-ERROR-BODY: {question}; {echoed_auth}"},
+            })
         return _successful_completion_response()
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
         client = transport_client(http_client, seconds=configured)
-        result = client.enhance_query("PIP support")
+        result = client.enhance_query(question)
         assert attempts == ["/v1/chat/completions"]
-        assert result == {"query": "PIP support", "rate_limited": True}
+        assert result == {"query": question, "rate_limited": True}
         assert client.is_rate_limited()
+        hint_extended = wait > float(configured or "30")
+        fresh_429 = (logging.WARNING, (
+            f"event=llm_provider_429 stage=enhancement wait_seconds={wait:g} "
+            f"provider_hint_extended={hint_extended}"
+        ))
+        assert _cooldown_log_records(caplog) == [fresh_429]
 
         expires_at = clock[0] + wait
         clock[0] = expires_at - 0.01
-        assert client.check_content_appropriateness("PIP support")["rate_limited"] is True
-        assert client.synthesize_response("PIP support", [])["rate_limited"] is True
-        assert client.enhance_query("PIP support")["rate_limited"] is True
+        assert client.check_content_appropriateness(question)["rate_limited"] is True
+        assert client.synthesize_response(question, [])["rate_limited"] is True
+        assert client.enhance_query(question)["rate_limited"] is True
         assert len(attempts) == 1
+        assert _cooldown_log_records(caplog) == [
+            fresh_429,
+            (logging.INFO, "event=llm_cooldown_suppressed stage=moderation remaining_seconds=0.01"),
+        ]
+        for private in (question, "PRIVATE-TRACE-HEADER", "PRIVATE-RETRY-HINT", "PRIVATE-ERROR-BODY", "test-key"):
+            assert private not in caplog.text
 
         clock[0] = expires_at
         assert client.enhance_query("PIP support") == "PIP benefits"
@@ -289,7 +318,7 @@ def _completion(content):
 
 
 @pytest.mark.parametrize("stage", ["moderation", "enhancement", "synthesis"])
-def test_all_provider_stages_activate_shared_cooldown(client_factory, clock, stage):
+def test_all_provider_stages_activate_shared_cooldown(client_factory, clock, caplog, stage):
     create = Mock(side_effect=_rate_limit_error({"Retry-After": "45"}))
     client = client_factory(create, seconds="12.5")
     calls = {
@@ -299,6 +328,9 @@ def test_all_provider_stages_activate_shared_cooldown(client_factory, clock, sta
     }
     assert calls[stage]()["rate_limited"] is True
     assert client.is_rate_limited()
+    assert _cooldown_log_records(caplog) == [(
+        logging.WARNING, f"event=llm_provider_429 stage={stage} wait_seconds=45 provider_hint_extended=True",
+    )]
     clock[0] = 144.99
     for call in calls.values():
         assert call()["rate_limited"] is True
@@ -352,9 +384,11 @@ def test_answer_requests_short_circuit_and_recover(client_factory, clock, failed
     assert create.call_count == failed_call + 4
 
 
-def test_repeated_rate_limits_restart_cooldown(client_factory, clock):
+def test_repeated_rate_limits_restart_cooldown(client_factory, clock, caplog):
+    caplog.set_level(logging.INFO, logger=llm_module.__name__)
     create = Mock(side_effect=_rate_limit_error())
     client = client_factory(create)
+    client.enhance_query("PIP support")
     client.enhance_query("PIP support")
     clock[0] = 130.0
     client.enhance_query("PIP support")
@@ -362,9 +396,46 @@ def test_repeated_rate_limits_restart_cooldown(client_factory, clock):
     assert client.is_rate_limited()
     client.enhance_query("PIP support")
     assert create.call_count == 2
+    fresh_429 = (logging.WARNING, "event=llm_provider_429 stage=enhancement wait_seconds=30 provider_hint_extended=False")
+    assert _cooldown_log_records(caplog) == [
+        fresh_429,
+        (logging.INFO, "event=llm_cooldown_suppressed stage=enhancement remaining_seconds=30"),
+        fresh_429,
+        (logging.INFO, "event=llm_cooldown_suppressed stage=enhancement remaining_seconds=0.1"),
+    ]
 
 
-def test_zero_disables_cooldown_even_with_retry_after(transport_client, clock):
+def test_overlapping_provider_429s_report_effective_wait_without_relogging_suppression(
+    client_factory, clock, caplog,
+):
+    caplog.set_level(logging.INFO, logger=llm_module.__name__)
+    create = Mock(side_effect=_rate_limit_error({"Retry-After": "90"}))
+    client = client_factory(create)
+    client.enhance_query("PIP support")
+    client.enhance_query("PIP support")
+
+    # Simulate requests already in flight when the first 429 came back.
+    clock[0] = 110.0
+    client._record_provider_429("moderation", httpx.Headers({"Retry-After": "60"}))
+    clock[0] = 120.0
+    client._record_provider_429("synthesis", httpx.Headers({"Retry-After": "100"}))
+    assert client.enhance_query("PIP support")["rate_limited"] is True
+    assert create.call_count == 1
+
+    assert _cooldown_log_records(caplog) == [
+        (logging.WARNING, "event=llm_provider_429 stage=enhancement wait_seconds=90 provider_hint_extended=True"),
+        (logging.INFO, "event=llm_cooldown_suppressed stage=enhancement remaining_seconds=90"),
+        (logging.WARNING, "event=llm_provider_429 stage=moderation wait_seconds=80 provider_hint_extended=False"),
+        (logging.WARNING, "event=llm_provider_429 stage=synthesis wait_seconds=100 provider_hint_extended=True"),
+    ]
+    clock[0] = 219.99
+    assert client.is_rate_limited()
+    clock[0] = 220.0
+    assert not client.is_rate_limited()
+
+
+def test_zero_disables_cooldown_even_with_retry_after(transport_client, clock, caplog):
+    caplog.set_level(logging.INFO, logger=llm_module.__name__)
     attempts = []
 
     def respond(request):
@@ -377,6 +448,9 @@ def test_zero_disables_cooldown_even_with_retry_after(transport_client, clock):
             assert client.enhance_query("PIP support") == {"query": "PIP support", "rate_limited": True}
             assert len(attempts) == expected_attempts
             assert not client.is_rate_limited()
+        assert _cooldown_log_records(caplog) == [(
+            logging.WARNING, "event=llm_provider_429 stage=enhancement wait_seconds=0 provider_hint_extended=False",
+        )] * 2
 
 
 @pytest.mark.parametrize("value", ["-1", "nan", "inf", "invalid"])

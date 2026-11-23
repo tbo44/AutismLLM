@@ -170,6 +170,7 @@ class UKAutismLLMClient:
         if not math.isfinite(self.rate_limit_cooldown_seconds) or self.rate_limit_cooldown_seconds < 0:
             raise ValueError("LLM_RATE_LIMIT_COOLDOWN_SECONDS must be a finite, non-negative number")
         self._cooldown_until = 0.0
+        self._logged_cooldown_suppression = False
         self._cooldown_lock = Lock()
         self._initialize_client()
 
@@ -182,15 +183,40 @@ class UKAutismLLMClient:
         with self._cooldown_lock:
             return time.monotonic() < self._cooldown_until
 
-    def _start_rate_limit_cooldown(self, headers: httpx.Headers) -> None:
-        if self.rate_limit_cooldown_seconds == 0:
-            return
-        delay = max(self.rate_limit_cooldown_seconds, _provider_retry_after_seconds(headers))
+    def _skip_during_cooldown(self, stage: str) -> bool:
         with self._cooldown_lock:
-            self._cooldown_until = max(
-                self._cooldown_until,
-                time.monotonic() + delay,
+            remaining = self._cooldown_until - time.monotonic()
+            if remaining <= 0:
+                return False
+            log_suppression = not self._logged_cooldown_suppression
+            self._logged_cooldown_suppression = True
+        if log_suppression:
+            logger.info(
+                "event=llm_cooldown_suppressed stage=%s remaining_seconds=%.6g",
+                stage, remaining,
             )
+        return True
+
+    def _record_provider_429(self, stage: str, headers: httpx.Headers) -> None:
+        minimum = self.rate_limit_cooldown_seconds
+        wait = 0.0
+        hint_extended = False
+        if minimum > 0:
+            hint = _provider_retry_after_seconds(headers)
+            with self._cooldown_lock:
+                now = time.monotonic()
+                # Overlapping 429s can extend a pause, but do not start a new
+                # suppression log window until the previous one expires.
+                if now >= self._cooldown_until:
+                    self._logged_cooldown_suppression = False
+                without_hint = max(self._cooldown_until, now + minimum)
+                self._cooldown_until = max(without_hint, now + hint)
+                wait = self._cooldown_until - now
+                hint_extended = self._cooldown_until > without_hint
+        logger.warning(
+            "event=llm_provider_429 stage=%s wait_seconds=%.6g provider_hint_extended=%s",
+            stage, wait, hint_extended,
+        )
 
     # ─────────────────────────────────────────────────────────────────
     # Main response generation
@@ -206,7 +232,7 @@ class UKAutismLLMClient:
         """Generate a structured response using retrieved context."""
         if not self.client:
             return {"response": "LLM client not available", "sources_used": [], "chunks_used": 0, "model_used": self.model, "success": False, "error": "Client not initialized"}
-        if self.is_rate_limited():
+        if self._skip_during_cooldown("synthesis"):
             return {"response": "", "sources_used": [], "chunks_used": 0, "model_used": self.model, "success": False, "rate_limited": True, "error": "Provider rate-limit cooldown active"}
 
         try:
@@ -288,9 +314,8 @@ CONTEXT INFORMATION:
             return {"response": generated_text, "sources_used": list(sources_used), "chunks_used": len(retrieved_chunks), "model_used": self.model, "success": True}
 
         except openai.RateLimitError as e:
-            self._start_rate_limit_cooldown(e.response.headers)
-            logger.warning(f"LLM rate limit reached during response synthesis: {str(e)}")
-            return {"response": "", "sources_used": [], "chunks_used": 0, "model_used": self.model, "success": False, "rate_limited": True, "error": str(e)}
+            self._record_provider_429("synthesis", e.response.headers)
+            return {"response": "", "sources_used": [], "chunks_used": 0, "model_used": self.model, "success": False, "rate_limited": True, "error": "Provider returned HTTP 429"}
         except Exception as e:
             logger.error(f"Error generating response: {str(e)}")
             return {"response": "I'm sorry, I'm having trouble generating a response right now. Please try again in a moment.", "sources_used": [], "chunks_used": 0, "model_used": self.model, "success": False, "error": str(e)}
@@ -302,7 +327,7 @@ CONTEXT INFORMATION:
     def enhance_query(self, user_question: str) -> Union[str, Dict[str, Any]]:
         if not self.client:
             return user_question
-        if self.is_rate_limited():
+        if self._skip_during_cooldown("enhancement"):
             return {"query": user_question, "rate_limited": True}
         try:
             prompt = (
@@ -323,8 +348,7 @@ CONTEXT INFORMATION:
                 return enhanced
             return user_question
         except openai.RateLimitError as e:
-            self._start_rate_limit_cooldown(e.response.headers)
-            logger.warning(f"LLM rate limit reached during query enhancement: {str(e)}")
+            self._record_provider_429("enhancement", e.response.headers)
             return {"query": user_question, "rate_limited": True}
         except Exception as e:
             logger.error(f"Query enhancement error: {str(e)}")
@@ -337,7 +361,7 @@ CONTEXT INFORMATION:
     def check_content_appropriateness(self, user_question: str) -> Dict[str, Any]:
         if not self.client:
             return {"appropriate": True, "reason": "Moderation unavailable", "category": "unknown"}
-        if self.is_rate_limited():
+        if self._skip_during_cooldown("moderation"):
             return {"appropriate": True, "reason": "Rate limited", "category": "unknown", "rate_limited": True}
         try:
             prompt = (
@@ -365,8 +389,7 @@ CONTEXT INFORMATION:
                     pass
             return {"appropriate": True, "reason": "Parse error", "category": "unknown"}
         except openai.RateLimitError as e:
-            self._start_rate_limit_cooldown(e.response.headers)
-            logger.warning(f"LLM rate limit reached during appropriateness check: {str(e)}")
+            self._record_provider_429("moderation", e.response.headers)
             return {"appropriate": True, "reason": "Rate limited", "category": "unknown", "rate_limited": True}
         except Exception as e:
             logger.error(f"Appropriateness check error: {str(e)}")
