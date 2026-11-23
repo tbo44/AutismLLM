@@ -1,4 +1,7 @@
-"""Opt-in check of real model access and generated answers, without a local index."""
+"""Opt-in checks of real model access and generated answers, without a local index."""
+
+import re
+from contextlib import closing
 
 import openai
 import pytest
@@ -8,6 +11,29 @@ from tests.llm_test_helpers import chat_client, search_hit
 
 
 pytestmark = pytest.mark.llm_live
+
+ANNUAL_REVIEW_QUESTION = "What is the EHCP annual review process for autism?"
+ANNUAL_REVIEW_SOURCE = search_hit(
+    "EHCP annual review",
+    "https://www.gov.uk/children-with-special-educational-needs",
+    text=(
+        "An Education, Health and Care plan (EHCP) is reviewed at least once a year. "
+        "The annual review checks whether the support still meets the child's needs. "
+        "The school invites parents to share how the child is getting on and what support "
+        "they need. The local authority decides whether to keep, amend or end the plan."
+    ),
+)
+
+# Common shorthand for these topics, including a few acceptable plain-English explanations.
+ACRONYM_EXPANSIONS = {
+    "EHCP": r"education,? health(?:,? and| &) care plan|school(?: support)? plan",
+    "EHC": r"education,? health(?:,? and| &) care(?: plan)?|school(?: support)? plan",
+    "DLA": r"disability living allowance|benefit for disabled children",
+    "DWP": r"department for work and pensions",
+    "GP": r"general practitioner|(?:family )?doctor",
+    "ASD": r"autism spectrum disorder|autism",
+}
+WORD = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)*")
 
 
 def _provider_failure(model, error):
@@ -37,13 +63,9 @@ def _configured_client():
     pytest.fail("Live LLM client could not initialize; check provider configuration and credentials.", pytrace=False)
 
 
-def test_live_model_access_and_structured_answer(monkeypatch):
+@pytest.fixture
+def live_answer(monkeypatch):
     llm_client = _configured_client()
-    hit = search_hit(
-        "EHCP annual review",
-        "https://www.gov.uk/children-with-special-educational-needs",
-        text="An Education, Health and Care plan (EHCP) is reviewed at least once a year.",
-    )
     with llm_client.client as provider:
         live_create = provider.chat.completions.create
 
@@ -57,22 +79,135 @@ def test_live_model_access_and_structured_answer(monkeypatch):
             pytest.fail(failure, pytrace=False)
 
         monkeypatch.setattr(provider.chat.completions, "create", checked_create)
-        client = chat_client(monkeypatch, llm_client, lambda *_args, **_kwargs: [hit])
-        response = client.post(
-            "/chat", json={"question": "What is the EHCP annual review process for autism?"},
-        )
 
-    assert response.status_code == 200, f"Live /chat returned HTTP {response.status_code}."
-    data = response.json()
-    assert data["sources"] == [{
-        "title": hit["metadata"]["title"],
-        "url": hit["metadata"]["url"],
-        "publisher": hit["metadata"]["source_name"],
-    }], "Live chat did not return the expected source; it may have returned a fallback instead of a generated answer."
-    lines = [line.strip() for line in data["answer"].splitlines() if line.strip()]
-    assert "## Short Answer" in lines, (
-        "Live answer regression: the provider responded, but the answer omitted the '## Short Answer' heading."
+        def ask(question, hit, level="standard"):
+            # Don't enter the TestClient lifespan: it can start the real index.
+            with closing(chat_client(monkeypatch, llm_client, lambda *_args, **_kwargs: [hit])) as client:
+                response = client.post("/chat", json={"question": question, "comprehension_level": level})
+            assert response.status_code == 200, f"Live /chat returned HTTP {response.status_code} ({level})."
+            data = response.json()
+            assert data["sources"] == [{
+                "title": hit["metadata"]["title"],
+                "url": hit["metadata"]["url"],
+                "publisher": hit["metadata"]["source_name"],
+            }], f"Live chat did not return the expected source ({level}); check for a fallback or redirect."
+            lines = [line.strip() for line in data["answer"].splitlines()]
+            assert "## Short Answer" in lines, (
+                f"Live answer regression ({level}): missing the '## Short Answer' heading."
+            )
+            assert WORD.search(_answer_prose(data["answer"])), (
+                f"Live answer regression ({level}): no answer text under the headings."
+            )
+            return data["answer"]
+
+        yield ask
+
+
+def _visible_text(answer):
+    """Drop URLs and Markdown emphasis while keeping visible link labels."""
+    text = re.sub(r"\[([^\]]+)\]\(https?://[^\s)]+\)", r"\1", answer)
+    return re.sub(r"<?https?://[^\s>]+>?", "", text).replace("*", "").replace("_", "")
+
+
+def _answer_prose(answer):
+    text = re.sub(r"(?m)^[ \t]*#{1,6}[ \t]+.*$", "", _visible_text(answer))
+    return re.sub(r"(?m)^[ \t]*(?:[-+•]|\d+[.)])[ \t]+", "", text)
+
+
+def _unexplained_acronyms(answer):
+    # Accept either "full name (ACR)" or "ACR (full name)" at first use.
+    text = _visible_text(answer)
+    unexplained = []
+    for acronym, expansion in ACRONYM_EXPANSIONS.items():
+        first = re.search(rf"\b{acronym}s?\b", text, re.IGNORECASE)
+        if not first:
+            continue
+        name = rf"\b(?:{expansion})s?\b"
+        before = re.search(
+            rf"{name}\s*[,:(–—-]?\s*(?:(?:or|a|an)\s+)?$", text[:first.start()], re.IGNORECASE,
+        )
+        after = re.match(
+            rf"(?:\s*[,:(–—-]\s*(?:or\s+)?|\s+(?:means|stands for|is)\s+)"
+            rf"(?:(?:a|an|the|your)\s+)?{name}",
+            text[first.end():],
+            re.IGNORECASE,
+        )
+        if not (before or after):
+            unexplained.append(acronym)
+    return unexplained
+
+
+def _reading_profile(answer):
+    # Count list items and other nonempty lines as separate units, even if
+    # they don't end with punctuation. Ignore headings, URLs and list numbers.
+    groups = [
+        WORD.findall(part) for part in re.split(r"[.!?]+(?=\s|$)|\n+", _answer_prose(answer))
+    ]
+    words = [word for group in groups for word in group]
+    return len(words) / sum(bool(group) for group in groups), (
+        sum(sum(letter.isalpha() for letter in word) >= 8 for word in words) / len(words)
     )
-    assert any(not line.startswith("#") for line in lines), (
-        "Live answer regression: the provider returned headings without answer text."
+
+
+def test_live_model_access_and_structured_answer(live_answer):
+    live_answer(ANNUAL_REVIEW_QUESTION, ANNUAL_REVIEW_SOURCE)
+
+
+@pytest.mark.parametrize(("question", "hit"), [
+    pytest.param(ANNUAL_REVIEW_QUESTION, ANNUAL_REVIEW_SOURCE, id="school-plan-annual-review"),
+    pytest.param(
+        "How do I apply for DLA for my autistic child?",
+        search_hit(
+            "Disability Living Allowance for children",
+            "https://www.gov.uk/disability-living-allowance-children/how-to-claim",
+            text=(
+                "Disability Living Allowance (DLA) can help with the extra costs of looking after "
+                "a child who needs more care or has more difficulty walking than a child of the "
+                "same age. To apply, download the claim form or ask the Department for Work and "
+                "Pensions (DWP) to send you a copy. Fill it in with details of the child's "
+                "care or mobility needs and return it by post."
+            ),
+        ),
+        id="disability-benefit-claim",
+    ),
+    pytest.param(
+        "Can I ask my GP about an autism assessment for my child?",
+        search_hit(
+            "How to get an autism assessment",
+            "https://www.nhs.uk/conditions/autism/getting-diagnosed/how-to-get-diagnosed/",
+            publisher="NHS",
+            text=(
+                "A general practitioner (GP) can refer a child for an autism assessment. "
+                "Autism spectrum disorder (ASD) is another name for autism. Parents can "
+                "describe what they have noticed at home and share examples from school. "
+                "A specialist assessment team gathers information about the child's "
+                "development and how they communicate and interact with other people."
+            ),
+        ),
+        id="autism-assessment-referral",
+    ),
+])
+def test_live_clear_answers_are_simpler(live_answer, question, hit):
+    clear = live_answer(question, hit, "clear")
+    complex_answer = live_answer(question, hit, "complex")
+
+    unexplained = _unexplained_acronyms(clear)
+    assert not unexplained, (
+        "Live answer quality regression: Clear used these acronyms without explaining them at first use: "
+        + ", ".join(unexplained)
+    )
+
+    clear_sentence, clear_long = _reading_profile(clear)
+    complex_sentence, complex_long = _reading_profile(complex_answer)
+    sentence_gain = complex_sentence - clear_sentence
+    long_word_gain = complex_long - clear_long
+    # Clear should improve at least one signal without materially worsening the other.
+    assert (sentence_gain >= 1 and long_word_gain >= -0.05) or (
+        long_word_gain >= 0.05 and sentence_gain >= -1
+    ), (
+        "Live answer quality regression: Clear was not noticeably simpler than Complex. "
+        f"Clear: {clear_sentence:.1f} words/sentence, {clear_long:.1%} long words; "
+        f"Complex: {complex_sentence:.1f} words/sentence, {complex_long:.1%} long words. "
+        "Expected at least 1 fewer word per sentence or 5 percentage points fewer words "
+        "of 8+ letters, without worsening the other measure beyond its threshold."
     )

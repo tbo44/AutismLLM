@@ -261,7 +261,7 @@ pytest tests/ -v
 | Suite | Covers |
 |---|---|
 | `test_answers.py` | Provider-independent chat integration: topic answers and sources, structured prompts, reading-level instructions, safety and off-topic redirects |
-| `test_llm_live.py` | Opt-in live check: configured model access and a structured chat answer |
+| `test_llm_live.py` | Opt-in live checks: configured model access, structured answers, and Clear vs. Complex reading levels |
 | `test_retrieval_coverage.py` | Deterministic (no LLM): core questions must retrieve below threshold; known gaps tracked as xfail |
 | `test_policy.py` | Safety guardrail patterns |
 | `test_admin.py` | Admin auth (401/403/cookie/header) and log parsing |
@@ -275,8 +275,11 @@ pytest -m llm_live tests/test_llm_live.py -v
 ```
 
 This sends real requests to the configured provider and may use quota. An
-unavailable model, denied access, or a rate limit fails the live check with a
-provider-specific diagnostic, separate from malformed answers.
+unavailable model, denied access, or a rate limit fails with a provider-specific
+diagnostic, separate from answer-quality failures. The reading-level checks ask
+the same questions at both levels using fixed source text. They look for common
+unexplained acronyms in Clear answers and compare sentence length and use of
+long words. These are regression signals, not a formal reading-age score.
 
 ---
 
