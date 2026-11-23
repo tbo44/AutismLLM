@@ -138,6 +138,9 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # ──────────────────────────────────────────────────────────────────────
 
 async def _run_rag_work(func, *args):
+    # Don't shield this await: cancellation can drop work that's still queued.
+    # A running call keeps the sole worker until it exits, so a late HTTP 429
+    # sets the provider cooldown before the next chat can start.
     return await asyncio.get_running_loop().run_in_executor(_rag_executor, func, *args)
 
 
@@ -363,8 +366,6 @@ async def chat(query: Query, background_tasks: BackgroundTasks):
 
     try:
         deadline = time.monotonic() + _CHAT_TIMEOUT_SECONDS
-        # Cancelling the await drops queued work if it hasn't started. An
-        # already running call keeps the sole worker until it actually exits.
         result = await asyncio.wait_for(
             _run_rag_work(_answer_chat, query, deadline), timeout=_CHAT_TIMEOUT_SECONDS,
         )

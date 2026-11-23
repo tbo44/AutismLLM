@@ -328,6 +328,106 @@ def test_health_responds_while_chat_provider_is_stalled(transport_client, monkey
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("cancel_running", [False, True], ids=["queued", "running"])
+def test_cancelled_chat_does_not_start_extra_provider_calls(
+    transport_client, monkeypatch, cancel_running,
+):
+    from app import main
+
+    first_question = "How do I apply for PIP?"
+    next_question = "What is an EHCP?"
+    answer = "Apply for PIP through GOV.UK."
+    search_query = "Personal Independence Payment application"
+    search = Mock(return_value=[search_hit("How to claim PIP", "https://www.gov.uk/pip/how-to-claim")])
+    # Freeze only the cooldown clock, not asyncio's timeout clock.
+    provider_time = Mock(wraps=llm_module.time, monotonic=lambda: 100.0)
+    monkeypatch.setattr(llm_module, "time", provider_time)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        entered_synthesis = asyncio.Event()
+        next_submitted = asyncio.Event()
+        release_synthesis = Event()
+        attempts = []
+        submit = main._rag_executor.submit
+
+        def observe_submission(func, *args, **kwargs):
+            future = submit(func, *args, **kwargs)
+            if func is main._answer_chat and args[0].question == next_question:
+                next_submitted.set()
+            return future
+
+        # Observe the real queue, without replacing its worker or guessing when
+        # the second request has reached it.
+        monkeypatch.setattr(main._rag_executor, "submit", observe_submission)
+
+        def respond(request):
+            attempts.append(request.url.path)
+            if len(attempts) == 1:
+                return _successful_completion_response('{"appropriate": true}')
+            if len(attempts) == 2:
+                return _successful_completion_response(search_query)
+            if len(attempts) != 3:
+                pytest.fail("Unexpected extra provider call")
+            loop.call_soon_threadsafe(entered_synthesis.set)
+            assert release_synthesis.wait(timeout=5), "Test never released stalled synthesis"
+            if cancel_running:
+                return httpx.Response(
+                    429, headers={"Retry-After": "45"}, json={"error": {"message": "Too many requests"}},
+                )
+            return _successful_completion_response(answer)
+
+        async def cancel_request(task):
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=2)
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as provider:
+            llm_client = transport_client(provider, seconds="30")
+            chat_client(monkeypatch, llm_client, search)
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+            ) as api:
+                first = asyncio.create_task(api.post("/chat", json={"question": first_question}))
+                chats = [first]
+                try:
+                    await asyncio.wait_for(entered_synthesis.wait(), timeout=2)
+                    if cancel_running:
+                        await cancel_request(first)
+
+                    queued = asyncio.create_task(api.post("/chat", json={"question": next_question}))
+                    chats.append(queued)
+                    await asyncio.wait_for(next_submitted.wait(), timeout=2)
+                    assert not queued.done(), "The next chat must wait behind the stalled completion"
+                    assert not llm_client.is_rate_limited()
+                    assert len(attempts) == 3
+                    if not cancel_running:
+                        await cancel_request(queued)
+                finally:
+                    release_synthesis.set()
+                    await asyncio.wait_for(asyncio.gather(*chats, return_exceptions=True), timeout=2)
+                    # A cancelled caller has no reply to await. Drain the worker
+                    # so late provider calls cannot escape the final assertions.
+                    await asyncio.wait_for(main._run_rag_work(lambda: None), timeout=2)
+
+                response = (queued if cancel_running else first).result()
+                assert response.status_code == 200
+                if cancel_running:
+                    assert response.json()["answer"] == (
+                        "The AI provider is temporarily unavailable due to a rate limit. "
+                        "Please try again in a few minutes."
+                    )
+                    assert response.json()["sources"] == []
+                    assert llm_client.rate_limit_remaining_seconds() == 45
+                else:
+                    assert response.json()["answer"] == answer
+                    assert not llm_client.is_rate_limited()
+                assert attempts == ["/v1/chat/completions"] * 3
+                search.assert_called_once_with(search_query, n_results=8, authority_boost=True)
+
+    asyncio.run(scenario())
+
+
 def test_background_warmup_keeps_cooldown_from_first_chat(transport_client, monkeypatch):
     from app import main
 
