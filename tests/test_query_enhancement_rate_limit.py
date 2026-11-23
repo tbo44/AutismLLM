@@ -1,3 +1,4 @@
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -39,6 +40,85 @@ def clock(monkeypatch):
     now = [100.0]
     monkeypatch.setattr(llm_module.time, "monotonic", lambda: now[0])
     return now
+
+
+@pytest.fixture
+def transport_client(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "custom")
+    monkeypatch.setenv("LLM_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_RATE_LIMIT_COOLDOWN_SECONDS", "30")
+    build_client = llm_module._build_openai_client
+
+    def make(http_client):
+        monkeypatch.setattr(
+            llm_module, "_build_openai_client", partial(build_client, http_client=http_client),
+        )
+        return UKAutismLLMClient()
+
+    return make
+
+
+def _successful_completion_response():
+    return httpx.Response(200, json={
+        "id": "test-completion",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "test-model",
+        "choices": [{
+            "index": 0,
+            "finish_reason": "stop",
+            "message": {"role": "assistant", "content": "PIP benefits"},
+        }],
+    })
+
+
+@pytest.mark.parametrize("headers", [{}, {"x-should-retry": "true", "retry-after": "1"}])
+def test_first_http_429_starts_shared_cooldown_without_retry(transport_client, clock, headers):
+    attempts = []
+
+    def respond(request):
+        attempts.append(request.url.path)
+        if len(attempts) == 1:
+            return httpx.Response(429, headers=headers, json={"error": {"message": "Too many requests"}})
+        return _successful_completion_response()
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+        client = transport_client(http_client)
+        result = client.enhance_query("PIP support")
+        assert attempts == ["/v1/chat/completions"]
+        assert result == {"query": "PIP support", "rate_limited": True}
+        assert client.is_rate_limited()
+
+        clock[0] = 129.99
+        assert client.check_content_appropriateness("PIP support")["rate_limited"] is True
+        assert client.synthesize_response("PIP support", [])["rate_limited"] is True
+        assert client.enhance_query("PIP support")["rate_limited"] is True
+        assert len(attempts) == 1
+
+        clock[0] = 130.0
+        assert client.enhance_query("PIP support") == "PIP benefits"
+        assert len(attempts) == 2
+        assert not client.is_rate_limited()
+
+
+@pytest.mark.parametrize("failure", ["connection", "http-503"])
+def test_transient_provider_errors_still_retry(transport_client, failure):
+    attempts = []
+
+    def respond(request):
+        attempts.append(request)
+        if len(attempts) == 1:
+            if failure == "connection":
+                raise httpx.ConnectError("Temporary connection failure", request=request)
+            return httpx.Response(503, json={"error": {"message": "Try again shortly"}})
+        return _successful_completion_response()
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+        client = transport_client(http_client)
+        assert client.enhance_query("PIP support") == "PIP benefits"
+        assert len(attempts) == 2
+        assert not client.is_rate_limited()
 
 
 def test_enhance_query_reports_a_rate_limit(client_factory):

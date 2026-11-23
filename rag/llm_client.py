@@ -19,8 +19,11 @@ import json
 import logging
 import math
 import time
+from functools import partial
 from threading import Lock
 from typing import List, Dict, Any, Optional, Union
+
+import httpx
 from openai import OpenAI
 import openai
 
@@ -29,7 +32,17 @@ from .structured_formatter import StructuredDataFormatter
 logger = logging.getLogger(__name__)
 
 
-def _build_openai_client() -> OpenAI:
+class _CooldownAwareOpenAI(OpenAI):
+    def _should_retry(self, response: httpx.Response) -> bool:
+        # The SDK has no public per-status retry setting. Pass 429 through
+        # immediately so the shared cooldown, not an SDK retry, handles it.
+        if response.status_code == 429:
+            return False
+        return super()._should_retry(response)
+
+
+def _build_openai_client(*, http_client: httpx.Client | None = None) -> OpenAI:
+    build_client = partial(_CooldownAwareOpenAI, http_client=http_client)
     provider     = os.environ.get("LLM_PROVIDER", "").strip().lower()
     llm_base_url = os.environ.get("LLM_BASE_URL", "").strip()
     llm_api_key  = os.environ.get("LLM_API_KEY", "").strip()
@@ -42,47 +55,47 @@ def _build_openai_client() -> OpenAI:
         if not key:
             raise ValueError("LLM_PROVIDER=groq but no LLM_API_KEY or GROQ_API_KEY found.")
         logger.info("LLM provider: Groq (explicit)")
-        return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=key)
+        return build_client(base_url="https://api.groq.com/openai/v1", api_key=key)
 
     if provider == "openai":
         key = llm_api_key or openai_key
         if not key:
             raise ValueError("LLM_PROVIDER=openai but no LLM_API_KEY or OPENAI_API_KEY found.")
         logger.info("LLM provider: OpenAI (explicit)")
-        return OpenAI(api_key=key)
+        return build_client(api_key=key)
 
     if provider in ("ollama", "local"):
         base = llm_base_url or "http://localhost:11434/v1"
         logger.info(f"LLM provider: Ollama/local at {base}")
-        return OpenAI(base_url=base, api_key=llm_api_key or "ollama")
+        return build_client(base_url=base, api_key=llm_api_key or "ollama")
 
     if provider == "custom":
         if not llm_base_url:
             raise ValueError("LLM_PROVIDER=custom but LLM_BASE_URL is not set.")
         logger.info(f"LLM provider: custom endpoint {llm_base_url}")
-        return OpenAI(base_url=llm_base_url, api_key=llm_api_key or "none")
+        return build_client(base_url=llm_base_url, api_key=llm_api_key or "none")
 
     # --- Auto-detect (no LLM_PROVIDER set) ---
     if groq_api_key and not llm_base_url and not llm_api_key:
         logger.info("LLM provider: Groq (auto-detected via GROQ_API_KEY)")
-        return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_api_key)
+        return build_client(base_url="https://api.groq.com/openai/v1", api_key=groq_api_key)
 
     if llm_base_url and llm_api_key:
         logger.info(f"LLM provider: custom endpoint {llm_base_url} (auto-detected)")
-        return OpenAI(base_url=llm_base_url, api_key=llm_api_key)
+        return build_client(base_url=llm_base_url, api_key=llm_api_key)
 
     if llm_api_key:
         logger.info("LLM provider: OpenAI (auto-detected via LLM_API_KEY)")
-        return OpenAI(api_key=llm_api_key)
+        return build_client(api_key=llm_api_key)
 
     if llm_base_url:
         logger.info(f"LLM provider: local endpoint {llm_base_url} (no auth)")
-        return OpenAI(base_url=llm_base_url, api_key="ollama")
+        return build_client(base_url=llm_base_url, api_key="ollama")
 
     # Default: Ollama-compatible local endpoint with Qwen
     default_base = "http://localhost:11434/v1"
     logger.info(f"LLM provider: Ollama default at {default_base} (set LLM_PROVIDER or GROQ_API_KEY to change)")
-    return OpenAI(base_url=default_base, api_key="ollama")
+    return build_client(base_url=default_base, api_key="ollama")
 
 
 def _default_model() -> str:
