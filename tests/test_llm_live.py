@@ -15,22 +15,35 @@ pytestmark = pytest.mark.llm_live
 
 
 def _provider_failure(model, error):
-    """Label SDK errors without printing credentials or raw provider responses."""
+    """Return a safe diagnostic and whether the rejection blocks the live run."""
     if isinstance(error, openai.APIConnectionError):
-        return f"Live LLM provider unreachable for model {model!r}; check the endpoint and network."
+        return f"Live LLM provider unreachable for model {model!r}; check the endpoint and network.", False
     status = error.status_code
     if error.code in ("model_not_found", "model_decommissioned", "model_not_available"):
         return (
             f"Live LLM model unavailable: {model!r} (HTTP {status}). "
-            "Check LLM_MODEL and whether the provider account can use it."
+            "Check LLM_MODEL and whether the provider account can use it.",
+            False,
+        )
+    quota_codes = ("insufficient_quota", "billing_hard_limit_reached")
+    if error.code in quota_codes or error.type in quota_codes:
+        return (
+            f"Live LLM provider quota exhausted for {model!r} (HTTP {status}); check provider billing and quota.",
+            True,
         )
     if status in {401, 403}:
-        return f"Live LLM provider denied access to {model!r} (HTTP {status}); check credentials and permissions."
+        return (
+            f"Live LLM provider denied access to {model!r} (HTTP {status}); check credentials and permissions.",
+            True,
+        )
     if status == 429:
-        return f"Live LLM provider rate-limited {model!r} (HTTP 429); check provider quota and try again later."
+        return (
+            f"Live LLM provider rate-limited {model!r} (HTTP 429); check provider quota and try again later.",
+            False,
+        )
     if status == 404:
-        return f"Live LLM model or endpoint not found (HTTP 404); check configuration for {model!r}."
-    return f"Live LLM provider request failed for {model!r} (HTTP {status})."
+        return f"Live LLM model or endpoint not found (HTTP 404); check configuration for {model!r}.", False
+    return f"Live LLM provider request failed for {model!r} (HTTP {status}).", False
 
 
 def _configured_client():
@@ -41,23 +54,41 @@ def _configured_client():
     pytest.fail("Live LLM client could not initialize; check provider configuration and credentials.", pytrace=False)
 
 
-def _checked_completion(create, model, **kwargs):
-    try:
-        return create(model=model, **kwargs)
-    except (openai.APIConnectionError, openai.APIStatusError) as error:
-        failure = _provider_failure(model, error)
-    pytest.fail(failure, pytrace=False)
+class _LiveProviderRun:
+    def __init__(self):
+        self.rejected = False
+
+    def complete(self, create, model, **kwargs):
+        try:
+            return create(model=model, **kwargs)
+        except (openai.APIConnectionError, openai.APIStatusError) as error:
+            failure, account_wide = _provider_failure(model, error)
+            if account_wide:
+                self.rejected = True
+        # Fail outside the exception handler so pytest doesn't display the provider body.
+        pytest.fail(failure, pytrace=False)
+
+
+@pytest.fixture(scope="session")
+def live_provider_run():
+    return _LiveProviderRun()
+
+
+@pytest.fixture(autouse=True)
+def skip_after_provider_rejection(live_provider_run):
+    if live_provider_run.rejected:
+        pytest.skip("An earlier live check received an account-wide provider rejection; see its failure.")
 
 
 @pytest.fixture
-def live_answer(monkeypatch):
+def live_answer(monkeypatch, live_provider_run):
     llm_client = _configured_client()
     with llm_client.client as provider:
         live_create = provider.chat.completions.create
 
         def checked_create(*, model, **kwargs):
             # Fail at the SDK boundary before the app can return a fallback.
-            return _checked_completion(live_create, model, **kwargs)
+            return live_provider_run.complete(live_create, model, **kwargs)
 
         monkeypatch.setattr(provider.chat.completions, "create", checked_create)
 
@@ -78,11 +109,11 @@ def live_answer(monkeypatch):
         yield ask
 
 
-def test_live_model_access():
+def test_live_model_access(live_provider_run):
     """Ask the configured model for one small completion without using /chat."""
     llm_client = _configured_client()
     with llm_client.client as provider:
-        response = _checked_completion(
+        response = live_provider_run.complete(
             provider.with_options(max_retries=0).chat.completions.create,
             llm_client.model,
             messages=[{"role": "user", "content": "Reply with one word: OK."}],

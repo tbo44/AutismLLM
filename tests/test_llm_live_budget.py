@@ -1,5 +1,6 @@
 """Run the opt-in tests in a child pytest session with no provider access."""
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -10,6 +11,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 ACCESS_CASE = "test_live_model_access"
+READING_CASE = "test_live_clear_answers_are_simpler[school-plan-annual-review]"
 STRUCTURED_CASES = (
     "test_live_model_access_and_structured_answer",
     "test_live_model_access_second_case",
@@ -48,6 +50,7 @@ def offline_provider(monkeypatch):
 
     monkeypatch.setattr(socket, "create_connection", unexpected_connection)
     attempts = Path("attempts.log")
+    rejection = json.loads(os.environ["PROVIDER_REJECTION"])
 
     def respond(request):
         payload = json.loads(request.content)
@@ -74,6 +77,8 @@ def offline_provider(monkeypatch):
         first = not attempts.exists()
         with attempts.open("a") as log:
             print(stage, file=log)
+        if rejection and stage == rejection["stage"]:
+            return httpx.Response(rejection["status"], json={"error": rejection["error"]})
         if stage == "access" and os.environ["ACCESS_RESPONSE"] == "error":
             return httpx.Response(500, headers={"retry-after-ms": "1"})
         if first and stage != "access":
@@ -107,11 +112,15 @@ def offline_provider(monkeypatch):
         "LLM_MODEL": "test-model",
     }
 
-    def run(*args, cases=STRUCTURED_CASES, access_response="ok"):
+    def run(*args, cases=STRUCTURED_CASES, access_response="ok", rejection=None):
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", "-c", str(ROOT / "pytest.ini"), "-qx",
+            [sys.executable, "-m", "pytest", "-c", str(ROOT / "pytest.ini"), "-q",
              "-m", "llm_live", *(f"test_live.py::{case}" for case in cases), *args],
-            cwd=tmp_path, env={**env, "ACCESS_RESPONSE": access_response},
+            cwd=tmp_path, env={
+                **env,
+                "ACCESS_RESPONSE": access_response,
+                "PROVIDER_REJECTION": json.dumps(rejection),
+            },
             capture_output=True, text=True, timeout=60,
         )
         attempts = tmp_path / "attempts.log"
@@ -153,9 +162,53 @@ def test_model_access_counts_against_shared_budget(isolated_live_run):
     assert attempts == ["access"]
 
 
+@pytest.mark.parametrize("status,fields,stage,diagnostic", [
+    (401, {"code": "invalid_api_key"}, "access", "provider denied access"),
+    (403, {}, "access", "provider denied access"),
+    (429, {"code": "insufficient_quota"}, "access", "provider quota exhausted"),
+    (429, {"type": "billing_hard_limit_reached"}, "moderation", "provider quota exhausted"),
+])
+def test_account_wide_rejection_fails_once_and_skips_remaining_live_cases(
+    isolated_live_run, status, fields, stage, diagnostic,
+):
+    cases = (ACCESS_CASE, STRUCTURED_CASES[0], READING_CASE)
+    if stage == "moderation":
+        # The first failure can come from inside /chat, without the access check running first.
+        cases = (STRUCTURED_CASES[0], ACCESS_CASE, READING_CASE)
+    result, output, attempts = isolated_live_run(
+        "--llm-request-limit=20", "-rs", cases=cases,
+        rejection={"stage": stage, "status": status, "error": {
+            **fields, "message": "raw provider diagnostic must stay hidden",
+        }},
+    )
+
+    assert result == pytest.ExitCode.TESTS_FAILED, output
+    assert diagnostic in output and f"(HTTP {status})" in output, output
+    assert "1 failed, 2 skipped" in output, output
+    assert "An earlier live check received an account-wide provider rejection" in output, output
+    assert "raw provider diagnostic must stay hidden" not in output, output
+    assert attempts == [stage]
+
+
+@pytest.mark.parametrize("status,code,diagnostic", [
+    (429, "rate_limit_exceeded", "provider rate-limited"),
+    (403, "model_not_available", "model unavailable"),
+])
+def test_other_provider_failures_do_not_skip_later_live_cases(isolated_live_run, status, code, diagnostic):
+    result, output, attempts = isolated_live_run(
+        "--llm-request-limit=20", cases=(ACCESS_CASE, STRUCTURED_CASES[0]),
+        rejection={"stage": "access", "status": status, "error": {"code": code}},
+    )
+
+    assert result == pytest.ExitCode.TESTS_FAILED, output
+    assert diagnostic in output, output
+    assert "1 failed, 1 passed" in output, output
+    assert attempts == ["access", "moderation", "enhancement", "synthesis"]
+
+
 @pytest.mark.parametrize("limit,passed", [(1, 0), (4, 1)])
 def test_budget_blocks_retry_and_is_shared_between_live_cases(isolated_live_run, limit, passed):
-    status, output, attempts = isolated_live_run(f"--llm-request-limit={limit}")
+    status, output, attempts = isolated_live_run("-x", f"--llm-request-limit={limit}")
 
     assert status == pytest.ExitCode.TESTS_FAILED, output
     assert f"budget exhausted ({limit}/{limit} HTTP attempts used)" in output, output

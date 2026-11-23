@@ -373,9 +373,12 @@ and generation for each of nine answers. If the cap is reached, the next request
 is blocked and the test fails with a budget message, not an answer-quality
 failure. Run these checks in a single pytest process so tests share one budget.
 
-An unavailable model, denied access, or a rate limit fails with a
-provider-specific diagnostic, separate from answer-quality failures. The
-reading-level checks ask the same questions at both levels using fixed source
+Provider errors fail with a diagnostic separate from answer-quality failures.
+After an account-wide rejection (denied credentials or permissions, or an
+explicit quota or billing limit), the first check fails and the remaining live
+checks are skipped without sending requests. Use `-rs` to show skip reasons.
+A temporary rate limit or a model-specific error does not skip later checks.
+The reading-level checks ask the same questions at both levels using fixed source
 text. Before comparing readability, they check that **both** replies keep
 essential advice about school plan reviews, child DLA claims, autism assessment
 referrals, and the first step and usual deadline for challenging a PIP decision.
