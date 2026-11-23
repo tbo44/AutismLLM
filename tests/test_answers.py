@@ -5,8 +5,11 @@ Model output quality is not measured by canned prose; these tests check what the
 app sends to the provider and how it handles the provider's response.
 """
 
-from unittest.mock import call
+import asyncio
+from threading import Event
+from unittest.mock import Mock, call
 
+import httpx
 import pytest
 
 from tests.llm_test_helpers import completion, search_hit
@@ -105,6 +108,101 @@ def test_crisis_message_bypasses_the_provider(chat_stub, crisis_message, expecte
     assert expected_fragment in data["answer"]
     assert "If you're in crisis" in data["answer"]
     assert data["sources"] == []
+    chat_stub.create.assert_not_called()
+    chat_stub.search.assert_not_called()
+
+
+@pytest.fixture
+def uninitialized_system(chat_stub, monkeypatch):
+    from app import main
+
+    system = main._rag_system
+    system.initialized = False
+    system.vector_store.embedder = Mock()
+    monkeypatch.setattr(main, "_rag_system", None)
+    monkeypatch.setattr(main, "_startup_complete", False)
+    monkeypatch.setattr("rag.rag_system.get_rag_system", lambda: system)
+    return system
+
+
+def _assert_uk_crisis_guidance(data):
+    for fragment in ("call 999", "go to A&E", "NHS urgent mental health help", "Samaritans on 116 123"):
+        assert fragment in data["answer"]
+    assert data["sources"] == []
+    assert data["timestamp"].startswith("Last checked: ")
+    assert data["disclaimer"]
+
+
+def test_chat_returns_crisis_guidance_while_initialization_is_blocked(chat_stub, uninitialized_system):
+    from app import main
+
+    ordinary_answer = "## Short Answer\nAsk about an EHCP at school."
+
+    async def scenario():
+        init_started = asyncio.Event()
+        release_init = Event()
+        loop = asyncio.get_running_loop()
+
+        def initialize():
+            loop.call_soon_threadsafe(init_started.set)
+            if not release_init.wait(timeout=5):
+                pytest.fail("Knowledge base initialization was not released")
+            uninitialized_system.initialized = True
+
+        uninitialized_system.initialize = Mock(side_effect=initialize)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+        ) as api:
+            startup = asyncio.create_task(main.initialize_rag_background())
+            ordinary = None
+            try:
+                await asyncio.wait_for(init_started.wait(), timeout=2)
+                ordinary = asyncio.create_task(api.post("/chat", json={"question": "What is an EHCP?"}))
+                crisis = await asyncio.wait_for(api.post("/chat", json={
+                    "question": "I feel suicidal. What should I do?",
+                }), timeout=2)
+
+                assert crisis.status_code == 200
+                _assert_uk_crisis_guidance(crisis.json())
+                assert not startup.done()
+                assert not ordinary.done()
+                chat_stub.create.assert_not_called()
+                chat_stub.search.assert_not_called()
+                chat_stub.queue_answer(
+                    ordinary_answer,
+                    search_hit("EHCP", "https://www.gov.uk/children-with-special-educational-needs"),
+                    query="Education Health and Care Plan",
+                )
+            finally:
+                release_init.set()
+                await asyncio.gather(
+                    startup, *([ordinary] if ordinary is not None else []), return_exceptions=True,
+                )
+
+            response = ordinary.result()
+            assert response.status_code == 200
+            assert response.json()["answer"] == ordinary_answer
+            assert main._startup_complete
+            uninitialized_system.initialize.assert_called_once_with()
+            assert chat_stub.create.call_count == 3
+
+    asyncio.run(scenario())
+
+
+def test_chat_returns_crisis_guidance_after_initialization_fails(chat_stub, uninitialized_system):
+    from app import main
+
+    uninitialized_system.initialize = Mock(side_effect=RuntimeError("Knowledge base unavailable"))
+    asyncio.run(main.initialize_rag_background())
+    assert not main._startup_complete
+    uninitialized_system.initialize.assert_called_once_with()
+
+    _assert_uk_crisis_guidance(chat_stub.ask("I feel suicidal. What should I do?"))
+    uninitialized_system.initialize.assert_called_once_with()
+
+    ordinary = chat_stub.ask("What is an EHCP?")
+    assert ordinary["answer"] == "Sorry, I encountered an error. Please try your question again."
+    assert uninitialized_system.initialize.call_args_list == [call(), call()]
     chat_stub.create.assert_not_called()
     chat_stub.search.assert_not_called()
 

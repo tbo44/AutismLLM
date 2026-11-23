@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Header, Query as QueryParam, Cookie, Form, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Header, Query as QueryParam, Cookie, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
@@ -32,6 +32,7 @@ from app.test_alert_attempts import AttemptCapacityError, TestAlertAttemptStore
 from app.postgres_test_alert_attempts import (
     PostgresTestAlertAttemptStore, create_test_alert_attempt_store,
 )
+from rag import answerer
 
 # Configure logging
 logging.basicConfig(
@@ -346,11 +347,18 @@ def _check_rag_warmup():
 
 
 @app.post("/chat", response_model=Answer)
-async def chat(query: Query):
+async def chat(query: Query, background_tasks: BackgroundTasks):
     """Answer questions using the RAG pipeline with safety guardrails."""
     london_tz = pytz.timezone("Europe/London")
     timestamp = datetime.now(london_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
     logger.info(f"📖 Comprehension: {query.comprehension_level.value}  Q-len: {len(query.question)}")
+
+    # The RAG worker may be occupied by initialization or another answer.
+    # Return urgent guidance locally, and write the question log after sending it.
+    crisis_response = answerer.get_crisis_response(query.question)
+    if crisis_response:
+        background_tasks.add_task(_log_question, query.question, [])
+        return Answer(answer=crisis_response, timestamp=f"Last checked: {timestamp}", sources=[])
 
     try:
         result = await _run_rag_work(_answer_chat, query)
@@ -362,7 +370,6 @@ async def chat(query: Query):
 
     except Exception as e:
         logger.error(f"Error processing question: {str(e)}", exc_info=True)
-        from rag import answerer
         text = answerer.apply_guardrails(query.question) or (
             "Sorry, I encountered an error. Please try your question again."
         )

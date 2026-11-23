@@ -50,9 +50,16 @@ def _match_any(text: str, patterns) -> Optional[str]:
             return p
     return None
 
-def apply_guardrails(user_text: str) -> Optional[str]:
+def get_crisis_response(user_text: str) -> Optional[str]:
+    """Return local crisis guidance without loading any RAG components."""
     if _match_any(user_text, CRISIS_PATTERNS):
         return TEMPLATES.crisis
+    return None
+
+def apply_guardrails(user_text: str) -> Optional[str]:
+    crisis_response = get_crisis_response(user_text)
+    if crisis_response:
+        return crisis_response
     if _match_any(user_text, CLINICAL_PATTERNS):
         return TEMPLATES.clinical
     if _match_any(user_text, LEGAL_PATTERNS):
