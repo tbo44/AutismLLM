@@ -255,13 +255,23 @@ pytest tests/ -v
 
 | Suite | Covers |
 |---|---|
-| `test_answers.py` | Live integration: 5 core topics, reading levels, off-topic redirects, acronym-free "clear" answers |
+| `test_answers.py` | Provider-independent chat integration: topic answers and sources, structured prompts, reading-level instructions, safety and off-topic redirects |
+| `test_llm_live.py` | Opt-in live check: configured model access and a structured chat answer |
 | `test_retrieval_coverage.py` | Deterministic (no LLM): core questions must retrieve below threshold; known gaps tracked as xfail |
 | `test_policy.py` | Safety guardrail patterns |
 | `test_admin.py` | Admin auth (401/403/cookie/header) and log parsing |
 | `test_smoke.py`, `test_static_assets.py` | Basic endpoint and asset checks |
 
-Note: `test_answers.py` needs a working LLM backend (e.g. `GROQ_API_KEY`).
+Routine chat tests use controlled completions, so they don't need a provider
+key or an available model. To check the configured provider and model, opt in:
+
+```bash
+pytest -m llm_live tests/test_llm_live.py -v
+```
+
+This sends real requests to the configured provider and may use quota. An
+unavailable model, denied access, or a rate limit fails the live check with a
+provider-specific diagnostic, separate from malformed answers.
 
 ---
 
@@ -404,7 +414,7 @@ python -m pytest tests/test_github_sync.py -q
 2. **Changing answers/prompts**: the structured format and reading-level rules live in `rag/llm_client.py` (`synthesize_response`). Run `pytest tests/test_answers.py` after changes.
 3. **Changing guardrails**: patterns are in `app/main.py`; every change must keep `tests/test_policy.py` green. Crisis safety is non-negotiable — never weaken the crisis path.
 4. **Frontend**: keep 18px body text, 44px touch targets, reduced-motion gating, and the disclaimer banner. No frameworks.
-5. **Before opening a PR**: run the full suite `pytest tests/ -v` (LLM-dependent tests need a key) and keep `README.md` in step with behaviour changes — especially the privacy section.
+5. **Before opening a PR**: run the routine suite `pytest tests/ -v` and keep `README.md` in step with behaviour changes — especially the privacy section.
 
 ---
 
@@ -432,7 +442,6 @@ The current app is live and stable; the following improvements are planned or in
 
 ### Known issues
 - One static-asset test still checks the old homepage title (fix queued)
-- `tests/test_answers.py` requires an LLM key and can hit provider rate limits
 
 This list evolves — check the project task board (or ask the maintainer) for current status before starting work on any of these.
 

@@ -22,3 +22,9 @@ Treat provider retry hints as advice for admission of new calls, not as permissi
 **Why:** One rate-limited stage should stop the rest of that answer's provider work. A quota reset far in the future shouldn't let a remote header take answers offline indefinitely, and the operator must be able to opt out of the pause without enabling retries.
 
 **How to apply:** Preserve the operator's minimum and explicit off switch when adding provider-specific hints. Bound only the provider's contribution so existing operator settings still work.
+
+Keep application answer tests separate from live model evaluations.
+
+**Why:** The chat route can return HTTP 200 with a user-friendly fallback after provider failure. Canned completions cannot demonstrate actual model quality, and model availability should not determine whether the app's prompt and response handling pass.
+
+**How to apply:** Test prompts and response handling with controlled completions. For opt-in live checks, diagnose provider access at the SDK boundary before the chat fallback hides it and verify generated output separately.

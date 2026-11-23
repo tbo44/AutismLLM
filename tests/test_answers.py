@@ -1,352 +1,159 @@
-"""
-Integration tests: Maya's answers against real questions across the 5 core topic areas.
+"""Exercise /chat behavior with scripted provider completions and search hits.
 
-These tests run against a live RAG system (ChromaDB + LLM).  On the very first run the
-system cold-starts synchronously, which may take 60-120 seconds.  Subsequent runs are fast
-once the ChromaDB collection is warm and persisted on disk.
-
-Run with:
-    pytest tests/test_answers.py -v
+The route, RAG pipeline, guardrails, retriever, and prompt construction are real.
+Model output quality is not measured by canned prose; these tests check what the
+app sends to the provider and how it handles the provider's response.
 """
+
+from unittest.mock import call
 
 import pytest
-from fastapi.testclient import TestClient
-from app.main import app
-from tests.llm_test_helpers import _RATE_LIMIT_SENTINEL
+
+from tests.llm_test_helpers import completion, search_hit
 
 
-# ── shared test client ────────────────────────────────────────────────────────
+def test_blue_badge_answer_preserves_generated_text_and_source(chat_stub):
+    question = "How do I apply for a Blue Badge for my autistic child?"
+    answer = "## Short Answer\nYou can apply for a Blue Badge through your council."
+    hit = search_hit("Apply for a Blue Badge", "https://www.gov.uk/apply-blue-badge")
+    chat_stub.queue_answer(answer, hit, query="Blue Badge application")
 
-client = TestClient(app)
+    data = chat_stub.ask(question)
+
+    assert data["answer"] == answer
+    assert data["sources"] == [{
+        "title": "Apply for a Blue Badge",
+        "url": "https://www.gov.uk/apply-blue-badge",
+        "publisher": "Gov.UK",
+    }]
+    chat_stub.search.assert_called_once_with("Blue Badge application", n_results=8, authority_boost=True)
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
-
-def ask(question: str, comprehension_level: str = "standard") -> dict:
-    """POST /chat and return the parsed JSON response."""
-    resp = client.post(
-        "/chat",
-        json={"question": question, "comprehension_level": comprehension_level},
+def test_ehcp_answer_uses_structured_prompt_and_preserves_sections(chat_stub):
+    question = "What is the EHCP annual review process for autism?"
+    headings = (
+        "## Short Answer", "## Steps", "## Who to Contact", "## Useful Links", "## Important Note",
     )
-    assert resp.status_code == 200, (
-        f"Expected 200 from /chat, got {resp.status_code}: {resp.text}"
+    answer = (
+        "## Short Answer\nAn EHCP is reviewed each year.\n\n"
+        "## Steps\n1. Check the current plan.\n\n"
+        "## Who to Contact\nYour school's support team.\n\n"
+        "## Useful Links\nGov.UK — SEND guidance.\n\n"
+        "## Important Note\nThis is general guidance."
     )
-    return resp.json()
+    context = "The annual review checks whether the plan still meets the child's needs."
+    hit = search_hit("EHCP annual review", "https://www.gov.uk/children-with-special-educational-needs",
+                     text=context)
+    chat_stub.queue_answer(answer, hit, query="Education Health and Care Plan annual review")
+
+    assert chat_stub.ask(question)["answer"] == answer
+    assert chat_stub.create.call_count == 3
+    messages = chat_stub.create.call_args.kwargs["messages"]
+    assert [message["role"] for message in messages] == ["system", "user"]
+    assert [line for line in messages[0]["content"].splitlines() if line.startswith("## ")] == [
+        *headings, "## Source 1: EHCP annual review",
+    ]
+    assert context in messages[0]["content"]
+    assert question in messages[1]["content"]
 
 
-def skip_if_rate_limited(data: dict) -> None:
-    """Skip the current test if the LLM provider hit its daily/minute rate limit.
+@pytest.mark.parametrize("question", [
+    "What is the mandatory reconsideration process if my PIP claim is refused?",
+    "My PIP claim was turned down — what options do I have?",
+    "Can I challenge a PIP decision and what evidence do I need?",
+])
+def test_pip_appeal_reaches_synthesis_instead_of_a_guardrail(chat_stub, question):
+    answer = "## Short Answer\nYou can ask for a mandatory reconsideration of a PIP decision."
+    hit = search_hit("Challenge a benefit decision", "https://www.gov.uk/mandatory-reconsideration")
+    chat_stub.queue_answer(answer, hit, query="PIP mandatory reconsideration")
 
-    Spurious 429 errors from the provider are not a regression in app code —
-    skipping keeps the suite green for real failures.
-    """
-    if _RATE_LIMIT_SENTINEL in data.get("answer", ""):
-        pytest.skip("LLM provider rate-limited (HTTP 429) — skipping to avoid false failure")
+    assert chat_stub.ask(question)["answer"] == answer
+    assert chat_stub.create.call_count == 3
 
 
-# ── Topic 1: Blue Badge application ──────────────────────────────────────────
+def test_hounslow_question_searches_locally_and_cites_hounslow_source(chat_stub):
+    question = "What autism support services are available in Hounslow?"
+    query = "Hounslow autism support"
+    answer = "## Short Answer\nHounslow Council lists local support services."
+    local_hit = search_hit("Hounslow Local Offer", "https://www.hounslow.gov.uk/",
+                           publisher="Hounslow Council")
+    chat_stub.queue_answer(answer, local_hit, query=query)
+    chat_stub.search.side_effect = [[local_hit], []]
 
-def test_blue_badge_answer_contains_keyword_and_source():
-    """
-    A Blue Badge question must:
-      • mention 'blue badge' somewhere in the answer text, and
-      • return at least one source with a non-empty URL.
-    """
-    data = ask("How do I apply for a Blue Badge for my autistic child?")
-    skip_if_rate_limited(data)
-    answer = data["answer"].lower()
-    sources = data.get("sources", [])
+    data = chat_stub.ask(question)
 
-    assert "blue badge" in answer, (
-        f"Expected 'blue badge' in answer.\nGot (first 400 chars): {data['answer'][:400]}"
+    assert data["answer"] == answer
+    assert data["sources"] == [{
+        "title": "Hounslow Local Offer",
+        "url": "https://www.hounslow.gov.uk/",
+        "publisher": "Hounslow Council",
+    }]
+    assert chat_stub.search.call_args_list == [
+        call(query, n_results=4, hounslow_specific=True),
+        call(query, n_results=7, hounslow_specific=False),
+    ]
+
+
+@pytest.mark.parametrize(("crisis_message", "expected_fragment"), [
+    ("I can't cope anymore and want to hurt myself", "Samaritans"),
+    ("I've been feeling suicidal lately", "999"),
+    ("I'm in crisis and I don't feel safe", "If you're in crisis"),
+])
+def test_crisis_message_bypasses_the_provider(chat_stub, crisis_message, expected_fragment):
+    data = chat_stub.ask(crisis_message)
+
+    assert expected_fragment in data["answer"]
+    assert "If you're in crisis" in data["answer"]
+    assert data["sources"] == []
+    chat_stub.create.assert_not_called()
+    chat_stub.search.assert_not_called()
+
+
+@pytest.mark.parametrize(("level", "prompt_label", "guideline", "answer"), [
+    ("clear", "CLEAR (Simple)", "No acronyms", "## Short Answer\nAsk for a school plan."),
+    ("standard", "STANDARD", "Explain jargon the first time you use it.",
+     "## Short Answer\nAsk the council to assess your child's support needs."),
+    ("complex", "COMPLEX (Detailed)", "Use precise language",
+     "## Short Answer\nRequest an Education, Health and Care needs assessment."),
+])
+def test_comprehension_level_selects_the_provider_instructions(
+    chat_stub, level, prompt_label, guideline, answer,
+):
+    hit = search_hit("Education, Health and Care plans", "https://www.gov.uk/children-with-special-educational-needs")
+    chat_stub.queue_answer(answer, hit, query="apply for Education Health and Care plan")
+
+    data = chat_stub.ask("How do I apply for an EHCP for my autistic child?", comprehension_level=level)
+
+    assert data["answer"] == answer
+    assert chat_stub.create.call_count == 3
+    system_prompt = chat_stub.create.call_args.kwargs["messages"][0]["content"]
+    assert [line for line in system_prompt.splitlines() if line.startswith("LANGUAGE LEVEL")] == [
+        f"LANGUAGE LEVEL — {prompt_label}:",
+    ]
+    assert guideline in system_prompt
+    if level == "clear":
+        assert 'write "autism" not "ASD", "doctor" not "GP", "school plan" not "EHCP"' in system_prompt
+
+
+@pytest.mark.parametrize("question", [
+    "What is the weather like today?",
+    "Can you recommend a good football team to support?",
+    "What's a tasty recipe for chocolate cake?",
+])
+def test_off_topic_moderation_returns_redirect_without_retrieval(chat_stub, question):
+    chat_stub.create.return_value = completion(
+        '{"appropriate": false, "reason": "That is outside autism support.", "category": "off-topic"}'
     )
+    chat_stub.create.side_effect = None
 
-    source_urls = [s.get("url", "") for s in sources]
-    assert any(url for url in source_urls), (
-        f"Expected at least one source URL in the response.\nSources returned: {sources}"
-    )
+    data = chat_stub.ask(question)
 
-
-# ── Topic 2: EHCP — structured answer format ─────────────────────────────────
-
-def test_ehcp_answer_contains_structured_section():
-    """
-    An EHCP annual-review question must return an answer that:
-      • mentions 'EHCP' or 'Education, Health and Care', and
-      • contains at least one markdown heading (##) from the structured answer format.
-    The specific phrasing is chosen to score below the 0.8 cosine-distance threshold
-    so that the retriever consistently returns relevant seed-data chunks.
-    """
-    data = ask("What is the EHCP annual review process for autism?")
-    skip_if_rate_limited(data)
-    answer = data["answer"]
-
-    ehcp_mentioned = (
-        "ehcp" in answer.lower()
-        or "education, health and care" in answer.lower()
-        or "annual review" in answer.lower()
-    )
-    assert ehcp_mentioned, (
-        f"Expected EHCP content in answer.\nGot (first 500 chars): {answer[:500]}"
-    )
-
-    assert "## Short Answer" in answer, (
-        f"Expected the '## Short Answer' structured section in the EHCP answer.\n"
-        f"The LLM system prompt mandates this exact heading as the first section.\n"
-        f"Got (first 500 chars): {answer[:500]}"
-    )
-
-
-# ── Topic 3: PIP appeal — guardrail must NOT fire ────────────────────────────
-
-@pytest.mark.parametrize(
-    "question",
-    [
-        "What is the mandatory reconsideration process if my PIP claim is refused?",
-        "My PIP claim was turned down — what options do I have?",
-        "Can I challenge a PIP decision and what evidence do I need?",
-    ],
-)
-def test_pip_appeal_does_not_trigger_guardrail(question):
-    """
-    PIP process questions are straightforward benefits questions and must not
-    trigger the legal-advice or clinical-advice guardrail.
-    """
-    data = ask(question)
-    skip_if_rate_limited(data)
-    answer = data["answer"]
-
-    assert "I can't give case-specific legal advice" not in answer, (
-        f"Legal guardrail incorrectly fired for PIP question: '{question}'"
-    )
-    assert "I can't provide personalised clinical advice" not in answer, (
-        f"Clinical guardrail incorrectly fired for PIP question: '{question}'"
-    )
-    assert "If you're in crisis" not in answer, (
-        f"Crisis guardrail incorrectly fired for PIP question: '{question}'"
-    )
-
-
-# ── Topic 4: Hounslow-specific question ──────────────────────────────────────
-
-def test_hounslow_question_cites_hounslow_source():
-    """
-    A question about Hounslow autism services must result in either:
-      • a source whose URL contains 'hounslow', or
-      • the word 'Hounslow' appearing in the answer text.
-    Both would demonstrate that local Hounslow knowledge is being retrieved.
-    """
-    data = ask("What autism support services are available in Hounslow?")
-    skip_if_rate_limited(data)
-    sources = data.get("sources", [])
-    answer_lower = data["answer"].lower()
-
-    hounslow_source_url = next(
-        (s.get("url", "") for s in sources if "hounslow" in s.get("url", "").lower()),
-        None,
-    )
-
-    assert hounslow_source_url is not None, (
-        f"Expected at least one source URL containing 'hounslow' (e.g. hounslow.gov.uk).\n"
-        f"Source URLs returned: {[s.get('url') for s in sources]}\n"
-        f"Answer (first 400 chars): {data['answer'][:400]}"
-    )
-
-
-# ── Topic 5: Crisis message — Samaritans / 999 safety response ───────────────
-
-@pytest.mark.parametrize(
-    "crisis_message,expected_fragment",
-    [
-        (
-            "I can't cope anymore and want to hurt myself",
-            "Samaritans",
-        ),
-        (
-            "I've been feeling suicidal lately",
-            "999",
-        ),
-        (
-            "I'm in crisis and I don't feel safe",
-            "If you're in crisis",
-        ),
-    ],
-)
-def test_crisis_message_triggers_safety_response(crisis_message, expected_fragment):
-    """
-    Any crisis message must immediately return the safety guardrail response
-    containing Samaritans / 999 info — never a RAG-generated answer.
-    """
-    data = ask(crisis_message)
-    answer = data["answer"]
-
-    # The specific expected fragment (Samaritans, 999, or the opening phrase)
-    assert expected_fragment in answer, (
-        f"Expected '{expected_fragment}' in crisis response.\n"
-        f"Message: '{crisis_message}'\n"
-        f"Got: {answer[:400]}"
-    )
-
-    # The full crisis template opening phrase must always be present
-    assert "If you're in crisis" in answer, (
-        f"Crisis safety template did not fire for: '{crisis_message}'\n"
-        f"Got: {answer[:400]}"
-    )
-
-
-# ── Answer quality: comprehension levels ─────────────────────────────────────
-
-def _long_word_ratio(text: str) -> float:
-    """Fraction of alphabetic words longer than 9 characters — a rough proxy for
-    vocabulary complexity. Higher means more long/technical words."""
-    words = [w for w in text.split() if w.isalpha()]
-    if not words:
-        return 0.0
-    long_words = [w for w in words if len(w) > 9]
-    return len(long_words) / len(words)
-
-
-def test_comprehension_levels_change_answer_complexity():
-    """
-    Asking the same question at every comprehension level must produce
-    meaningfully different answers. The 'clear' answer should be simpler than the
-    'complex' one — either shorter overall, or using fewer long/technical words.
-    This guards against the comprehension_level parameter silently becoming a no-op.
-    """
-    question = "How do I apply for an EHCP for my autistic child?"
-
-    level_data = {
-        level: ask(question, comprehension_level=level)
-        for level in ("clear", "standard", "complex")
-    }
-    for _d in level_data.values():
-        skip_if_rate_limited(_d)
-    answers = {level: d["answer"] for level, d in level_data.items()}
-
-    for level, answer in answers.items():
-        assert answer.strip(), f"Empty answer returned for comprehension level '{level}'."
-
-    clear = answers["clear"]
-    complex_ = answers["complex"]
-
-    # The two extremes must not be byte-for-byte identical.
-    assert clear != complex_, (
-        "The 'clear' and 'complex' answers are identical — the comprehension_level "
-        "parameter appears to have no effect.\n"
-        f"Answer: {clear[:400]}"
-    )
-
-    shorter = len(clear) < len(complex_)
-    simpler_vocab = _long_word_ratio(clear) < _long_word_ratio(complex_)
-
-    assert shorter or simpler_vocab, (
-        "The 'clear' answer is neither shorter nor uses simpler vocabulary than the "
-        "'complex' answer — the comprehension level may not be applied correctly.\n"
-        f"clear: {len(clear)} chars, long-word ratio {_long_word_ratio(clear):.3f}\n"
-        f"complex: {len(complex_)} chars, long-word ratio {_long_word_ratio(complex_):.3f}\n"
-        f"clear answer (first 300): {clear[:300]}\n"
-        f"complex answer (first 300): {complex_[:300]}"
-    )
-
-
-# ── Answer quality: 'clear' level avoids unexplained acronyms ────────────────
-
-# Acronyms the 'clear' language guidelines explicitly tell the LLM to avoid,
-# plus common UK autism/benefits acronyms likely to surface for this topic.
-_ACRONYMS_TO_AVOID = ["EHCP", "ASD", "GP", "PIP", "SEND", "DLA", "SENCO"]
-
-# Plain-English expansion cues. If one of these appears within a short window
-# after the acronym, the LLM has explained it, which is acceptable.
-_EXPANSION_CUES = {
-    "EHCP": ["education, health and care", "school plan", "plan for your child",
-             "support plan", "stands for", "which means", "this means", "(a "],
-    "ASD": ["autism spectrum", "autism", "stands for", "which means", "(a "],
-    "GP": ["doctor", "general practitioner", "stands for", "which means", "(a ", "(your "],
-    "PIP": ["personal independence payment", "benefit", "money", "stands for",
-            "which means", "(a "],
-    "SEND": ["special educational needs", "stands for", "which means", "(a "],
-    "DLA": ["disability living allowance", "benefit", "money", "stands for",
-            "which means", "(a "],
-    "SENCO": ["special educational needs co", "teacher", "stands for",
-              "which means", "(a ", "(the "],
-}
-
-
-def _find_unexplained_acronyms(answer: str) -> list:
-    """Return acronyms that appear as standalone words in the answer without a
-    nearby plain-English expansion (checked in a window around each occurrence)."""
-    import re
-
-    offenders = []
-    for acronym in _ACRONYMS_TO_AVOID:
-        # Standalone word match only — avoids false hits like 'GP' inside 'GPS'
-        # or lowercase words that merely contain the letters.
-        matches = list(re.finditer(rf"\b{acronym}\b", answer))
-        if not matches:
-            continue
-
-        cues = _EXPANSION_CUES.get(acronym, [])
-        explained_somewhere = False
-        for m in matches:
-            # Look in a window around the occurrence (before and after) so both
-            # "Education, Health and Care plan (EHCP)" and "EHCP (a school plan)"
-            # count as explained.
-            window = answer[max(0, m.start() - 120): m.end() + 120].lower()
-            if any(cue in window for cue in cues):
-                explained_somewhere = True
-                break
-        if not explained_somewhere:
-            offenders.append(acronym)
-    return offenders
-
-
-def test_clear_level_avoids_unexplained_acronyms():
-    """
-    The 'clear' comprehension level instructs the LLM to avoid acronyms
-    (write "school plan" not "EHCP", "doctor" not "GP"). This test asks a
-    question that naturally surfaces acronym-heavy content and asserts the
-    clear-level answer either avoids common acronyms entirely or immediately
-    explains them in plain English. This guards the acronym-avoidance rule
-    that is central to accessibility for users with learning disabilities.
-    """
-    question = "How do I apply for an EHCP and PIP for my autistic child?"
-    data = ask(question, comprehension_level="clear")
-    skip_if_rate_limited(data)
-    answer = data["answer"]
-
-    assert answer.strip(), "Empty answer returned at 'clear' comprehension level."
-
-    offenders = _find_unexplained_acronyms(answer)
-
-    assert not offenders, (
-        f"The 'clear' answer uses acronym(s) {offenders} without a plain-English "
-        f"explanation nearby. The clear-level language guidelines require avoiding "
-        f"acronyms or expanding them immediately.\n"
-        f"Answer (first 600 chars): {answer[:600]}"
-    )
-
-
-# ── Answer quality: off-topic refusal ────────────────────────────────────────
-
-@pytest.mark.parametrize(
-    "off_topic_question",
-    [
-        "What is the weather like today?",
-        "Can you recommend a good football team to support?",
-        "What's a tasty recipe for chocolate cake?",
-    ],
-)
-def test_off_topic_question_returns_redirect(off_topic_question):
-    """
-    A clearly off-topic question must be caught by the appropriateness check and
-    return the redirect copy, not a RAG-generated answer. This covers the
-    check_content_appropriateness path in the LLM client.
-    """
-    data = ask(off_topic_question)
-    skip_if_rate_limited(data)
-    answer = data["answer"]
-
-    assert "I'm focused on providing information about autism" in answer, (
-        f"Expected the off-topic redirect for '{off_topic_question}'.\n"
-        f"Got (first 400 chars): {answer[:400]}"
-    )
+    assert data["answer"].startswith("I'm focused on providing information about autism in the UK.")
+    assert "That is outside autism support." in data["answer"]
+    assert data["sources"] == []
+    chat_stub.create.assert_called_once()
+    messages = chat_stub.create.call_args.kwargs["messages"]
+    assert len(messages) == 1 and messages[0]["role"] == "user"
+    assert "content filter" in messages[0]["content"]
+    assert question in messages[0]["content"]
+    chat_stub.search.assert_not_called()

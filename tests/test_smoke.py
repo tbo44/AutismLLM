@@ -1,6 +1,6 @@
-import pytest
 from fastapi.testclient import TestClient
 from app.main import app
+from tests.llm_test_helpers import search_hit
 
 client = TestClient(app)
 
@@ -18,12 +18,15 @@ def test_root():
     # Check that it returns some HTML content
     assert len(resp.content) > 0
 
-def test_chat_basic():
+def test_chat_basic(chat_stub):
     """Test the chat endpoint with a basic question"""
-    resp = client.post("/chat", json={"question": "What is autism?"})
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "answer" in data
+    answer = "## Short Answer\nAutism is a lifelong developmental condition."
+    hit = search_hit("Autism", "https://www.nhs.uk/conditions/autism/", publisher="NHS")
+    chat_stub.queue_answer(answer, hit, query="autism overview")
+
+    data = chat_stub.ask("What is autism?")
+
+    assert data["answer"] == answer
     assert "timestamp" in data
     assert "disclaimer" in data
     assert "NHS 111" in data["disclaimer"]
