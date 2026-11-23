@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from functools import partial
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -12,11 +13,12 @@ from rag.rag_system import UKAutismRAGSystem
 from rag.retriever import UKAutismRetriever
 
 
-def _rate_limit_error() -> openai.RateLimitError:
+def _rate_limit_error(headers=None) -> openai.RateLimitError:
     return openai.RateLimitError(
         "too many requests",
         response=httpx.Response(
             429,
+            headers=headers,
             request=httpx.Request("POST", "https://example.test/v1/chat/completions"),
         ),
         body=None,
@@ -43,14 +45,22 @@ def clock(monkeypatch):
 
 
 @pytest.fixture
+def wall_clock(monkeypatch):
+    now = datetime(2026, 11, 23, 12, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr(llm_module.time, "time", lambda: now)
+
+
+@pytest.fixture
 def transport_client(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "custom")
     monkeypatch.setenv("LLM_BASE_URL", "https://example.test/v1")
     monkeypatch.setenv("LLM_API_KEY", "test-key")
-    monkeypatch.setenv("LLM_RATE_LIMIT_COOLDOWN_SECONDS", "30")
+    monkeypatch.delenv("LLM_RATE_LIMIT_COOLDOWN_SECONDS", raising=False)
     build_client = llm_module._build_openai_client
 
-    def make(http_client):
+    def make(http_client, seconds=None):
+        if seconds is not None:
+            monkeypatch.setenv("LLM_RATE_LIMIT_COOLDOWN_SECONDS", seconds)
         monkeypatch.setattr(
             llm_module, "_build_openai_client", partial(build_client, http_client=http_client),
         )
@@ -73,8 +83,39 @@ def _successful_completion_response():
     })
 
 
-@pytest.mark.parametrize("headers", [{}, {"x-should-retry": "true", "retry-after": "1"}])
-def test_first_http_429_starts_shared_cooldown_without_retry(transport_client, clock, headers):
+@pytest.mark.parametrize(
+    ("headers", "configured", "wait"),
+    [
+        pytest.param({}, None, 30, id="missing"),
+        pytest.param({"Retry-After": "0"}, None, 30, id="zero-hint"),
+        pytest.param({"Retry-After": "1"}, None, 30, id="shorter"),
+        pytest.param({"Retry-After": "45", "x-should-retry": "true"}, None, 45, id="longer"),
+        pytest.param({"Retry-After": " 60\t"}, None, 60, id="surrounding-whitespace"),
+        pytest.param({"Retry-After": "Mon, 23 Nov 2026 12:01:00 GMT"}, None, 60, id="future-date"),
+        pytest.param({"Retry-After": "Monday, 23-Nov-26 12:01:00 GMT"}, None, 60, id="rfc850-date"),
+        pytest.param({"Retry-After": "Mon Nov 23 12:01:00 2026"}, None, 60, id="asctime-date"),
+        pytest.param({"Retry-After": "Mon, 23 Nov 2026 11:59:00 GMT"}, None, 30, id="past-date"),
+        pytest.param({"Retry-After": "Mon, 23 Nov 2026 13:00:00 GMT"}, None, 300, id="date-capped"),
+        pytest.param({"Retry-After": "99999"}, None, 300, id="seconds-capped"),
+        pytest.param({"Retry-After": "9" * 4500}, None, 300, id="huge-integer-capped"),
+        pytest.param({"Retry-After": "99999"}, "400", 400, id="configured-above-cap"),
+        pytest.param({"Retry-After": "bad value"}, "12.5", 12.5, id="malformed-with-custom-default"),
+        pytest.param({"Retry-After": ""}, None, 30, id="blank"),
+        pytest.param({"Retry-After": "-60"}, None, 30, id="negative"),
+        pytest.param({"Retry-After": "90.5"}, None, 30, id="fractional"),
+        pytest.param({"Retry-After": "inf"}, None, 30, id="non-finite"),
+        pytest.param({"Retry-After": "Mon, 23 Nov 2026 12:01:00"}, None, 30, id="no-timezone"),
+        pytest.param({"Retry-After": "Mon, 32 Nov 2026 12:01:00 GMT"}, None, 30, id="invalid-date"),
+        pytest.param([("Retry-After", "60"), ("Retry-After", "90")], None, 30, id="duplicate"),
+    ],
+)
+def test_first_http_429_starts_shared_cooldown_without_retry(
+    transport_client, clock, wall_clock, monkeypatch, headers, configured, wait,
+):
+    def unexpected_sleep(*args):
+        pytest.fail("The SDK must not sleep or retry after a 429")
+
+    monkeypatch.setattr(llm_module.time, "sleep", unexpected_sleep)
     attempts = []
 
     def respond(request):
@@ -84,19 +125,20 @@ def test_first_http_429_starts_shared_cooldown_without_retry(transport_client, c
         return _successful_completion_response()
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
-        client = transport_client(http_client)
+        client = transport_client(http_client, seconds=configured)
         result = client.enhance_query("PIP support")
         assert attempts == ["/v1/chat/completions"]
         assert result == {"query": "PIP support", "rate_limited": True}
         assert client.is_rate_limited()
 
-        clock[0] = 129.99
+        expires_at = clock[0] + wait
+        clock[0] = expires_at - 0.01
         assert client.check_content_appropriateness("PIP support")["rate_limited"] is True
         assert client.synthesize_response("PIP support", [])["rate_limited"] is True
         assert client.enhance_query("PIP support")["rate_limited"] is True
         assert len(attempts) == 1
 
-        clock[0] = 130.0
+        clock[0] = expires_at
         assert client.enhance_query("PIP support") == "PIP benefits"
         assert len(attempts) == 2
         assert not client.is_rate_limited()
@@ -181,7 +223,7 @@ def _completion(content):
 
 @pytest.mark.parametrize("stage", ["moderation", "enhancement", "synthesis"])
 def test_all_provider_stages_activate_shared_cooldown(client_factory, clock, stage):
-    create = Mock(side_effect=_rate_limit_error())
+    create = Mock(side_effect=_rate_limit_error({"Retry-After": "45"}))
     client = client_factory(create, seconds="12.5")
     calls = {
         "moderation": lambda: client.check_content_appropriateness("PIP support"),
@@ -190,13 +232,13 @@ def test_all_provider_stages_activate_shared_cooldown(client_factory, clock, sta
     }
     assert calls[stage]()["rate_limited"] is True
     assert client.is_rate_limited()
-    clock[0] = 112.49
+    clock[0] = 144.99
     for call in calls.values():
         assert call()["rate_limited"] is True
     assert create.call_count == 1
 
     # Suppressed requests do not extend the deadline.
-    clock[0] = 112.5
+    clock[0] = 145.0
     create.side_effect = None
     create.return_value = _completion("PIP benefits")
     assert client.enhance_query("PIP support") == "PIP benefits"
@@ -255,13 +297,19 @@ def test_repeated_rate_limits_restart_cooldown(client_factory, clock):
     assert create.call_count == 2
 
 
-def test_zero_disables_cooldown(client_factory, clock):
-    create = Mock(side_effect=_rate_limit_error())
-    client = client_factory(create, seconds="0")
-    client.enhance_query("PIP support")
-    client.enhance_query("PIP support")
-    assert create.call_count == 2
-    assert not client.is_rate_limited()
+def test_zero_disables_cooldown_even_with_retry_after(transport_client, clock):
+    attempts = []
+
+    def respond(request):
+        attempts.append(request)
+        return httpx.Response(429, headers={"Retry-After": "90"})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+        client = transport_client(http_client, seconds="0")
+        for expected_attempts in (1, 2):
+            assert client.enhance_query("PIP support") == {"query": "PIP support", "rate_limited": True}
+            assert len(attempts) == expected_attempts
+            assert not client.is_rate_limited()
 
 
 @pytest.mark.parametrize("value", ["-1", "nan", "inf", "invalid"])

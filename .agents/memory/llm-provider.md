@@ -16,3 +16,9 @@ Default model per provider: Groq→llama-3.3-70b-versatile, OpenAI→gpt-4o-mini
 All overridden by LLM_MODEL env var.
 
 **Why:** Spec requires Ollama/Qwen as the pure default (no keys needed) while still auto-detecting Groq when GROQ_API_KEY is present in the current Replit environment.
+
+Treat provider retry hints as advice for admission of new calls, not as permission to retry an answer request.
+
+**Why:** One rate-limited stage should stop the rest of that answer's provider work. A quota reset far in the future shouldn't let a remote header take answers offline indefinitely, and the operator must be able to opt out of the pause without enabling retries.
+
+**How to apply:** Preserve the operator's minimum and explicit off switch when adding provider-specific hints. Bound only the provider's contribution so existing operator settings still work.

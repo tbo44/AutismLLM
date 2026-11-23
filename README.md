@@ -145,7 +145,7 @@ Provider selection priority: explicit `LLM_PROVIDER` → auto-detect from keys/U
 | `LLM_MODEL` | per provider | Groq→`llama-3.3-70b-versatile`, OpenAI→`gpt-4o-mini`, Ollama→`qwen2.5:72b` |
 | `TEMPERATURE` | `0` | Determinism — keep at 0 in production |
 | `TOP_P` | `1.0` | Top-p sampling |
-| `LLM_RATE_LIMIT_COOLDOWN_SECONDS` | `30` | Seconds to pause provider calls after a rate limit; finite non-negative number, `0` disables |
+| `LLM_RATE_LIMIT_COOLDOWN_SECONDS` | `30` | Minimum seconds to pause provider calls after a rate limit; finite non-negative number, `0` disables |
 | `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | SentenceTransformers model |
 | `HF_TOKEN` | — | Hugging Face token (private embedding models) |
 
@@ -153,6 +153,11 @@ Provider selection priority: explicit `LLM_PROVIDER` → auto-detect from keys/U
 
 The rate-limit cooldown is shared by answer requests using the application's LLM
 client. Moderation, query enhancement, and answer generation all activate it.
+An HTTP 429 is not retried automatically. A valid `Retry-After` (whole seconds or
+an HTTP date) can extend the configured cooldown, but the provider's requested
+wait is capped at 300 seconds. Missing, malformed, or past values leave the
+configured wait unchanged. Setting the cooldown to `0` ignores `Retry-After`
+and disables the pause.
 During the cooldown, answers return the existing temporary-unavailable message
 without provider calls; local safety guardrails still run. Calls resume on the
 next request after expiry. The cooldown uses a monotonic clock and is in-memory

@@ -18,7 +18,10 @@ import os
 import json
 import logging
 import math
+import re
 import time
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from functools import partial
 from threading import Lock
 from typing import List, Dict, Any, Optional, Union
@@ -30,6 +33,40 @@ import openai
 from .structured_formatter import StructuredDataFormatter
 
 logger = logging.getLogger(__name__)
+
+_MAX_PROVIDER_RETRY_AFTER_SECONDS = 300
+_SHORT_WEEKDAY = "(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)"
+_LONG_WEEKDAY = "(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
+_MONTH = "(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+_CLOCK_TIME = r"[0-9]{2}:[0-9]{2}:[0-9]{2}"
+_HTTP_DATE = re.compile(
+    rf"{_SHORT_WEEKDAY}, [0-9]{{2}} {_MONTH} [0-9]{{4}} {_CLOCK_TIME} GMT"
+    rf"|{_LONG_WEEKDAY}, [0-9]{{2}}-{_MONTH}-[0-9]{{2}} {_CLOCK_TIME} GMT"
+    rf"|{_SHORT_WEEKDAY} {_MONTH} (?:[0-9]{{2}}| [0-9]) {_CLOCK_TIME} [0-9]{{4}}"
+)
+
+
+def _provider_retry_after_seconds(headers: httpx.Headers) -> float:
+    """Return the provider's bounded wait, or zero if no valid wait was given."""
+    values = headers.get_list("retry-after")
+    if len(values) != 1:
+        return 0.0
+    value = values[0].strip(" \t")
+    if value.isascii() and value.isdecimal():
+        # Float accepts even huge digit strings (as infinity), which the cap handles.
+        delay = float(value)
+    elif _HTTP_DATE.fullmatch(value):
+        # The email parser alone also accepts non-HTTP dates and trailing text.
+        try:
+            date = parsedate_to_datetime(value)
+        except ValueError:
+            return 0.0
+        if date.tzinfo is None:  # The obsolete asctime HTTP-date format is UTC.
+            date = date.replace(tzinfo=timezone.utc)
+        delay = date.timestamp() - time.time()
+    else:
+        return 0.0
+    return max(0.0, min(delay, _MAX_PROVIDER_RETRY_AFTER_SECONDS))
 
 
 class _CooldownAwareOpenAI(OpenAI):
@@ -145,11 +182,14 @@ class UKAutismLLMClient:
         with self._cooldown_lock:
             return time.monotonic() < self._cooldown_until
 
-    def _start_rate_limit_cooldown(self) -> None:
+    def _start_rate_limit_cooldown(self, headers: httpx.Headers) -> None:
+        if self.rate_limit_cooldown_seconds == 0:
+            return
+        delay = max(self.rate_limit_cooldown_seconds, _provider_retry_after_seconds(headers))
         with self._cooldown_lock:
             self._cooldown_until = max(
                 self._cooldown_until,
-                time.monotonic() + self.rate_limit_cooldown_seconds,
+                time.monotonic() + delay,
             )
 
     # ─────────────────────────────────────────────────────────────────
@@ -248,7 +288,7 @@ CONTEXT INFORMATION:
             return {"response": generated_text, "sources_used": list(sources_used), "chunks_used": len(retrieved_chunks), "model_used": self.model, "success": True}
 
         except openai.RateLimitError as e:
-            self._start_rate_limit_cooldown()
+            self._start_rate_limit_cooldown(e.response.headers)
             logger.warning(f"LLM rate limit reached during response synthesis: {str(e)}")
             return {"response": "", "sources_used": [], "chunks_used": 0, "model_used": self.model, "success": False, "rate_limited": True, "error": str(e)}
         except Exception as e:
@@ -283,7 +323,7 @@ CONTEXT INFORMATION:
                 return enhanced
             return user_question
         except openai.RateLimitError as e:
-            self._start_rate_limit_cooldown()
+            self._start_rate_limit_cooldown(e.response.headers)
             logger.warning(f"LLM rate limit reached during query enhancement: {str(e)}")
             return {"query": user_question, "rate_limited": True}
         except Exception as e:
@@ -325,7 +365,7 @@ CONTEXT INFORMATION:
                     pass
             return {"appropriate": True, "reason": "Parse error", "category": "unknown"}
         except openai.RateLimitError as e:
-            self._start_rate_limit_cooldown()
+            self._start_rate_limit_cooldown(e.response.headers)
             logger.warning(f"LLM rate limit reached during appropriateness check: {str(e)}")
             return {"appropriate": True, "reason": "Rate limited", "category": "unknown", "rate_limited": True}
         except Exception as e:
