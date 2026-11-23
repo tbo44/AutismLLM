@@ -10,6 +10,7 @@ import os
 import time
 from enum import Enum
 
+from .answerer import ChatTimeout
 from .crawler import crawl_and_chunk_all
 from .vector_store import UKAutismVectorStore
 from .llm_client import UKAutismLLMClient
@@ -242,6 +243,8 @@ Please feel free to ask me about any of these topics!"""
                 "sources": sources
             }
             
+        except ChatTimeout:
+            raise
         except Exception as e:
             logger.error(f"Error in answer_question: {str(e)}")
             return self._handle_system_error()

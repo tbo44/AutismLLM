@@ -22,18 +22,23 @@ import re
 import time
 from datetime import timezone
 from email.utils import parsedate_to_datetime
+from contextvars import ContextVar
 from functools import partial
 from threading import Lock
+from time import monotonic
 from typing import List, Dict, Any, Optional, Union
 
 import httpx
 from openai import OpenAI
 import openai
 
+from .answerer import ChatTimeout, chat_deadline
 from .structured_formatter import StructuredDataFormatter
 
 logger = logging.getLogger(__name__)
 
+PROVIDER_STAGE_TIMEOUT_SECONDS = 20.0
+_provider_deadline: ContextVar[float | None] = ContextVar("provider_deadline", default=None)
 _MAX_PROVIDER_RETRY_AFTER_SECONDS = 300
 _SHORT_WEEKDAY = "(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)"
 _LONG_WEEKDAY = "(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
@@ -69,7 +74,17 @@ def _provider_retry_after_seconds(headers: httpx.Headers) -> float:
     return max(0.0, min(delay, _MAX_PROVIDER_RETRY_AFTER_SECONDS))
 
 
-class _CooldownAwareOpenAI(OpenAI):
+def _remaining_provider_seconds() -> float:
+    deadline = _provider_deadline.get()
+    if deadline is None:
+        return math.inf
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise ChatTimeout()
+    return remaining
+
+
+class _BudgetedOpenAI(OpenAI):
     def _should_retry(self, response: httpx.Response) -> bool:
         # The SDK has no public per-status retry setting. Pass 429 through
         # immediately so the shared cooldown, not an SDK retry, handles it.
@@ -77,9 +92,30 @@ class _CooldownAwareOpenAI(OpenAI):
             return False
         return super()._should_retry(response)
 
+    def _prepare_request(self, request: httpx.Request) -> None:
+        super()._prepare_request(request)
+        # Called before each SDK attempt, including retries. HTTPX timeouts
+        # are per socket phase, not a wall-clock deadline.
+        remaining = _remaining_provider_seconds()
+        if math.isfinite(remaining):
+            request.extensions["timeout"] = {
+                phase: remaining if seconds is None else min(seconds, remaining)
+                for phase, seconds in request.extensions["timeout"].items()
+            }
+
+    def _calculate_retry_timeout(self, remaining_retries, options, response_headers=None) -> float:
+        delay = super()._calculate_retry_timeout(remaining_retries, options, response_headers)
+        if delay >= _remaining_provider_seconds():
+            raise ChatTimeout()
+        return delay
+
 
 def _build_openai_client(*, http_client: httpx.Client | None = None) -> OpenAI:
-    build_client = partial(_CooldownAwareOpenAI, http_client=http_client)
+    build_client = partial(
+        _BudgetedOpenAI,
+        http_client=http_client,
+        timeout=httpx.Timeout(PROVIDER_STAGE_TIMEOUT_SECONDS, connect=5.0),
+    )
     provider     = os.environ.get("LLM_PROVIDER", "").strip().lower()
     llm_base_url = os.environ.get("LLM_BASE_URL", "").strip()
     llm_api_key  = os.environ.get("LLM_API_KEY", "").strip()
@@ -177,6 +213,23 @@ class UKAutismLLMClient:
     def _initialize_client(self):
         self.client = _build_openai_client()
         logger.info(f"LLM client ready  model={self.model}  temp={self.temperature}  top_p={self.top_p}")
+
+    def _complete(self, stage: str, **kwargs):
+        deadline = monotonic() + PROVIDER_STAGE_TIMEOUT_SECONDS
+        request_deadline = chat_deadline.get()
+        if request_deadline is not None:
+            deadline = min(deadline, request_deadline)
+        token = _provider_deadline.set(deadline)
+        try:
+            _remaining_provider_seconds()
+            response = self.client.chat.completions.create(**kwargs)
+            _remaining_provider_seconds()
+            return response
+        except (ChatTimeout, openai.APITimeoutError, httpx.TimeoutException) as e:
+            logger.warning("event=llm_provider_timeout stage=%s", stage)
+            raise ChatTimeout() from e
+        finally:
+            _provider_deadline.reset(token)
 
     def is_rate_limited(self) -> bool:
         """Share the cooldown across requests using this client, without sleeping."""
@@ -303,7 +356,8 @@ CONTEXT INFORMATION:
             user_prompt = f"Question: {user_question}\n\nPlease answer using the context above."
             language_instruction = language_guidelines.get(comprehension_level, language_guidelines["standard"])
 
-            response = self.client.chat.completions.create(
+            response = self._complete(
+                "synthesis",
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt.format(language_instruction=language_instruction, context=context_text)},
@@ -317,6 +371,8 @@ CONTEXT INFORMATION:
             generated_text = response.choices[0].message.content or ""
             return {"response": generated_text, "sources_used": list(sources_used), "chunks_used": len(retrieved_chunks), "model_used": self.model, "success": True}
 
+        except ChatTimeout:
+            raise
         except openai.RateLimitError as e:
             self._record_provider_429("synthesis", e.response.headers)
             return {"response": "", "sources_used": [], "chunks_used": 0, "model_used": self.model, "success": False, "rate_limited": True, "error": "Provider returned HTTP 429"}
@@ -340,7 +396,8 @@ CONTEXT INFORMATION:
                 "Return only the rewritten query — nothing else.\n\n"
                 f"Original question: {user_question}"
             )
-            response = self.client.chat.completions.create(
+            response = self._complete(
+                "enhancement",
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
@@ -351,6 +408,8 @@ CONTEXT INFORMATION:
                 logger.info(f"Query enhanced: '{user_question}' → '{enhanced}'")
                 return enhanced
             return user_question
+        except ChatTimeout:
+            raise
         except openai.RateLimitError as e:
             self._record_provider_429("enhancement", e.response.headers)
             return {"query": user_question, "rate_limited": True}
@@ -379,7 +438,8 @@ CONTEXT INFORMATION:
                 f"Question: {user_question}\n\n"
                 'Respond with JSON: {"appropriate": true/false, "reason": "brief explanation", "category": "autism-related|off-topic|other"}'
             )
-            response = self.client.chat.completions.create(
+            response = self._complete(
+                "moderation",
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
@@ -392,6 +452,8 @@ CONTEXT INFORMATION:
                 except json.JSONDecodeError:
                     pass
             return {"appropriate": True, "reason": "Parse error", "category": "unknown"}
+        except ChatTimeout:
+            raise
         except openai.RateLimitError as e:
             self._record_provider_429("moderation", e.response.headers)
             return {"appropriate": True, "reason": "Rate limited", "category": "unknown", "rate_limited": True}

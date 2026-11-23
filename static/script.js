@@ -1,4 +1,11 @@
-/* Maya – Autism Hounslow  script.js  v14 */
+/* Maya – Autism Hounslow  script.js  v16 */
+
+// Give the server's 35-second chat budget time to return its own response.
+const CHAT_REQUEST_TIMEOUT_MS = 40_000;
+const TRUSTED_SOURCES_FALLBACK = '\n\nIn the meantime, try these trusted sources:\n'
+    + '• [NHS autism information](https://www.nhs.uk/conditions/autism/)\n'
+    + '• [National Autistic Society](https://www.autism.org.uk/advice-and-guidance/what-is-autism)\n'
+    + '• [GOV.UK SEND support](https://www.gov.uk/special-educational-needs-support-council)';
 
 /* ── Acronym glossary (refreshed from /api/acronyms every five minutes) ── */
 let ACRONYM_GLOSSARY = {};
@@ -237,6 +244,7 @@ class MayaApp {
     // ── Send message ──────────────────────────────────────────────────
 
     async sendMessage() {
+        if (this.sendButton.disabled) return;
         const content = this.messageInput.value.trim();
         if (!content) return;
 
@@ -255,15 +263,18 @@ class MayaApp {
         if (isFirst) {
             this.addMessage({
                 role: 'assistant',
-                content: 'Loading knowledge base… this can take up to a minute on first use. Your answer will appear once ready.'
+                content: 'Getting your answer… This can take a little longer on first use.'
             });
             initEl = this.chatArea.lastElementChild;
         }
 
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), CHAT_REQUEST_TIMEOUT_MS);
         try {
             const res = await fetch('/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                signal: controller.signal,
                 body: JSON.stringify({
                     question: content,
                     comprehension_level: this.comprehensionLevel
@@ -273,7 +284,11 @@ class MayaApp {
             if (!res.ok) throw new Error(`Server error ${res.status}`);
             const data = await res.json();
 
-            if (initEl) { initEl.remove(); this.messages.pop(); }
+            if (initEl) {
+                initEl.remove();
+                this.messages.pop();
+                initEl = null;
+            }
 
             this.addMessage({
                 role: 'assistant',
@@ -283,13 +298,17 @@ class MayaApp {
             });
 
         } catch (err) {
-            console.error('Chat error:', err);
+            const timedOut = controller.signal.aborted;
+            if (!timedOut) console.error('Chat error:', err);
             if (initEl) { initEl.remove(); this.messages.pop(); }
             this.addMessage({
                 role: 'assistant',
-                content: 'Sorry, I encountered an error. Please try again.\n\nIf the problem continues, you can find reliable information at:\n• NHS: nhs.uk/conditions/autism\n• National Autistic Society: autism.org.uk\n• Gov.UK SEND: gov.uk/children-with-special-educational-needs'
+                content: (timedOut
+                    ? 'Maya took too long to answer. Please try asking again in a moment.'
+                    : 'Sorry, I encountered an error. Please try again.') + TRUSTED_SOURCES_FALLBACK
             });
         } finally {
+            clearTimeout(timer);
             this.setLoading(false);
         }
     }

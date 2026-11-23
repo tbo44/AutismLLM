@@ -1,6 +1,33 @@
+from contextvars import ContextVar
 from dataclasses import dataclass
 import re
+from time import monotonic
 from typing import Optional
+
+
+class ChatTimeout(Exception):
+    """The chat or one of its provider stages ran out of time."""
+
+
+# Set in the RAG worker so the synchronous pipeline and SDK retries can see
+# the same deadline as the request, even after the request stops waiting.
+chat_deadline: ContextVar[float | None] = ContextVar("chat_deadline", default=None)
+
+
+def check_chat_deadline() -> None:
+    deadline = chat_deadline.get()
+    if deadline is not None and monotonic() >= deadline:
+        raise ChatTimeout()
+
+
+CHAT_TIMEOUT_REPLY = (
+    "Maya took too long to answer. Please try asking again in a moment.\n\n"
+    "In the meantime, try these trusted sources:\n"
+    "• [NHS autism information](https://www.nhs.uk/conditions/autism/)\n"
+    "• [National Autistic Society](https://www.autism.org.uk/advice-and-guidance/what-is-autism)\n"
+    "• [GOV.UK SEND support](https://www.gov.uk/special-educational-needs-support-council)"
+)
+
 
 @dataclass
 class GuardrailTemplates:

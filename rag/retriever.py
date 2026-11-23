@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 import logging
 import re
 
+from .answerer import ChatTimeout
 from .vector_store import UKAutismVectorStore
 from .llm_client import UKAutismLLMClient
 
@@ -223,6 +224,8 @@ class UKAutismRetriever:
                 "total_returned": len(filtered_results)
             }
             
+        except ChatTimeout:
+            raise
         except Exception as e:
             logger.error(f"Retrieval error: {str(e)}")
             return {

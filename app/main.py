@@ -120,6 +120,7 @@ _startup_complete = False
 # loop or taking shared worker threads while queued. Loads and reloads use
 # the same worker so they cannot replace RAG components during an answer.
 _rag_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="maya-rag")
+_CHAT_TIMEOUT_SECONDS = 35.0  # Includes time spent waiting for the RAG worker.
 
 app.add_middleware(
     CORSMiddleware,
@@ -361,13 +362,22 @@ async def chat(query: Query, background_tasks: BackgroundTasks):
         return Answer(answer=crisis_response, timestamp=f"Last checked: {timestamp}", sources=[])
 
     try:
-        result = await _run_rag_work(_answer_chat, query)
+        deadline = time.monotonic() + _CHAT_TIMEOUT_SECONDS
+        # Cancelling the await drops queued work if it hasn't started. An
+        # already running call keeps the sole worker until it actually exits.
+        result = await asyncio.wait_for(
+            _run_rag_work(_answer_chat, query, deadline), timeout=_CHAT_TIMEOUT_SECONDS,
+        )
         answer_text = result.get("answer", "")
         sources_list = result.get("sources", [])
 
         sources = [Source(**src) for src in sources_list]
         return Answer(answer=answer_text, timestamp=f"Last checked: {timestamp}", sources=sources)
 
+    except (TimeoutError, answerer.ChatTimeout):
+        logger.info("event=chat_timeout")
+        text = answerer.apply_guardrails(query.question) or answerer.CHAT_TIMEOUT_REPLY
+        return Answer(answer=text, timestamp=f"Last checked: {timestamp}", sources=[])
     except Exception as e:
         logger.error(f"Error processing question: {str(e)}", exc_info=True)
         text = answerer.apply_guardrails(query.question) or (
@@ -376,13 +386,20 @@ async def chat(query: Query, background_tasks: BackgroundTasks):
         return Answer(answer=text, timestamp=f"Last checked: {timestamp}", sources=[])
 
 
-def _answer_chat(query: Query):
-    rag_system = _load_rag_system()
-    result = rag_system.answer_question(
-        query.question, comprehension_level=query.comprehension_level.value,
-    )
-    _log_question(query.question, [source.get("url", "") for source in result.get("sources", [])])
-    return result
+def _answer_chat(query: Query, deadline: float):
+    token = answerer.chat_deadline.set(deadline)
+    try:
+        answerer.check_chat_deadline()
+        rag_system = _load_rag_system()
+        answerer.check_chat_deadline()
+        result = rag_system.answer_question(
+            query.question, comprehension_level=query.comprehension_level.value,
+        )
+        answerer.check_chat_deadline()
+        _log_question(query.question, [source.get("url", "") for source in result.get("sources", [])])
+        return result
+    finally:
+        answerer.chat_deadline.reset(token)
 
 
 # ──────────────────────────────────────────────────────────────────────
