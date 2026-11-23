@@ -240,6 +240,40 @@ def test_chat_resumes_after_provider_retry_after(transport_client, monkeypatch):
         search.assert_called_once_with(search_query, n_results=8, authority_boost=True)
 
 
+def test_chat_returns_uk_crisis_guidance_during_provider_cooldown(transport_client, monkeypatch):
+    provider_time = Mock(wraps=llm_module.time)
+    provider_time.monotonic.return_value = 100.0
+    monkeypatch.setattr(llm_module, "time", provider_time)
+
+    respond = Mock(return_value=httpx.Response(
+        429, headers={"Retry-After": "45"}, json={"error": {"message": "Too many requests"}},
+    ))
+    search = Mock()
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+        llm_client = transport_client(http_client, seconds="30")
+        api = chat_client(monkeypatch, llm_client, search)
+        first = api.post("/chat", json={"question": "How do I apply for PIP?"})
+
+        assert first.status_code == 200
+        assert "temporarily unavailable due to a rate limit" in first.json()["answer"]
+        assert llm_client.is_rate_limited()
+        respond.assert_called_once()
+
+        crisis = api.post("/chat", json={"question": "I feel suicidal. What should I do?"})
+
+        assert crisis.status_code == 200
+        data = crisis.json()
+        assert "temporarily unavailable" not in data["answer"]
+        assert "call 999" in data["answer"]
+        assert "go to A&E" in data["answer"]
+        assert "NHS urgent mental health help" in data["answer"]
+        assert "Samaritans on 116 123" in data["answer"]
+        assert data["sources"] == []
+        respond.assert_called_once()
+        search.assert_not_called()
+
+
 @pytest.mark.parametrize("failure", ["connection", "http-503"])
 def test_transient_provider_errors_still_retry(transport_client, failure):
     attempts = []
@@ -466,15 +500,3 @@ def test_other_errors_do_not_start_cooldown(client_factory, clock):
     assert not client.is_rate_limited()
     client.enhance_query("PIP support")
     assert create.call_count == 2
-
-
-def test_local_safety_guardrails_still_work_during_cooldown(client_factory, clock, monkeypatch):
-    create = Mock(side_effect=_rate_limit_error())
-    client = client_factory(create)
-    client.enhance_query("PIP support")
-    system = UKAutismRAGSystem()
-    system.initialized = True
-    system.llm_client = client
-    monkeypatch.setattr("rag.answerer.apply_guardrails", lambda question: "Local safety advice")
-    assert system.answer_question("Safety question") == {"answer": "Local safety advice", "sources": []}
-    assert create.call_count == 1
