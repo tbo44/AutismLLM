@@ -328,6 +328,56 @@ def test_health_responds_while_chat_provider_is_stalled(transport_client, monkey
     asyncio.run(scenario())
 
 
+def test_admin_shows_provider_pause_status_while_chat_is_stalled(transport_client, monkeypatch):
+    from app import main
+
+    admin_token = "test-admin-token"
+    monkeypatch.setattr(main, "_ADMIN_TOKEN", admin_token)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        entered_provider = asyncio.Event()
+        release_provider = Event()
+
+        def block_provider(request):
+            # Only the chat's moderation request should reach the provider.
+            if respond.call_count != 1:
+                pytest.fail(f"Unexpected additional provider call to {request.url.path}")
+            loop.call_soon_threadsafe(entered_provider.set)
+            if not release_provider.wait(timeout=5):
+                pytest.fail("Mock provider was not released; it may be blocking the request loop")
+            return httpx.Response(429, json={"error": {"message": "Too many requests"}})
+
+        respond = Mock(side_effect=block_provider)
+        with httpx.Client(transport=httpx.MockTransport(respond)) as provider:
+            llm_client = transport_client(provider, seconds="30")
+            chat_client(monkeypatch, llm_client, Mock(return_value=[]))
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+            ) as api:
+                chat = asyncio.create_task(api.post("/chat", json={"question": "How do I apply for PIP?"}))
+                try:
+                    await asyncio.wait_for(entered_provider.wait(), timeout=2)
+                    dashboard = await asyncio.wait_for(
+                        api.get("/admin", headers={"X-Admin-Token": admin_token}), timeout=2,
+                    )
+
+                    assert dashboard.status_code == 200
+                    assert "No active pause" in dashboard.text
+                    assert "No local rate-limit pause is active." in dashboard.text
+                    assert not chat.done(), "Dashboard responded only after the stalled chat finished"
+                    assert respond.call_count == 1, "Reading the dashboard contacted the provider"
+                finally:
+                    release_provider.set()
+                    await asyncio.wait_for(asyncio.gather(chat, return_exceptions=True), timeout=5)
+
+                assert chat.result().status_code == 200
+                assert llm_client.is_rate_limited(), "The chat should receive its 429 after release"
+                respond.assert_called_once()
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("cancel_running", [False, True], ids=["queued", "running"])
 def test_cancelled_chat_does_not_start_extra_provider_calls(
     transport_client, monkeypatch, cancel_running,
