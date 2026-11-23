@@ -3,8 +3,10 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import subprocess
+import sys
 import httpx
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -33,6 +35,67 @@ VALID_TOKEN = "test-admin-token-123"
 def admin_token(monkeypatch):
     monkeypatch.setattr(main, "_ADMIN_TOKEN", VALID_TOKEN)
     return VALID_TOKEN
+
+
+# ── Admin configuration at startup ──────────────────────────────────
+
+
+@pytest.mark.parametrize("configured_token", [None, "   ", VALID_TOKEN], ids=[
+    "unset", "blank", "configured",
+])
+def test_admin_startup_never_prints_password(tmp_path, configured_token):
+    # Start a fresh interpreter to capture import-time diagnostics without
+    # changing the running test app or using any workspace credentials.
+    fallback = "generated-admin-test-sentinel"
+    python_paths = [Path(__file__).resolve().parents[1]]
+    python_paths.extend(Path(path).resolve() for path in sys.path if path)
+    env = {
+        "PYTHONPATH": os.pathsep.join(map(str, python_paths)),
+        "SCHEDULED_REINDEX_ENABLED": "false",
+        "GITHUB_BACKUP_MONITOR_ENABLED": "false",
+    }
+    if configured_token is not None:
+        env["ADMIN_TOKEN"] = configured_token
+    (tmp_path / "static").mkdir()
+    result = subprocess.run(
+        [sys.executable, "-c", f"""
+import os
+from unittest.mock import patch
+from fastapi.testclient import TestClient
+
+with patch("secrets.token_urlsafe", return_value={fallback!r}) as generate:
+    from app import main
+
+configured = os.environ.get("ADMIN_TOKEN", "").strip()
+if not configured:
+    generate.assert_called_once_with(32)
+    assert main._ADMIN_TOKEN == {fallback!r}
+else:
+    generate.assert_not_called()
+
+with patch.object(main, "initialize_rag_background"):
+    # The admin session cookie is Secure, so exercise it on an HTTPS test origin.
+    with TestClient(main.app, base_url="https://localhost") as client:
+        assert client.get("/health").status_code == 200
+        if configured:
+            response = client.post("/admin/login", data={{"token": configured}},
+                                   follow_redirects=False)
+            assert response.status_code == 303
+            assert response.headers["location"] == "/admin"
+            assert client.get("/admin").status_code == 200
+"""],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    output = result.stdout + result.stderr
+    for token in (fallback, VALID_TOKEN):
+        assert token not in output
+    if configured_token == VALID_TOKEN:
+        assert "ADMIN_TOKEN is not set" not in output
+    else:
+        assert "ADMIN_TOKEN is not set" in output
+        assert "set ADMIN_TOKEN in your shell" in output
+        assert "restart and sign in at /admin/login" in output
 
 
 # ── _check_admin_token ────────────────────────────────────────────────

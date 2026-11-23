@@ -190,7 +190,7 @@ LLM_MODEL=gpt-4o
 
 | Variable | Default | Description |
 |---|---|---|
-| `ADMIN_TOKEN` | random per restart | Permanent staff password for `/admin` — **set this in production** |
+| `ADMIN_TOKEN` | private random fallback per server process | Set this to sign in to `/admin` |
 | `ADMIN_CRAWL_TOKEN` | — | Separate Bearer token for `/admin/crawl` and re-index endpoints |
 | `SCHEDULED_REINDEX_ENABLED` | `true` | Nightly automatic re-index on/off |
 | `REINDEX_SCHEDULE_HOUR` | `2` | UK-local hour for the nightly run |
@@ -206,6 +206,20 @@ uvicorn app.main:app --host 0.0.0.0 --port 5000 --reload
 ```
 
 The server starts immediately; the RAG knowledge base loads in the background (~30–60 s first run, ~10 s once ChromaDB is cached).
+
+To use the admin dashboard locally, choose a strong password and set it before
+starting the server. In Bash, this prompts without echoing the password:
+
+```bash
+read -r -s -p 'Local admin password: ' ADMIN_TOKEN
+printf '\n'
+export ADMIN_TOKEN
+uvicorn app.main:app --host 127.0.0.1 --port 5000 --reload
+```
+
+Open `http://localhost:5000/admin/login` and enter the same password. If Maya
+is already running, stop it and start it again from the shell where you set
+`ADMIN_TOKEN`.
 
 ---
 
@@ -248,7 +262,7 @@ curl -X POST https://<your-app>/admin/crawl -H "Authorization: Bearer $ADMIN_CRA
 
 `GET /admin` shows: question volume (7-day + total), feedback submissions, top-10 retrieved sources, knowledge-base health (chunk count, last re-index, schedule/next run, failure alerts), and re-index history.
 
-**Access**: staff sign in at `/admin/login` with `ADMIN_TOKEN` (session cookie, 12 h). The token also works via `?token=` or `X-Admin-Token` header for scripts. **Set `ADMIN_TOKEN` in Secrets** — otherwise a temporary token is generated each restart and printed once to the log.
+**Access**: staff sign in at `/admin/login` with `ADMIN_TOKEN` (session cookie, 12 h). The token also works via `?token=` or `X-Admin-Token` header for scripts. Set `ADMIN_TOKEN` in [your local shell](#6-running-locally) or in Replit **Secrets**, then restart. If it is unset or blank, Maya generates a private random fallback and does not print it.
 
 ---
 

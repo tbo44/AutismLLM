@@ -99,19 +99,16 @@ _SCHEDULED_REINDEX_MODE: str = os.environ.get("SCHEDULED_REINDEX_MODE", "crawl")
 _UK_TZ = pytz.timezone("Europe/London")
 
 # ── Admin token ────────────────────────────────────────────────────────────
-# Use ADMIN_TOKEN env var; if not set, generate a random one and log it once.
+# Use ADMIN_TOKEN if configured; otherwise keep a random fallback in memory.
 # Staff should set ADMIN_TOKEN in the Replit Secrets panel so the password
 # stays the same across restarts and deployments (see replit.md).
 _ADMIN_TOKEN: str = os.environ.get("ADMIN_TOKEN", "").strip() or secrets.token_urlsafe(32)
 _ADMIN_TOKEN_IS_PERSISTENT: bool = bool(os.environ.get("ADMIN_TOKEN", "").strip())
 if not _ADMIN_TOKEN_IS_PERSISTENT:
     logger.warning(
-        "⚠️  ADMIN_TOKEN is not set, so a temporary admin password was generated "
-        "for THIS session only and will change on the next restart:\n"
-        f"    {_ADMIN_TOKEN}\n"
-        "    To keep a permanent admin password, open the Replit Secrets panel "
-        "(Tools → Secrets), add a secret named ADMIN_TOKEN with a value of your "
-        "choosing, then restart. Staff can then sign in at /admin/login."
+        "ADMIN_TOKEN is not set. The temporary admin password is not printed. "
+        "To enable staff sign-in, set ADMIN_TOKEN in your shell or in Replit "
+        "(Tools → Secrets), then restart and sign in at /admin/login."
     )
 
 app = FastAPI(title="Maya – Autism Hounslow Assistant", version="2.0.0")
