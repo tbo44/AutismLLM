@@ -18,15 +18,27 @@ class Essential:
 
 
 @dataclass(frozen=True)
+class Contradiction:
+    description: str
+    pattern: str
+
+
+@dataclass(frozen=True)
 class ReadingCase:
     id: str
     question: str
     hit: dict
     essentials: tuple[Essential, ...]
+    contradictions: tuple[Contradiction, ...] = ()
 
 
 COUNCIL = r"(?:local (?:education )?authority|(?:local )?council)"
 DOCTOR = r"(?:gp|general practitioner|(?:family )?doctor)"
+PLAN_OUTCOME = r"(?:keep|change|amend|end|stop|maintain)"
+PLAN = r"(?:it|the (?:(?:ehc |school )?plan|ehcp))"
+PLAN_DECISION = rf"(?:what happens to {PLAN}|whether to {PLAN_OUTCOME}(?:,? (?:or )?{PLAN_OUTCOME})* {PLAN})"
+CLAIM_FORM = r"(?:it|(?:(?:the|your) )?(?:completed |filled[ -]in )?(?:dla )?(?:claim form|form|claim|application))"
+ONLINE = r"(?:online|via (?:the |an )?online portal)"
 
 ANNUAL_REVIEW = ReadingCase(
     "school-plan-annual-review",
@@ -38,7 +50,8 @@ ANNUAL_REVIEW = ReadingCase(
             "An Education, Health and Care plan (EHCP) is reviewed at least once a year. "
             "The annual review checks whether the support still meets the child's needs. "
             "The school invites parents to share how the child is getting on and what support "
-            "they need. The local authority decides whether to keep, amend or end the plan."
+            "they need. The school can recommend changes, but the local authority decides "
+            "whether to keep, amend or end the plan."
         ),
     ),
     (
@@ -51,20 +64,32 @@ ANNUAL_REVIEW = ReadingCase(
             rf"determines?|chooses?)\b|decision\b[^;]*\b(?:by|rests with) (?:the |your )?{COUNCIL}\b)",
         )),
     ),
+    (
+        # SEND Regulations 2014, regulation 20(7)-(10): the school reports
+        # recommendations; the authority decides on the plan.
+        # https://www.legislation.gov.uk/uksi/2014/1530/regulation/20
+        Contradiction(
+            "The council, not the school, makes the final decision about the plan.",
+            r"^(?:(?:the|your|your child's) )?(?:school|headteacher) "
+            r"(?:(?:can|could|may|will|must) )?"
+            rf"(?:decides? {PLAN_DECISION}\b|(?:makes?|takes?|has|have) the final (?:decision|say)"
+            rf"(?:$| (?:on|about) (?:{PLAN}|{PLAN_DECISION})\b))",
+        ),
+    ),
 )
 
 DLA_CLAIM = ReadingCase(
     "disability-benefit-claim",
-    "How do I apply for DLA for my autistic child?",
+    "How do I apply for DLA for my autistic child in England?",
     search_hit(
         "Disability Living Allowance for children",
         "https://www.gov.uk/disability-living-allowance-children/how-to-claim",
         text=(
             "Disability Living Allowance (DLA) can help with the extra costs of looking after "
             "a child who needs more care or has more difficulty walking than a child of the "
-            "same age. To apply, download the claim form or ask the Department for Work and "
-            "Pensions (DWP) to send you a copy. Fill it in with details of the child's "
-            "care or mobility needs and return it by post."
+            "same age. In England and Wales, download the claim form or ask the Department for "
+            "Work and Pensions (DWP) to send you a printed copy. You can fill it in on a computer "
+            "or by hand. Return the completed claim form by post."
         ),
     ),
     (
@@ -81,6 +106,21 @@ DLA_CLAIM = ReadingCase(
             r"(?:claim|application|form))|(?:return|send|submit|put)\w*\b[^;]*"
             r"\b(?:by (?:post(?:al mail)?|mail)|through the post|in the (?:post|mail)|via (?:post|mail)))\b",
         )),
+    ),
+    (
+        # GOV.UK's claim form guidance distinguishes filling in the PDF from
+        # sending the completed form to Freepost DWP DLA Child.
+        # https://www.gov.uk/government/publications/disability-living-allowance-for-children-claim-form
+        Contradiction(
+            "In England and Wales, send the completed child DLA claim form by post, not online.",
+            r"^(?:(?:alternatively|instead|also),? )?(?:"
+            r"(?:you (?:can|could|may|should|must) (?:also )?)?"
+            rf"(?:(?:post {CLAIM_FORM}|(?:send|return) {CLAIM_FORM} by post),? or )?"
+            rf"(?:(?:submit|upload|send|return) {CLAIM_FORM} {ONLINE}\b"
+            r"|apply online(?: for (?:child(?:ren's)? )?dla)?(?: instead| as well)?$)"
+            rf"|{CLAIM_FORM} (?:can|could|may|should|must) (?:also )?be "
+            rf"(?:submitted|uploaded|sent|returned) {ONLINE}\b)",
+        ),
     ),
 )
 
@@ -119,22 +159,48 @@ ASSESSMENT_REFERRAL = ReadingCase(
 READING_CASES = (ANNUAL_REVIEW, DLA_CLAIM, ASSESSMENT_REFERRAL)
 
 
-def missing_essentials(case: ReadingCase, answer: str) -> list[str]:
+def _answer_statements(answer: str) -> list[str]:
     # Match answer prose, not section titles, citations, or bare link labels.
     prose = re.sub(r"(?m)^[ \t]*#{1,6}[ \t]+.*$", "", answer)
     prose = re.sub(r"\[[^\]\n]+\]\(https?://[^\s)]+\)|<?https?://[^\s>]+>?", "", prose)
     prose = prose.replace("*", "").replace("_", "").replace("’", "'").casefold()
-    statements = re.split(r"[.!?]+(?=\s|$)|\n+", prose)
-    return [point.description for point in case.essentials if not point.appears_in(statements)]
+    return re.split(r"[.!?]+(?=\s|$)|\n+", prose)
+
+
+def missing_essentials(case: ReadingCase, answer: str) -> list[str]:
+    return [point.description for point in case.essentials if not point.appears_in(_answer_statements(answer))]
+
+
+def _contradictions(case: ReadingCase, answer: str) -> list[str]:
+    # Look for explicit affirmative advice at clause starts, not a keyword
+    # anywhere in the answer (which would match "do not submit it online").
+    clauses = [
+        re.sub(r"^(?:[-+•]|\d+[.)])\s+", "", clause.strip())
+        for statement in _answer_statements(answer)
+        for clause in re.split(r";|\b(?:but|however)\b,?\s*", statement)
+    ]
+    return [
+        point.description for point in case.contradictions
+        if any(re.search(point.pattern, clause) for clause in clauses)
+    ]
 
 
 def assert_essential_advice(case: ReadingCase, *, clear: str, complex_answer: str) -> None:
+    """Check that both replies keep the essentials and don't contradict them."""
+    answers = (("Clear", clear), ("Complex", complex_answer))
     missing = [
         f"{level}: {point}"
-        for level, answer in (("Clear", clear), ("Complex", complex_answer))
+        for level, answer in answers
         for point in missing_essentials(case, answer)
     ]
-    assert not missing, (
-        f"Live answer content regression ({case.id}): essential advice missing or not recognised:\n"
-        + "\n".join(f"- {item}" for item in missing)
-    )
+    conflicts = [
+        f"{level}: {point}"
+        for level, answer in answers
+        for point in _contradictions(case, answer)
+    ]
+    findings = []
+    if missing:
+        findings.append("essential advice missing or not recognised:\n" + "\n".join(f"- {item}" for item in missing))
+    if conflicts:
+        findings.append("advice contradicts the fixed source:\n" + "\n".join(f"- {item}" for item in conflicts))
+    assert not findings, f"Live answer content regression ({case.id}): " + "\n".join(findings)

@@ -8,3 +8,9 @@ Treat only advice that affects the reader's actions or understanding of eligibil
 **Why:** Clear replies are meant to drop unnecessary detail. A checklist of every source fact penalises that, while accepting a vague keyword match can hide the loss of an actionable step or caveat.
 
 **How to apply:** When expanding the evaluation, pair each new essential with an acceptable plain-language version and a plausible reply that omits it. When a correct paraphrase is flagged, verify its meaning against the fixed source before extending the matcher.
+
+Keep contradiction checks separate from checks for omissions. Target explicit, source-disallowed advice rather than individual words.
+
+**Why:** A reply can include a correct step and still direct the reader to do something incompatible. A broad keyword check can also reject a valid distinction, such as downloading a form online versus submitting it online.
+
+**How to apply:** For each contradiction case, keep all essentials in the failing example, and include a passing example that explains the legitimate alternatives or explicitly rejects the incorrect one.

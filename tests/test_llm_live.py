@@ -81,6 +81,7 @@ def test_live_model_access_and_structured_answer(live_answer):
 
 @pytest.mark.parametrize("case", READING_CASES, ids=lambda case: case.id)
 def test_live_clear_answers_are_simpler(live_answer, case):
+    """Check both replies for missing or contradictory advice before comparing readability."""
     clear = live_answer(case.question, case.hit, "clear")
     complex_answer = live_answer(case.question, case.hit, "complex")
 

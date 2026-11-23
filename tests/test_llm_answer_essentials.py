@@ -1,4 +1,4 @@
-"""Exercise the live answer checks offline with complete and incomplete paraphrases."""
+"""Exercise the live answer checks offline with correct, incomplete and conflicting advice."""
 
 import pytest
 
@@ -10,11 +10,13 @@ from tests.llm_answer_essentials import (
     assert_essential_advice,
     missing_essentials,
 )
+from tests.llm_reading_checks import check_reading_pair
 
 
 @pytest.mark.parametrize("case", READING_CASES, ids=lambda case: case.id)
 def test_source_passage_supports_every_essential(case):
     assert not missing_essentials(case, case.hit["text"])
+    assert_essential_advice(case, clear=case.hit["text"], complex_answer=case.hit["text"])
 
 
 @pytest.mark.parametrize(("case", "clear", "complex_answer"), [
@@ -96,3 +98,71 @@ def test_fluent_reply_without_same_age_caveat_fails_at_either_level(level):
 ])
 def test_each_missing_step_has_a_specific_diagnostic(case, answer, missing):
     assert missing_essentials(case, answer) == [missing]
+
+
+DLA_ELIGIBILITY = "Your child must need more care or help to walk than others of the same age."
+ANNUAL_REVIEW_FREQUENCY = "The plan is checked every year."
+
+
+@pytest.mark.parametrize("level", ["Clear", "Complex"])
+@pytest.mark.parametrize(("case", "answer", "diagnostic"), [
+    pytest.param(
+        DLA_CLAIM,
+        f"{DLA_ELIGIBILITY} Post the completed form, or submit it online instead.",
+        "send the completed child DLA claim form by post, not online",
+        id="online-submission-as-alternative",
+    ),
+    pytest.param(
+        DLA_CLAIM,
+        f"{DLA_ELIGIBILITY}\n- Send the completed form by post.\n"
+        "- The completed claim form can also be submitted online.",
+        "send the completed child DLA claim form by post, not online",
+        id="online-submission-as-separate-step",
+    ),
+    pytest.param(
+        ANNUAL_REVIEW,
+        f"{ANNUAL_REVIEW_FREQUENCY} The council decides what happens to the plan, "
+        "but the school can decide whether to keep, change or end it.",
+        "The council, not the school, makes the final decision about the plan",
+        id="school-as-final-decision-maker",
+    ),
+])
+def test_conflicting_advice_fails_even_when_all_essentials_are_present(level, case, answer, diagnostic):
+    assert not missing_essentials(case, answer)
+
+    with pytest.raises(AssertionError) as exc:
+        check_reading_pair(
+            case,
+            clear=answer if level == "Clear" else case.hit["text"],
+            complex_answer=answer if level == "Complex" else case.hit["text"],
+        )
+
+    message = str(exc.value)
+    assert f"({case.id}): advice contradicts the fixed source:" in message
+    assert message.splitlines()[1].startswith(f"- {level}: ")
+    assert diagnostic in message
+    assert len(message.splitlines()) == 2
+
+
+@pytest.mark.parametrize(("case", "clear", "complex_answer"), [
+    pytest.param(
+        DLA_CLAIM,
+        f"{DLA_ELIGIBILITY} Download the form or call to ask for a copy. "
+        "Send the completed form by post. Do not submit it online.",
+        "Eligibility depends on whether a child has additional care or mobility needs relative to age-matched peers. "
+        "You can complete the downloaded form electronically or request and complete a paper copy, "
+        "but you cannot submit the form online; return the completed claim form by post.",
+        id="download-or-request-form",
+    ),
+    pytest.param(
+        ANNUAL_REVIEW,
+        f"{ANNUAL_REVIEW_FREQUENCY} The school can suggest changes. "
+        "The council decides whether to keep, change or end the plan.",
+        "The plan undergoes a review every 12 months, with the school gathering information and recommending changes. "
+        "The school does not make the final decision about the plan; the local authority determines "
+        "whether to maintain, amend, or end it.",
+        id="school-recommends-council-decides",
+    ),
+])
+def test_correct_explanations_of_alternatives_pass(case, clear, complex_answer):
+    check_reading_pair(case, clear=clear, complex_answer=complex_answer)

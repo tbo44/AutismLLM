@@ -370,9 +370,10 @@ provider-specific diagnostic, separate from answer-quality failures. The
 reading-level checks ask the same questions at both levels using fixed source
 text. Before comparing readability, they check that **both** replies keep
 essential advice about school plan reviews, disability benefit claims, or
-autism assessment referrals.
-The content checks use wording variations and name the missing point and
-reading level on failure. They make no extra provider requests. Readability
+autism assessment referrals. They also flag selected contradictions, such
+as telling a parent to submit a completed child DLA form online after saying
+to post it. Failures name the issue and reading level. The checks make no
+extra provider requests. Readability
 checks look for unexplained acronyms in Clear replies and compare sentence
 length and use of long words. These checks are regression signals, not a
 formal reading-age score or a full factual review; an unfamiliar paraphrase
