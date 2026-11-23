@@ -403,19 +403,29 @@ retrieval so the scores reflect answer generation. All candidates use the same
 configured `TEMPERATURE` and `TOP_P`; repeated replies may be similar with a
 low temperature. The report shows passes out of **complete pairs** by model
 and topic. Quality misses, provider failures, and unfinished pairs are shown
-separately, so a model with no scored answers has no pass rate. Reading-level
+separately, so a model and topic with no scored pairs has no pass rate. Reading-level
 misses are results to review, not an exit failure; provider failures or an
 interrupted comparison return a nonzero exit status.
 
+The report flags **limited evidence** for any model and topic with fewer than
+five complete pairs, even when all planned requests finish. A perfect `2/2`
+score is based on just two pairs. When rates are close, check how many pairs
+were scored and how many were missing: a single pair can change the percentage,
+and provider errors can leave candidates with different coverage. The
+five-pair cutoff is a reporting rule, not a confidence threshold. A small gap
+alone does not establish a winner or a regression.
+
 Add `--report-json reading-run.json` to save a machine-readable copy alongside
-the unchanged terminal summary. Use a new filename for each run; an existing
+the terminal summary. Use a new filename for each run; an existing
 file is never overwritten. The JSON includes the schema version, rubric ID,
 candidate and topic IDs, sampling settings, request counts, and counts for
 passed, quality-failed, provider-failed, and unfinished pairs. The pass rate is
-a fraction of scored pairs, or `null` when none were scored. Reports include
-partial results if the comparison stops early, but no credentials or generated
-answers. Saving a report makes no extra provider requests. Compare runs with the
-same rubric and sampling settings when assessing a model or prompt change.
+a fraction of scored pairs, or `null` when none were scored. Each result has a
+`limited_evidence` flag; the top-level `evidence` section records the cutoff
+and guidance. Reports include partial results if the comparison stops early,
+but no credentials or generated answers. Saving a report makes no extra provider
+requests. Compare runs with the same rubric and sampling settings when assessing
+a model or prompt change.
 
 ---
 

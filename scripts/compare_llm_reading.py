@@ -19,6 +19,12 @@ from tests.llm_reading_checks import READING_RUBRIC_ID, check_answer_structure, 
 
 
 REPORT_SCHEMA_VERSION = 1
+# A reporting heuristic, not a statistical confidence or quality threshold.
+LIMITED_EVIDENCE_BELOW_PAIRS = 5
+EVIDENCE_GUIDANCE = (
+    "Close pass rates can differ by just one pair. Check the scored counts and missing pairs; "
+    "a small gap alone does not establish a quality difference."
+)
 
 
 class ComparisonStopped(Exception):
@@ -132,6 +138,10 @@ class TopicResults:
         return self.passed + self.quality_failed
 
     @property
+    def limited_evidence(self):
+        return self.scored < LIMITED_EVIDENCE_BELOW_PAIRS
+
+    @property
     def provider_failed(self):
         return sum(self.provider_failures.values())
 
@@ -173,13 +183,17 @@ def _summarize(results, samples, budget, planned):
     print("Reading-level pass rates by model and topic (complete pairs only):")
     for (model, case_id), row in results.items():
         rate = f"{row.passed / row.scored:.0%}" if row.scored else "no pairs scored"
+        caution = "; limited evidence" if row.limited_evidence else ""
         print(
             f"  {model!r} | {case_id}: {row.passed}/{row.scored} passed ({rate}); "
             f"{row.quality_failed} quality failures; {row.provider_failed} provider failures; "
-            f"{row.unfinished(samples)} not completed"
+            f"{row.unfinished(samples)} not completed{caution}"
         )
         for reason, count in row.provider_failures.items():
             print(f"    {count} × {reason}")
+    if any(row.limited_evidence for row in results.values()):
+        print(f"Limited evidence: fewer than {LIMITED_EVIDENCE_BELOW_PAIRS} complete pairs for that model and topic.")
+    print(EVIDENCE_GUIDANCE)
 
 
 def _write_report(file, models, results, samples, settings, budget, planned, stopped, incomplete):
@@ -197,6 +211,10 @@ def _write_report(file, models, results, samples, settings, budget, planned, sto
         "requests": {"attempted": budget.used, "limit": budget.limit, "planned": planned},
         "status": "incomplete" if incomplete else "complete",
         "stopped_reason": stopped,
+        "evidence": {
+            "limited_below_scored_pairs": LIMITED_EVIDENCE_BELOW_PAIRS,
+            "guidance": EVIDENCE_GUIDANCE,
+        },
         "results": [
             {
                 "candidate_id": model,
@@ -207,6 +225,7 @@ def _write_report(file, models, results, samples, settings, budget, planned, sto
                 "provider_failed_pairs": row.provider_failed,
                 "unfinished_pairs": row.unfinished(samples),
                 "pass_rate": row.passed / row.scored if row.scored else None,
+                "limited_evidence": row.limited_evidence,
                 "provider_failure_counts": dict(row.provider_failures),
             }
             for (model, case_id), row in results.items()

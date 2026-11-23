@@ -113,6 +113,9 @@ def test_complete_comparison_reports_pass_frequency_without_failing_on_quality_m
     assert f"'candidate-a' | {ANNUAL_REVIEW.id}: 1/2 passed (50%); 1 quality failures; 0 provider failures" in output
     assert "Clear: The council decides" in output
     assert output.count("2/2 passed (100%)") == 2 * len(READING_CASES) - 1
+    assert output.count("; limited evidence") == 2 * len(READING_CASES)
+    assert "fewer than 5 complete pairs for that model and topic" in output
+    assert "a small gap alone does not establish a quality difference" in output
 
     baseline_requests = requests.copy()
     requests.clear()
@@ -132,6 +135,8 @@ def test_complete_comparison_reports_pass_frequency_without_failing_on_quality_m
     }
     assert report["status"] == "complete"
     assert report["stopped_reason"] is None
+    assert report["evidence"]["limited_below_scored_pairs"] == 5
+    assert report["evidence"]["guidance"] in output
     assert [(row["candidate_id"], row["topic_id"]) for row in report["results"]] == [
         (model, case.id) for model in ("candidate-a", "candidate-b") for case in READING_CASES
     ]
@@ -141,11 +146,56 @@ def test_complete_comparison_reports_pass_frequency_without_failing_on_quality_m
         assert row["passed_pairs"] == 2 - failed
         assert row["quality_failed_pairs"] == failed
         assert row["pass_rate"] == (2 - failed) / 2
+        assert row["limited_evidence"] is True
         assert row["provider_failed_pairs"] == row["unfinished_pairs"] == 0
         assert row["provider_failure_counts"] == {}
     for private in ("stub-key-only", "provider.invalid", "The plan gets checked every year.", "Clear: The council decides"):
         assert private not in report_text
     assert all(answer not in report_text for answers in ANSWERS.values() for answer in answers)
+
+
+def test_evidence_cutoff_uses_complete_pairs_not_planned_pairs(capsys, tmp_path):
+    samples = 5
+    request_limit = NOTIONAL_REQUESTS // 2 * samples
+    attempts = 0
+
+    def provider(request):
+        nonlocal attempts
+        attempts += 1
+        model, case_id, level = _read_request(request)
+        if attempts == 2:
+            assert (model, case_id, level) == ("candidate-a", ANNUAL_REVIEW.id, "complex")
+            return httpx.Response(503)
+        if attempts == 3:
+            assert (model, case_id, level) == ("candidate-b", ANNUAL_REVIEW.id, "clear")
+            return _completion("An answer without headings.")
+        return _passing_answer(case_id, level)
+
+    report_path = tmp_path / "reading-run.json"
+    args = [*ARGS[:6], str(samples), "--request-limit", str(request_limit), "--report-json", str(report_path)]
+    assert main(args, transport=httpx.MockTransport(provider)) == 1
+    assert attempts == request_limit
+    output = capsys.readouterr().out
+    assert (
+        f"'candidate-a' | {ANNUAL_REVIEW.id}: 4/4 passed (100%); 0 quality failures; "
+        "1 provider failures; 0 not completed; limited evidence"
+    ) in output
+    assert f"'candidate-b' | {ANNUAL_REVIEW.id}: 4/5 passed (80%)" in output
+    assert output.count("; limited evidence") == 1
+    assert "a small gap alone does not establish a quality difference" in output
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "incomplete"
+    assert report["requests"]["attempted"] == attempts
+    rows = {
+        row["candidate_id"]: row for row in report["results"] if row["topic_id"] == ANNUAL_REVIEW.id
+    }
+    assert rows["candidate-a"]["scored_pairs"] == 4
+    assert rows["candidate-a"]["pass_rate"] == 1.0
+    assert rows["candidate-a"]["limited_evidence"] is True
+    assert rows["candidate-b"]["scored_pairs"] == 5
+    assert rows["candidate-b"]["pass_rate"] == 0.8
+    assert rows["candidate-b"]["limited_evidence"] is False
 
 
 @pytest.mark.parametrize("existing", [True, False])
@@ -254,13 +304,16 @@ def test_rate_limit_stops_other_requests_and_reports_unfinished_pairs(capsys, tm
     output = capsys.readouterr().out
     assert f"Provider requests attempted: 3/{NOTIONAL_REQUESTS}" in output
     assert "1/1 passed (100%); 0 quality failures; 0 provider failures; 1 not completed" in output
-    assert "0/0 passed (no pairs scored); 0 quality failures; 1 provider failures; 1 not completed" in output
+    assert (
+        "0/0 passed (no pairs scored); 0 quality failures; 1 provider failures; 1 not completed; limited evidence"
+    ) in output
     assert "1 × provider rate or quota limit (HTTP 429)" in output
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["status"] == "incomplete"
     assert report["stopped_reason"] in output
     assert report["requests"]["attempted"] == 3
+    assert all(row["limited_evidence"] is True for row in report["results"])
     scored, provider_failed = (
         next(row for row in report["results"] if row["candidate_id"] == model and row["topic_id"] == ANNUAL_REVIEW.id)
         for model in ("candidate-a", "candidate-b")

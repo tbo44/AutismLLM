@@ -9,6 +9,12 @@ When comparing candidate models' reading levels, count only complete Clear/Compl
 
 **How to apply:** Report quality counts alongside provider failures and unfinished pairs. Report no pass rate when nothing could be scored, and treat the counts as evidence for review, not a release gate or proof of a regression.
 
+Keep small-sample cautions at the model-and-topic level in any summary view.
+
+**Why:** Pooling across topics can hide a poorly covered topic or make models look comparable when provider failures left them with different coverage.
+
+**How to apply:** Preserve the caution next to the affected score even if a model-level total looks large. Crossing the reporting cutoff does not establish statistical confidence.
+
 Keep the benchmark identity separate from the report format and the prompt under test.
 
 **Why:** A report format change can leave scores comparable, and changing the production prompt is something the same benchmark should be able to measure.
