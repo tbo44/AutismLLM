@@ -277,6 +277,7 @@ pytest tests/ -v
 | `test_answers.py` | Provider-independent chat integration: topic answers and sources, structured prompts, reading-level instructions, safety and off-topic redirects |
 | `test_llm_live.py` | Opt-in live checks: configured model access, structured answers, reading levels, and essential advice in both levels |
 | `test_llm_answer_essentials.py` | Offline checks that complete paraphrases pass and fluent replies missing essential advice fail |
+| `test_llm_reading_comparison.py` | Offline checks of the live comparison's scoring, request limit, and provider failure reporting |
 | `test_retrieval_coverage.py` | Deterministic (no LLM): core questions must retrieve below threshold; known gaps tracked as xfail |
 | `test_policy.py` | Safety guardrail patterns |
 | `test_admin.py` | Admin auth (401/403/cookie/header) and log parsing |
@@ -301,6 +302,33 @@ checks look for unexplained acronyms in Clear replies and compare sentence
 length and use of long words. These checks are regression signals, not a
 formal reading-age score or a full factual review; an unfamiliar paraphrase
 may need manual review against the fixed source.
+
+### Comparing candidate models across several answers
+
+To compare models available on the **same configured provider**, replace the
+example IDs with the models you want to assess:
+
+```bash
+python -m scripts.compare_llm_reading --live \
+  --model candidate-a --model candidate-b --samples-per-topic 3 --request-limit 36
+```
+
+This is a separate, manual run. It sends real requests only with `--live` and
+an explicit `--request-limit`. Each sample is a Clear/Complex pair. The run
+needs up to `2 × models × topics × samples-per-topic` HTTP requests (three
+topics, three pairs per model and topic by default, minimum two pairs).
+If the limit is too small, the tool refuses before contacting the provider.
+It does not retry requests, follow redirects, or continue after an HTTP 429.
+
+The comparison uses Maya's answer-generation prompt and the same fixed sources
+and quality checks as the live suite. It skips moderation, query rewriting, and
+retrieval so the scores reflect answer generation. All candidates use the same
+configured `TEMPERATURE` and `TOP_P`; repeated replies may be similar with a
+low temperature. The report shows passes out of **complete pairs** by model
+and topic. Quality misses, provider failures, and unfinished pairs are shown
+separately, so a model with no scored answers has no pass rate. Reading-level
+misses are results to review, not an exit failure; provider failures or an
+interrupted comparison return a nonzero exit status.
 
 ---
 
