@@ -133,6 +133,34 @@ def _assert_uk_crisis_guidance(data):
     assert data["disclaimer"]
 
 
+@pytest.mark.parametrize(("advice_request", "disclaimer", "crisis_signal"), [
+    pytest.param(
+        "Should I stop taking my medication?",
+        "I can't provide personalised clinical advice",
+        "I'm feeling suicidal and don't know what to do.",
+        id="medication-and-crisis",
+    ),
+    pytest.param(
+        "Can I sue the school for not providing support?",
+        "I can't give case-specific legal advice",
+        "I'm in crisis and feel unable to stay safe.",
+        id="legal-advice-and-crisis",
+    ),
+])
+def test_mixed_crisis_message_prioritizes_urgent_guidance(
+    chat_stub, advice_request, disclaimer, crisis_signal,
+):
+    # Verify the non-crisis part really triggers the competing guardrail.
+    assert chat_stub.ask(advice_request)["answer"].startswith(disclaimer)
+
+    data = chat_stub.ask(f"{advice_request} {crisis_signal}")
+
+    assert data["answer"].startswith("If you're in crisis")
+    _assert_uk_crisis_guidance(data)
+    chat_stub.create.assert_not_called()
+    chat_stub.search.assert_not_called()
+
+
 def test_chat_returns_crisis_guidance_while_initialization_is_blocked(chat_stub, uninitialized_system):
     from app import main
 
