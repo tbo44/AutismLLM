@@ -180,8 +180,12 @@ class UKAutismLLMClient:
 
     def is_rate_limited(self) -> bool:
         """Share the cooldown across requests using this client, without sleeping."""
+        return self.rate_limit_remaining_seconds() > 0
+
+    def rate_limit_remaining_seconds(self) -> float:
+        """Read this client's local pause without changing it or contacting the provider."""
         with self._cooldown_lock:
-            return time.monotonic() < self._cooldown_until
+            return max(0.0, self._cooldown_until - time.monotonic())
 
     def _skip_during_cooldown(self, stage: str) -> bool:
         with self._cooldown_lock:

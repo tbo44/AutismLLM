@@ -6,9 +6,11 @@ import logging
 import re
 import subprocess
 import httpx
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from fastapi import HTTPException
@@ -103,6 +105,77 @@ def test_admin_valid_token_via_header(admin_token):
     resp = client.get("/admin", headers={"X-Admin-Token": VALID_TOKEN})
     assert resp.status_code == 200
     assert "Knowledge Base" in resp.text
+
+
+@pytest.mark.parametrize(("headers", "status"), [
+    ({}, 401),
+    ({"X-Admin-Token": "wrong-token"}, 403),
+    ({"Accept": "text/html"}, 303),
+])
+def test_admin_provider_pause_is_not_read_without_auth(admin_token, monkeypatch, headers, status):
+    llm_client = Mock()
+    monkeypatch.setattr(main, "_rag_system", SimpleNamespace(llm_client=llm_client))
+
+    response = client.get("/admin", headers=headers, follow_redirects=False)
+
+    assert response.status_code == status
+    assert 'id="providerPause"' not in response.text
+    llm_client.rate_limit_remaining_seconds.assert_not_called()
+
+
+def test_admin_provider_pause_is_unavailable_before_client_loads(admin_token, monkeypatch):
+    monkeypatch.setattr(main, "_rag_system", None)
+    load_rag = Mock(side_effect=AssertionError("Admin status must not initialize RAG"))
+    monkeypatch.setattr(main, "_load_rag_system", load_rag)
+
+    response = client.get("/admin", headers={"X-Admin-Token": admin_token})
+
+    assert response.status_code == 200
+    assert "Status unavailable" in response.text
+    assert "No active pause" not in response.text
+    assert "Local to the serving process only" in response.text
+    load_rag.assert_not_called()
+
+
+def test_admin_provider_pause_shows_current_local_snapshot(admin_token, monkeypatch, caplog):
+    from rag import llm_client as llm_module
+
+    now = 100.0
+    monkeypatch.setattr(llm_module, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setenv("LLM_RATE_LIMIT_COOLDOWN_SECONDS", "30")
+    monkeypatch.setenv("LLM_MODEL", "private-test-model")
+    provider = Mock(api_key="private-test-key")
+    monkeypatch.setattr(llm_module, "_build_openai_client", lambda: provider)
+    llm_client = llm_module.UKAutismLLMClient()
+    monkeypatch.setattr(main, "_rag_system", SimpleNamespace(llm_client=llm_client))
+    with closing(TestClient(app)) as admin:
+        admin.cookies.set(main._ADMIN_COOKIE_NAME, admin_token)
+        assert "No active pause" in admin.get("/admin").text
+
+        llm_client._record_provider_429("test", httpx.Headers({
+            "Retry-After": "45", "X-Provider-Detail": "private-provider-detail",
+        }))
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger=llm_module.__name__):
+            response = admin.get("/admin")
+            assert response.status_code == 200
+            assert response.headers["cache-control"] == "no-store"
+            assert "Provider calls paused" in response.text
+            assert "About 45 seconds remaining" in response.text
+            assert "Local to the serving process only" in response.text
+            for private_value in ("private-test-model", "private-test-key", "private-provider-detail"):
+                assert private_value not in response.text
+
+            now = 144.75
+            assert "About 1 second remaining" in admin.get("/admin").text
+
+            now = 145.0
+            response = admin.get("/admin")
+            assert "No active pause" in response.text
+            assert "Provider calls paused" not in response.text
+
+        assert not any(record.name == llm_module.__name__ for record in caplog.records)
+        assert not provider.mock_calls
 
 
 def test_admin_rendered_javascript_is_valid(admin_token, tmp_path):

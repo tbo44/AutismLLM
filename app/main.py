@@ -10,6 +10,7 @@ from datetime import datetime, timezone, timedelta
 import logging
 import logging.handlers
 import json
+import math
 import os
 import re
 import asyncio
@@ -877,7 +878,9 @@ def _fmt_uk_time(iso_str: str | None) -> str:
         return str(iso_str)
 
 
-def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
+def _render_admin_html(
+    feedback: list[dict], stats: dict, kb: dict, *, provider_pause_seconds: float | None = None,
+) -> str:
     """Build and return the admin dashboard as a self-contained HTML string."""
     github_backup_html = render_github_backup_status()
     backup_notification_html = render_backup_notification_status()
@@ -885,6 +888,18 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
     test_attempt_script = (
         Path(__file__).resolve().parent.parent / "static" / "admin-test-attempts.js"
     ).read_text(encoding="utf-8")
+
+    if provider_pause_seconds is None:
+        provider_pause_badge = '<span class="badge badge-none">Status unavailable</span>'
+        provider_pause_detail = "The provider client is not ready in this process."
+    elif provider_pause_seconds > 0:
+        provider_pause_badge = '<span class="badge badge-run">Provider calls paused</span>'
+        seconds = math.ceil(provider_pause_seconds)
+        unit = "second" if seconds == 1 else "seconds"
+        provider_pause_detail = f"About {seconds:,} {unit} remaining."
+    else:
+        provider_pause_badge = '<span class="badge badge-ok">No active pause</span>'
+        provider_pause_detail = "No local rate-limit pause is active."
 
     def _esc(s: str) -> str:
         return (
@@ -1114,6 +1129,12 @@ def _render_admin_html(feedback: list[dict], stats: dict, kb: dict) -> str:
     <div class="label">Feedback entries shown</div>
   </div>
 </div>
+
+<section id="providerPause" aria-labelledby="providerPauseHeading">
+  <h2 id="providerPauseHeading">Provider pause</h2>
+  <p>{provider_pause_badge} {provider_pause_detail}</p>
+  <p>Local to the serving process only. Refresh this page for the latest status.</p>
+</section>
 
 {github_backup_html}
 {backup_notification_html}
@@ -2079,8 +2100,10 @@ async def admin_dashboard(
     feedback = _read_feedback_log(limit=50)
     stats = _read_questions_stats()
     kb = _read_kb_health()
-    html = _render_admin_html(feedback, stats, kb)
-    return HTMLResponse(content=html)
+    llm_client = getattr(_rag_system, "llm_client", None)
+    pause_seconds = llm_client.rate_limit_remaining_seconds() if llm_client is not None else None
+    html = _render_admin_html(feedback, stats, kb, provider_pause_seconds=pause_seconds)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
 
 
 # ──────────────────────────────────────────────────────────────────────
