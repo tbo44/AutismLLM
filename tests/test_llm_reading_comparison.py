@@ -9,9 +9,10 @@ from scripts.compare_llm_reading import ComparisonStopped, RequestBudget, _live_
 from tests.llm_answer_essentials import ANNUAL_REVIEW, READING_CASES
 
 
+NOTIONAL_REQUESTS = 2 * len(READING_CASES) * 2 * 2  # Two levels, models, and samples per topic.
 ARGS = [
     "--live", "--model", "candidate-a", "--model", "candidate-b",
-    "--samples-per-topic", "2", "--request-limit", "24",
+    "--samples-per-topic", "2", "--request-limit", str(NOTIONAL_REQUESTS),
 ]
 ANSWERS = {
     "school-plan-annual-review": (
@@ -28,6 +29,11 @@ ANSWERS = {
         "Your family doctor can refer your child for an autism assessment. Tell them what you noticed.",
         "Your general practitioner can refer your child for a specialist autism assessment if appropriate. "
         "Describe concrete examples and observations gathered from different situations to support the referral.",
+    ),
+    "pip-mandatory-reconsideration": (
+        "Ask the benefits office to look at the decision again. You have a month from the date on your letter.",
+        "Request mandatory reconsideration from the benefits office responsible for the original decision. "
+        "The usual deadline is one calendar month from the date of the decision letter.",
     ),
 }
 
@@ -67,7 +73,7 @@ def _passing_answer(case_id, level):
     (["--li", *ARGS[1:]], "unrecognized arguments: --li"),
     (ARGS[:-2], "--request-limit"),
     ([*ARGS[:-1], "0"], "must be positive"),
-    ([*ARGS[:-1], "23"], "needs up to 24 requests"),
+    ([*ARGS[:-1], str(NOTIONAL_REQUESTS - 1)], f"needs up to {NOTIONAL_REQUESTS} requests"),
     ([*ARGS[:4], "candidate-a", *ARGS[5:]], "at least two distinct"),
     ([*ARGS[:6], "1", *ARGS[7:]], "must be at least 2"),
 ])
@@ -101,10 +107,10 @@ def test_complete_comparison_reports_pass_frequency_without_failing_on_quality_m
         for level in ("clear", "complex")
     ]
     output = capsys.readouterr().out
-    assert "Provider requests attempted: 24/24" in output
+    assert f"Provider requests attempted: {NOTIONAL_REQUESTS}/{NOTIONAL_REQUESTS}" in output
     assert f"'candidate-a' | {ANNUAL_REVIEW.id}: 1/2 passed (50%); 1 quality failures; 0 provider failures" in output
     assert "Clear: The council decides" in output
-    assert output.count("2/2 passed (100%)") == 5
+    assert output.count("2/2 passed (100%)") == 2 * len(READING_CASES) - 1
 
 
 @pytest.mark.parametrize(("clear_answer", "diagnostic"), [
@@ -156,10 +162,10 @@ def test_provider_failures_excluded_from_quality_without_retries(
         return _passing_answer(case_id, level)
 
     assert main(ARGS, transport=httpx.MockTransport(provider)) == 1
-    assert attempts == 24
+    assert attempts == NOTIONAL_REQUESTS
     output = capsys.readouterr().out
     assert f"'candidate-a' | {ANNUAL_REVIEW.id}: 1/1 passed (100%); 0 quality failures; 1 provider failures" in output
-    assert output.count("2/2 passed (100%)") == 5
+    assert output.count("2/2 passed (100%)") == 2 * len(READING_CASES) - 1
     assert f"1 × {label}" in output
     for private in ("private-body", "private-endpoint", "redirect.invalid", "stub-key-only"):
         assert private not in output + caplog.text
@@ -178,7 +184,7 @@ def test_rate_limit_stops_other_requests_and_reports_unfinished_pairs(capsys):
     assert main(ARGS, transport=httpx.MockTransport(provider)) == 1
     assert len(attempts) == 3
     output = capsys.readouterr().out
-    assert "Provider requests attempted: 3/24" in output
+    assert f"Provider requests attempted: 3/{NOTIONAL_REQUESTS}" in output
     assert "1/1 passed (100%); 0 quality failures; 0 provider failures; 1 not completed" in output
     assert "0/0 passed (no pairs scored); 0 quality failures; 1 provider failures; 1 not completed" in output
     assert "1 × provider rate or quota limit (HTTP 429)" in output

@@ -6,6 +6,7 @@ from tests.llm_answer_essentials import (
     ANNUAL_REVIEW,
     ASSESSMENT_REFERRAL,
     DLA_CLAIM,
+    PIP_RECONSIDERATION,
     READING_CASES,
     assert_essential_advice,
     missing_essentials,
@@ -43,6 +44,37 @@ def test_source_passage_supports_every_essential(case):
 ], ids=["school-plan-annual-review", "disability-benefit-claim", "autism-assessment-referral"])
 def test_complete_paraphrases_pass_at_both_levels(case, clear, complex_answer):
     assert_essential_advice(case, clear=clear, complex_answer=complex_answer)
+
+
+PIP_CLEAR_ACTION = "Call the number on your letter. Ask them to look at the decision again."
+PIP_COMPLEX_ANSWER = (
+    "Request mandatory reconsideration from the benefits office responsible for the original decision. "
+    "The usual deadline is one calendar month from the date of the decision letter."
+)
+PIP_DEADLINE_DIAGNOSTIC = "Usually ask within one month of the date on the decision letter."
+
+
+@pytest.mark.parametrize("clear", [
+    f"{PIP_CLEAR_ACTION} You usually have **a month** from the date on your letter.",
+    "Ask the benefits office to check its decision again. Ask no later than 1 month after the decision date.",
+])
+def test_pip_plain_language_keeps_the_deadline_and_next_step(clear):
+    check_reading_pair(PIP_RECONSIDERATION, clear=clear, complex_answer=PIP_COMPLEX_ANSWER)
+
+
+@pytest.mark.parametrize("level", ["Clear", "Complex"])
+def test_fluent_pip_reply_without_deadline_fails_at_either_level(level):
+    incomplete = f"## Short Answer\n{PIP_CLEAR_ACTION} Tell them why you think the decision is wrong."
+    complete = f"{PIP_CLEAR_ACTION} You usually have a month from the date on your letter."
+
+    with pytest.raises(AssertionError) as exc:
+        check_reading_pair(
+            PIP_RECONSIDERATION,
+            clear=incomplete if level == "Clear" else complete,
+            complex_answer=incomplete if level == "Complex" else PIP_COMPLEX_ANSWER,
+        )
+
+    assert str(exc.value).splitlines()[1:] == [f"- {level}: {PIP_DEADLINE_DIAGNOSTIC}"]
 
 
 @pytest.mark.parametrize("level", ["Clear", "Complex"])
@@ -94,6 +126,21 @@ def test_fluent_reply_without_same_age_caveat_fails_at_either_level(level):
         ASSESSMENT_REFERRAL,
         "Your doctor can refer your child for an autism assessment. Ask how long the wait might be.",
         "Tell the doctor what you have noticed or give concrete examples.",
+    ),
+    (
+        PIP_RECONSIDERATION,
+        "You usually have a month from the date on your decision letter. Call the office for advice.",
+        "Ask for mandatory reconsideration: ask the benefits office to look at the decision again.",
+    ),
+    (
+        PIP_RECONSIDERATION,
+        f"{PIP_CLEAR_ACTION} You have one month from when you receive the decision letter.",
+        PIP_DEADLINE_DIAGNOSTIC,
+    ),
+    (
+        PIP_RECONSIDERATION,
+        f"{PIP_CLEAR_ACTION} You have four weeks from the date on your decision letter.",
+        PIP_DEADLINE_DIAGNOSTIC,
     ),
 ])
 def test_each_missing_step_has_a_specific_diagnostic(case, answer, missing):

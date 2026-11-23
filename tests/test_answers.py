@@ -12,6 +12,7 @@ from unittest.mock import Mock, call
 import httpx
 import pytest
 
+from tests.llm_answer_essentials import PIP_RECONSIDERATION
 from tests.llm_test_helpers import completion, search_hit
 
 
@@ -64,6 +65,7 @@ def test_ehcp_answer_uses_structured_prompt_and_preserves_sections(chat_stub):
     "What is the mandatory reconsideration process if my PIP claim is refused?",
     "My PIP claim was turned down — what options do I have?",
     "Can I challenge a PIP decision and what evidence do I need?",
+    PIP_RECONSIDERATION.question,
 ])
 def test_pip_appeal_reaches_synthesis_instead_of_a_guardrail(chat_stub, question):
     answer = "## Short Answer\nYou can ask for a mandatory reconsideration of a PIP decision."

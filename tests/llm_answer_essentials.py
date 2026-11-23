@@ -39,6 +39,11 @@ PLAN = r"(?:it|the (?:(?:ehc |school )?plan|ehcp))"
 PLAN_DECISION = rf"(?:what happens to {PLAN}|whether to {PLAN_OUTCOME}(?:,? (?:or )?{PLAN_OUTCOME})* {PLAN})"
 CLAIM_FORM = r"(?:it|(?:(?:the|your) )?(?:completed |filled[ -]in )?(?:dla )?(?:claim form|form|claim|application))"
 ONLINE = r"(?:online|via (?:the |an )?online portal)"
+PIP_DECISION = r"(?:it|(?:(?:the|your|their|its|this) )?(?:original )?(?:pip |benefit )?decision)"
+PIP_DECISION_DATE = (
+    r"(?:date (?:on|of|shown on|printed on) (?:the |your )?(?:pip )?(?:decision(?: letter)?|letter)"
+    r"|(?:pip )?decision date|(?:the |your )?(?:pip )?decision was (?:made|issued))"
+)
 
 ANNUAL_REVIEW = ReadingCase(
     "school-plan-annual-review",
@@ -156,7 +161,40 @@ ASSESSMENT_REFERRAL = ReadingCase(
     ),
 )
 
-READING_CASES = (ANNUAL_REVIEW, DLA_CLAIM, ASSESSMENT_REFERRAL)
+PIP_RECONSIDERATION = ReadingCase(
+    "pip-mandatory-reconsideration",
+    "My Personal Independence Payment (PIP) claim was turned down. What should I do first, and how long do I have?",
+    search_hit(
+        "Challenge a benefit decision: How to ask for mandatory reconsideration",
+        "https://www.gov.uk/mandatory-reconsideration/how-to-ask-for-mandatory-reconsideration",
+        text=(
+            "If you disagree with a Personal Independence Payment (PIP) decision, ask the benefits "
+            "office that made the decision to look at it again. This is called mandatory reconsideration. "
+            "You can ask by phone, by letter, or by returning the mandatory reconsideration form. "
+            "The contact details are on your decision letter. You usually need to ask for mandatory "
+            "reconsideration within one month of the date on your decision letter. If you write, "
+            "the letter or form must arrive by then. You can ask after one month if you have a "
+            "good reason, but you must explain why your request is late."
+        ),
+    ),
+    (
+        Essential("Ask for mandatory reconsideration: ask the benefits office to look at the decision again.", (
+            r"\b(?:ask(?:ing)? for|request(?:ing)?|apply(?:ing)? for) (?:a |the )?mandatory reconsideration\b"
+            rf"|\b(?:ask(?:ing)?|request(?:ing)?|tell)\b[^;]*\b(?:"
+            rf"(?:review|reconsider) (?:of )?{PIP_DECISION}"
+            rf"|(?:look at|check) {PIP_DECISION} again|look again at {PIP_DECISION}"
+            rf"|(?:take|have) another look at {PIP_DECISION}"
+            rf"|{PIP_DECISION} to be (?:reviewed|reconsidered|looked at again))\b",
+        )),
+        Essential("Usually ask within one month of the date on the decision letter.", (
+            # Count from the decision date, not when the claimant receives the letter.
+            rf"\b(?:within |no later than |have |has |is |by )(?:a|one|1) (?:calendar )?month "
+            rf"(?:of|from|after) (?:the )?{PIP_DECISION_DATE}\b",
+        )),
+    ),
+)
+
+READING_CASES = (ANNUAL_REVIEW, DLA_CLAIM, ASSESSMENT_REFERRAL, PIP_RECONSIDERATION)
 
 
 def _answer_statements(answer: str) -> list[str]:

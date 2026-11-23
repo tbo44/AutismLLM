@@ -354,14 +354,14 @@ Routine chat tests use controlled completions, so they don't need a provider
 key or an available model. To check the configured provider and model, opt in:
 
 ```bash
-pytest -m llm_live tests/test_llm_live.py -v --llm-request-limit=21
+pytest -m llm_live tests/test_llm_live.py -v --llm-request-limit=27
 ```
 
 This sends real requests to the configured provider and may use quota.
 `--llm-request-limit` is required and caps HTTP attempts across the whole run,
-including SDK retries and failed requests. The full suite normally needs 21
+including SDK retries and failed requests. The full suite normally needs 27
 attempts without retries (moderation, query rewriting, and generation for
-each of seven answers). If the cap is reached, the next request is blocked
+each of nine answers). If the cap is reached, the next request is blocked
 and the test fails with a budget message, not an answer-quality failure. Run
 these checks in a single pytest process so tests share one budget.
 
@@ -369,8 +369,9 @@ An unavailable model, denied access, or a rate limit fails with a
 provider-specific diagnostic, separate from answer-quality failures. The
 reading-level checks ask the same questions at both levels using fixed source
 text. Before comparing readability, they check that **both** replies keep
-essential advice about school plan reviews, disability benefit claims, or
-autism assessment referrals. They also flag selected contradictions, such
+essential advice about school plan reviews, child DLA claims, autism assessment
+referrals, and the first step and usual deadline for challenging a PIP decision.
+They also flag selected contradictions, such
 as telling a parent to submit a completed child DLA form online after saying
 to post it. Failures name the issue and reading level. The checks make no
 extra provider requests. Readability
@@ -386,12 +387,12 @@ example IDs with the models you want to assess:
 
 ```bash
 python -m scripts.compare_llm_reading --live \
-  --model candidate-a --model candidate-b --samples-per-topic 3 --request-limit 36
+  --model candidate-a --model candidate-b --samples-per-topic 3 --request-limit 48
 ```
 
 This is a separate, manual run. It sends real requests only with `--live` and
 an explicit `--request-limit`. Each sample is a Clear/Complex pair. The run
-needs up to `2 × models × topics × samples-per-topic` HTTP requests (three
+needs up to `2 × models × topics × samples-per-topic` HTTP requests (four
 topics, three pairs per model and topic by default, minimum two pairs).
 If the limit is too small, the tool refuses before contacting the provider.
 It does not retry requests, follow redirects, or continue after an HTTP 429.
