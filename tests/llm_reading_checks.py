@@ -5,6 +5,10 @@ import re
 from tests.llm_answer_essentials import assert_essential_advice
 
 
+# Bump when scoring rules or the fixed evaluation cases change, independently
+# of the report schema. Changing the production prompt alone does not change it.
+READING_RUBRIC_ID = "maya-reading-level-v1"
+
 # Common shorthand for these topics, including a few acceptable plain-English explanations.
 ACRONYM_EXPANSIONS = {
     "EHCP": r"education,? health(?:,? and| &) care plan|school(?: support)? plan",

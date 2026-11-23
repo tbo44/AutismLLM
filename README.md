@@ -407,6 +407,16 @@ separately, so a model with no scored answers has no pass rate. Reading-level
 misses are results to review, not an exit failure; provider failures or an
 interrupted comparison return a nonzero exit status.
 
+Add `--report-json reading-run.json` to save a machine-readable copy alongside
+the unchanged terminal summary. Use a new filename for each run; an existing
+file is never overwritten. The JSON includes the schema version, rubric ID,
+candidate and topic IDs, sampling settings, request counts, and counts for
+passed, quality-failed, provider-failed, and unfinished pairs. The pass rate is
+a fraction of scored pairs, or `null` when none were scored. Reports include
+partial results if the comparison stops early, but no credentials or generated
+answers. Saving a report makes no extra provider requests. Compare runs with the
+same rubric and sampling settings when assessing a model or prompt change.
+
 ---
 
 ## 11. Deploying on Replit (Autoscale)

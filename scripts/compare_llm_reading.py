@@ -1,17 +1,24 @@
 """Run an explicitly opted-in, bounded reading-level comparison on one provider."""
 
 import argparse
+import json
+import math
+import sys
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from json import JSONDecodeError
+from pathlib import Path
 
 import httpx
 import openai
 
 from rag.llm_client import UKAutismLLMClient
 from tests.llm_answer_essentials import READING_CASES
-from tests.llm_reading_checks import check_answer_structure, check_reading_pair
+from tests.llm_reading_checks import READING_RUBRIC_ID, check_answer_structure, check_reading_pair
+
+
+REPORT_SCHEMA_VERSION = 1
 
 
 class ComparisonStopped(Exception):
@@ -111,7 +118,7 @@ def _live_sampler(budget, *, transport=None):
                     raise ComparisonStopped("Maya could not generate a test answer from the fixed source.")
                 return result["response"]
 
-            yield ask
+            yield ask, {"temperature": llm.temperature, "top_p": llm.top_p}
 
 
 @dataclass
@@ -123,6 +130,13 @@ class TopicResults:
     @property
     def scored(self):
         return self.passed + self.quality_failed
+
+    @property
+    def provider_failed(self):
+        return sum(self.provider_failures.values())
+
+    def unfinished(self, samples):
+        return samples - self.scored - self.provider_failed
 
 
 def _collect(models, samples, ask, results):
@@ -159,15 +173,68 @@ def _summarize(results, samples, budget, planned):
     print("Reading-level pass rates by model and topic (complete pairs only):")
     for (model, case_id), row in results.items():
         rate = f"{row.passed / row.scored:.0%}" if row.scored else "no pairs scored"
-        provider_failed = sum(row.provider_failures.values())
-        unfinished = samples - row.scored - provider_failed
         print(
             f"  {model!r} | {case_id}: {row.passed}/{row.scored} passed ({rate}); "
-            f"{row.quality_failed} quality failures; {provider_failed} provider failures; "
-            f"{unfinished} not completed"
+            f"{row.quality_failed} quality failures; {row.provider_failed} provider failures; "
+            f"{row.unfinished(samples)} not completed"
         )
         for reason, count in row.provider_failures.items():
             print(f"    {count} × {reason}")
+
+
+def _write_report(file, models, results, samples, settings, budget, planned, stopped, incomplete):
+    # Project only aggregate counts and known-safe labels; never serialize the
+    # provider client, response bodies, answers, or quality assertion messages.
+    report = {
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "rubric_id": READING_RUBRIC_ID,
+        "candidate_ids": models,
+        "sampling": {
+            "samples_per_topic": samples,
+            "temperature": settings["temperature"],
+            "top_p": settings["top_p"],
+        },
+        "requests": {"attempted": budget.used, "limit": budget.limit, "planned": planned},
+        "status": "incomplete" if incomplete else "complete",
+        "stopped_reason": stopped,
+        "results": [
+            {
+                "candidate_id": model,
+                "topic_id": case_id,
+                "scored_pairs": row.scored,
+                "passed_pairs": row.passed,
+                "quality_failed_pairs": row.quality_failed,
+                "provider_failed_pairs": row.provider_failed,
+                "unfinished_pairs": row.unfinished(samples),
+                "pass_rate": row.passed / row.scored if row.scored else None,
+                "provider_failure_counts": dict(row.provider_failures),
+            }
+            for (model, case_id), row in results.items()
+        ],
+    }
+    file.write(json.dumps(report, indent=2, allow_nan=False) + "\n")
+
+
+def _compare(models, samples, request_limit, planned, *, transport, report=None):
+    budget = RequestBudget(request_limit)
+    results = {(model, case.id): TopicResults() for model in models for case in READING_CASES}
+    settings = {"temperature": None, "top_p": None}
+    try:
+        with _live_sampler(budget, transport=transport) as (ask, actual_settings):
+            # Invalid non-finite settings cannot be represented as JSON numbers.
+            settings = {key: value if math.isfinite(value) else None for key, value in actual_settings.items()}
+            stopped = _collect(models, samples, ask, results)
+    except ComparisonStopped as error:
+        stopped = str(error)
+    if stopped:
+        print(stopped)
+    _summarize(results, samples, budget, planned)
+    # Quality misses are measurements, not a pass/fail gate. Interrupted or
+    # provider-failed comparisons are marked incomplete even if some pairs passed.
+    incomplete = bool(stopped or any(row.provider_failed for row in results.values()))
+    if report is not None:
+        _write_report(report, models, results, samples, settings, budget, planned, stopped, incomplete)
+    return int(incomplete)
 
 
 def main(argv=None, *, transport=None):
@@ -176,6 +243,7 @@ def main(argv=None, *, transport=None):
     parser.add_argument("--model", action="append", default=[], help="Candidate model ID; repeat for each model.")
     parser.add_argument("--samples-per-topic", type=int, default=3, help="Pairs per model and topic (default: 3).")
     parser.add_argument("--request-limit", type=int, required=True, help="Maximum total provider HTTP attempts.")
+    parser.add_argument("--report-json", type=Path, metavar="PATH", help="Save a JSON report to a new file.")
     args = parser.parse_args(argv)
 
     if not args.live:
@@ -194,19 +262,22 @@ def main(argv=None, *, transport=None):
             "reduce the samples or models, or explicitly raise the limit."
         )
 
-    budget = RequestBudget(args.request_limit)
-    results = {(model, case.id): TopicResults() for model in models for case in READING_CASES}
+    comparison_args = models, args.samples_per_topic, args.request_limit, planned
+    if args.report_json is None:
+        return _compare(*comparison_args, transport=transport)
+
+    # Reserve the destination before spending provider quota, without replacing
+    # an earlier report. Invalid CLI arguments never create a file.
     try:
-        with _live_sampler(budget, transport=transport) as ask:
-            stopped = _collect(models, args.samples_per_topic, ask, results)
-    except ComparisonStopped as error:
-        stopped = str(error)
-    if stopped:
-        print(stopped)
-    _summarize(results, args.samples_per_topic, budget, planned)
-    # Quality misses are measurements, not a pass/fail gate. Interrupted or
-    # provider-failed comparisons are marked incomplete even if some pairs passed.
-    return int(bool(stopped or any(row.provider_failures for row in results.values())))
+        report = args.report_json.open("x", encoding="utf-8")
+    except OSError as error:
+        parser.error(f"cannot create JSON report: {error}")
+    try:
+        with report:
+            return _compare(*comparison_args, transport=transport, report=report)
+    except OSError as error:
+        print(f"Could not save JSON report: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
