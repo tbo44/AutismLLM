@@ -34,3 +34,9 @@ Keep application answer tests separate from live model evaluations.
 **Why:** The chat route can return HTTP 200 with a user-friendly fallback after provider failure. Canned completions cannot demonstrate actual model quality, and model availability should not determine whether the app's prompt and response handling pass.
 
 **How to apply:** Test prompts and response handling with controlled completions. For opt-in live checks, diagnose provider access at the SDK boundary before the chat fallback hides it and verify generated output separately.
+
+A one-attempt access probe should report the first provider failure without retrying.
+
+**Why:** Retrying a transient failure can turn a useful provider diagnostic into a budget-exhaustion message, even though the session guard blocks the extra request.
+
+**How to apply:** Disable retries only for the access probe. Keep the shared attempt guard active and preserve retry accounting for the full answer checks.

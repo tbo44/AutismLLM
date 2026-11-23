@@ -306,7 +306,7 @@ pytest tests/ -v
 |---|---|
 | `test_answers.py` | Provider-independent chat integration: topic answers and sources, structured prompts, reading-level instructions, safety and off-topic redirects |
 | `test_llm_live.py` | Opt-in live checks: configured model access, structured answers, reading levels, and essential advice in both levels |
-| `test_llm_live_budget.py` | Offline checks that the live attempt cap includes SDK retries and is shared across test cases |
+| `test_llm_live_budget.py` | Offline checks that the model access test uses one attempt and that the session cap includes retries and applies across cases |
 | `test_llm_answer_essentials.py` | Offline checks that complete paraphrases pass and fluent replies missing essential advice fail |
 | `test_llm_reading_comparison.py` | Offline checks of the live comparison's scoring, request limit, and provider failure reporting |
 | `test_retrieval_coverage.py` | Real, cached embeddings: core and compound questions, strict and second-tier thresholds, and off-topic rejection |
@@ -351,19 +351,27 @@ assertions run only after the real model has loaded.
 ### Live LLM checks
 
 Routine chat tests use controlled completions, so they don't need a provider
-key or an available model. To check the configured provider and model, opt in:
+key or an available model. To check only whether the configured model responds:
 
 ```bash
-pytest -m llm_live tests/test_llm_live.py -v --llm-request-limit=27
+pytest -m llm_live tests/test_llm_live.py::test_live_model_access -v --llm-request-limit=1
 ```
 
-This sends real requests to the configured provider and may use quota.
+This sends one small completion request, with no retries, moderation, query
+rewriting, or answer-quality scoring. To also run the structured-answer and
+reading-level checks:
+
+```bash
+pytest -m llm_live tests/test_llm_live.py -v --llm-request-limit=28
+```
+
+Both commands send real requests to the configured provider and may use quota.
 `--llm-request-limit` is required and caps HTTP attempts across the whole run,
-including SDK retries and failed requests. The full suite normally needs 27
-attempts without retries (moderation, query rewriting, and generation for
-each of nine answers). If the cap is reached, the next request is blocked
-and the test fails with a budget message, not an answer-quality failure. Run
-these checks in a single pytest process so tests share one budget.
+including SDK retries and failed requests. The full suite normally needs 28
+attempts without retries: one for model access, plus moderation, query rewriting,
+and generation for each of nine answers. If the cap is reached, the next request
+is blocked and the test fails with a budget message, not an answer-quality
+failure. Run these checks in a single pytest process so tests share one budget.
 
 An unavailable model, denied access, or a rate limit fails with a
 provider-specific diagnostic, separate from answer-quality failures. The

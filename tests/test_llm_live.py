@@ -41,20 +41,23 @@ def _configured_client():
     pytest.fail("Live LLM client could not initialize; check provider configuration and credentials.", pytrace=False)
 
 
+def _checked_completion(create, model, **kwargs):
+    try:
+        return create(model=model, **kwargs)
+    except (openai.APIConnectionError, openai.APIStatusError) as error:
+        failure = _provider_failure(model, error)
+    pytest.fail(failure, pytrace=False)
+
+
 @pytest.fixture
 def live_answer(monkeypatch):
     llm_client = _configured_client()
     with llm_client.client as provider:
         live_create = provider.chat.completions.create
 
-        def checked_create(**kwargs):
-            try:
-                return live_create(**kwargs)
-            except (openai.APIConnectionError, openai.APIStatusError) as error:
-                # Fail at the SDK boundary: the app would otherwise turn this
-                # error into a fallback answer that hides the provider status.
-                failure = _provider_failure(llm_client.model, error)
-            pytest.fail(failure, pytrace=False)
+        def checked_create(*, model, **kwargs):
+            # Fail at the SDK boundary before the app can return a fallback.
+            return _checked_completion(live_create, model, **kwargs)
 
         monkeypatch.setattr(provider.chat.completions, "create", checked_create)
 
@@ -73,6 +76,24 @@ def live_answer(monkeypatch):
             return data["answer"]
 
         yield ask
+
+
+def test_live_model_access():
+    """Ask the configured model for one small completion without using /chat."""
+    llm_client = _configured_client()
+    with llm_client.client as provider:
+        response = _checked_completion(
+            provider.with_options(max_retries=0).chat.completions.create,
+            llm_client.model,
+            messages=[{"role": "user", "content": "Reply with one word: OK."}],
+            max_tokens=16,
+        )
+
+    choices = getattr(response, "choices", None)
+    message = getattr(choices[0], "message", None) if choices else None
+    text = getattr(message, "content", None)
+    if not isinstance(text, str) or not text.strip():
+        pytest.fail(f"Live LLM model {llm_client.model!r} returned no completion text.", pytrace=False)
 
 
 def test_live_model_access_and_structured_answer(live_answer):

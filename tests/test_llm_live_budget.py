@@ -9,6 +9,11 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+ACCESS_CASE = "test_live_model_access"
+STRUCTURED_CASES = (
+    "test_live_model_access_and_structured_answer",
+    "test_live_model_access_second_case",
+)
 
 
 @pytest.fixture
@@ -23,6 +28,7 @@ def test_live_model_access_second_case(live_answer):
     )
     (tmp_path / "conftest.py").write_text("""
 import json
+import os
 from pathlib import Path
 import socket
 
@@ -44,9 +50,18 @@ def offline_provider(monkeypatch):
     attempts = Path("attempts.log")
 
     def respond(request):
-        messages = json.loads(request.content)["messages"]
+        payload = json.loads(request.content)
+        messages = payload["messages"]
         prompt = messages[0]["content"]
-        if prompt.startswith("You are a content filter"):
+        if prompt == "Reply with one word: OK.":
+            assert request.method == "POST"
+            assert request.url.path == "/v1/chat/completions"
+            assert payload["model"] == "test-model"
+            assert len(messages) == 1 and messages[0]["role"] == "user"
+            assert 0 < payload["max_tokens"] <= 16
+            stage = "access"
+            content = " " if os.environ["ACCESS_RESPONSE"] == "empty" else "Ready."
+        elif prompt.startswith("You are a content filter"):
             stage = "moderation"
             content = '{"appropriate": true, "reason": "", "category": "autism-related"}'
         elif prompt.startswith("Rewrite the following question"):
@@ -59,8 +74,10 @@ def offline_provider(monkeypatch):
         first = not attempts.exists()
         with attempts.open("a") as log:
             print(stage, file=log)
-        if first:
-            # Exercise a real SDK retry without waiting for its default backoff.
+        if stage == "access" and os.environ["ACCESS_RESPONSE"] == "error":
+            return httpx.Response(500, headers={"retry-after-ms": "1"})
+        if first and stage != "access":
+            # Exercise an SDK retry in the structured check without its default backoff.
             return httpx.Response(500, headers={"retry-after-ms": "1"})
         return httpx.Response(200, json={
             "id": "test-completion",
@@ -87,13 +104,15 @@ def offline_provider(monkeypatch):
         "LLM_PROVIDER": "custom",
         "LLM_BASE_URL": "https://provider.invalid/v1",
         "LLM_API_KEY": "test-only",
+        "LLM_MODEL": "test-model",
     }
 
-    def run(*args):
+    def run(*args, cases=STRUCTURED_CASES, access_response="ok"):
         result = subprocess.run(
             [sys.executable, "-m", "pytest", "-c", str(ROOT / "pytest.ini"), "-qx",
-             "-m", "llm_live", "-k", "test_live_model_access", "test_live.py", *args],
-            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60,
+             "-m", "llm_live", *(f"test_live.py::{case}" for case in cases), *args],
+            cwd=tmp_path, env={**env, "ACCESS_RESPONSE": access_response},
+            capture_output=True, text=True, timeout=60,
         )
         attempts = tmp_path / "attempts.log"
         return result.returncode, result.stdout + result.stderr, (
@@ -101,6 +120,37 @@ def offline_provider(monkeypatch):
         )
 
     return run
+
+
+@pytest.mark.parametrize("response,expected_failure", [
+    ("ok", None),
+    ("error", "Live LLM provider request failed for 'test-model' (HTTP 500)."),
+    ("empty", "Live LLM model 'test-model' returned no completion text."),
+])
+def test_model_access_uses_one_attempt(isolated_live_run, response, expected_failure):
+    status, output, attempts = isolated_live_run(
+        "--llm-request-limit=1", cases=(ACCESS_CASE,), access_response=response,
+    )
+
+    if expected_failure:
+        assert status == pytest.ExitCode.TESTS_FAILED, output
+        assert expected_failure in output, output
+        assert "budget exhausted" not in output, output
+    else:
+        assert status == pytest.ExitCode.OK, output
+        assert "1 passed" in output, output
+    assert attempts == ["access"]
+
+
+def test_model_access_counts_against_shared_budget(isolated_live_run):
+    status, output, attempts = isolated_live_run(
+        "--llm-request-limit=1", cases=(ACCESS_CASE, STRUCTURED_CASES[0]),
+    )
+
+    assert status == pytest.ExitCode.TESTS_FAILED, output
+    assert "1 passed" in output, output
+    assert "budget exhausted (1/1 HTTP attempts used)" in output, output
+    assert attempts == ["access"]
 
 
 @pytest.mark.parametrize("limit,passed", [(1, 0), (4, 1)])
