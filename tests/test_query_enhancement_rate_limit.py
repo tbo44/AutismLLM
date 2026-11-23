@@ -11,6 +11,7 @@ import rag.llm_client as llm_module
 from rag.llm_client import UKAutismLLMClient
 from rag.rag_system import UKAutismRAGSystem
 from rag.retriever import UKAutismRetriever
+from tests.llm_test_helpers import chat_client, search_hit
 
 
 def _rate_limit_error(headers=None) -> openai.RateLimitError:
@@ -69,7 +70,7 @@ def transport_client(monkeypatch):
     return make
 
 
-def _successful_completion_response():
+def _successful_completion_response(content="PIP benefits"):
     return httpx.Response(200, json={
         "id": "test-completion",
         "object": "chat.completion",
@@ -78,7 +79,7 @@ def _successful_completion_response():
         "choices": [{
             "index": 0,
             "finish_reason": "stop",
-            "message": {"role": "assistant", "content": "PIP benefits"},
+            "message": {"role": "assistant", "content": content},
         }],
     })
 
@@ -142,6 +143,72 @@ def test_first_http_429_starts_shared_cooldown_without_retry(
         assert client.enhance_query("PIP support") == "PIP benefits"
         assert len(attempts) == 2
         assert not client.is_rate_limited()
+
+
+def test_chat_resumes_after_provider_retry_after(transport_client, monkeypatch):
+    provider_time = Mock(wraps=llm_module.time)
+    provider_time.monotonic.return_value = 100.0
+    monkeypatch.setattr(llm_module, "time", provider_time)
+
+    answer = "You can apply for Personal Independence Payment through GOV.UK."
+    search_query = "Personal Independence Payment application"
+    source_url = "https://www.gov.uk/pip/how-to-claim"
+    search = Mock(return_value=[search_hit("How to claim PIP", source_url)])
+    moderation = '{"appropriate": true}'
+    responses = iter([
+        # The first question passes moderation but hits a limit during enhancement.
+        _successful_completion_response(moderation),
+        httpx.Response(
+            429, headers={"Retry-After": "45"}, json={"error": {"message": "Too many requests"}},
+        ),
+        # The next admitted question runs all three provider stages.
+        _successful_completion_response(moderation),
+        _successful_completion_response(search_query),
+        _successful_completion_response(answer),
+    ])
+    attempts = []
+
+    def respond(request):
+        attempts.append(request.url.path)
+        response = next(responses, None)
+        if response is None:
+            pytest.fail("Unexpected extra provider call")
+        return response
+
+    unavailable = (
+        "The AI provider is temporarily unavailable due to a rate limit. "
+        "Please try again in a few minutes."
+    )
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+        llm_client = transport_client(http_client, seconds="30")
+        api = chat_client(monkeypatch, llm_client, search)
+        question = {"question": "How do I apply for PIP?"}
+
+        first = api.post("/chat", json=question)
+        assert first.status_code == 200
+        assert first.json()["answer"] == unavailable
+        assert first.json()["sources"] == []
+        assert attempts == ["/v1/chat/completions"] * 2
+        search.assert_not_called()
+
+        # The 30-second local minimum has elapsed, but the provider asked for 45.
+        provider_time.monotonic.return_value = 144.99
+        blocked = api.post("/chat", json={"question": "What is an EHCP?"})
+        assert blocked.status_code == 200
+        assert blocked.json()["answer"] == unavailable
+        assert blocked.json()["sources"] == []
+        assert len(attempts) == 2
+        search.assert_not_called()
+
+        provider_time.monotonic.return_value = 145.01
+        recovered = api.post("/chat", json=question)
+        assert recovered.status_code == 200
+        assert recovered.json()["answer"] == answer
+        assert recovered.json()["sources"] == [{
+            "title": "How to claim PIP", "url": source_url, "publisher": "Gov.UK",
+        }]
+        assert attempts == ["/v1/chat/completions"] * 5
+        search.assert_called_once_with(search_query, n_results=8, authority_boost=True)
 
 
 @pytest.mark.parametrize("failure", ["connection", "http-503"])
