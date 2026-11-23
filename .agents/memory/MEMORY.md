@@ -6,6 +6,7 @@
 - [Backup alert safety](github-backup-alert-safety.md) — reserve before delivery; uncertain sends remain protected; local monitoring needs shared persistent receipt/claim storage.
 - [Rendered dashboard checks](rendered-dashboard-checks.md) — successful login and HTTP responses can hide invalid JavaScript emitted by Python templates.
 - [TestClient background tasks](testclient-background-tasks.md) — separate sync requests may cancel create_task work; keep trigger-and-poll scenarios in one event loop.
+- [Chat provider admission](chat-provider-admission.md) — keep request handling responsive without increasing provider concurrency before a shared cooldown can take effect.
 - [Touch tooltip verification](touch-tooltip-verification.md) — assert computed visibility, not just open state; mobile hover/focus can keep a dismissed tooltip visible.
 - [Test-email retry safety](test-email-retries.md) — durable ownership must never reclaim ambiguous sends; shared-file protection requires a shared persistent filesystem.
 - [Quota refresh approval](quota-refresh-approval.md) — setup remains deferred by user choice; eventual target is both workspace and published app.

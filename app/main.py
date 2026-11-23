@@ -18,6 +18,7 @@ import tempfile
 import time
 from pathlib import Path
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 
 from app import notifications
 from app.github_backup_status import render_status as render_github_backup_status
@@ -116,6 +117,10 @@ app = FastAPI(title="Maya – Autism Hounslow Assistant", version="2.0.0")
 
 _rag_system = None
 _startup_complete = False
+# Keep provider-backed chats serial as before, without blocking the request
+# loop or taking shared worker threads while queued. Loads and reloads use
+# the same worker so they cannot replace RAG components during an answer.
+_rag_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="maya-rag")
 
 app.add_middleware(
     CORSMiddleware,
@@ -132,14 +137,17 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Startup / background RAG initialisation
 # ──────────────────────────────────────────────────────────────────────
 
+async def _run_rag_work(func, *args):
+    return await asyncio.get_running_loop().run_in_executor(_rag_executor, func, *args)
+
+
 async def initialize_rag_background():
     global _rag_system, _startup_complete
-    import asyncio
     await asyncio.sleep(0.1)
     logger.info("🚀 Maya background initialisation starting...")
     start_time = datetime.now()
     try:
-        _rag_system = await asyncio.to_thread(_initialize_rag_sync)
+        _rag_system = await _run_rag_work(_initialize_rag_sync, False)
         elapsed = (datetime.now() - start_time).total_seconds()
         _startup_complete = True
         logger.info(f"✅ Maya ready! Background initialisation completed in {elapsed:.1f}s")
@@ -148,11 +156,9 @@ async def initialize_rag_background():
         _startup_complete = False
 
 
-def _initialize_rag_sync():
-    from rag.rag_system import get_rag_system
+def _initialize_rag_sync(force_reload=True):
     logger.info("📦 Loading RAG system...")
-    rag_system = get_rag_system()
-    rag_system.initialize()
+    rag_system = _load_rag_system(force_reload=force_reload)
     logger.info("🔥 Warming up RAG components...")
     try:
         rag_system.vector_store.embedder.encode(["warmup"])
@@ -194,15 +200,15 @@ async def stop_backup_monitor():
             pass
 
 
-def _load_rag_system():
+def _load_rag_system(*, force_reload=False):
     global _rag_system
-    if _rag_system is not None:
+    if not force_reload and _rag_system is not None and _rag_system.initialized:
         return _rag_system
-    logger.warning("⚠️ RAG system not pre-loaded – loading now (slower first response)...")
     start_time = datetime.now()
     from rag.rag_system import get_rag_system
-    _rag_system = get_rag_system()
-    _rag_system.initialize()
+    rag_system = get_rag_system() if _rag_system is None or force_reload else _rag_system
+    rag_system.initialize()
+    _rag_system = rag_system
     elapsed = (datetime.now() - start_time).total_seconds()
     logger.info(f"✅ RAG system loaded in {elapsed:.1f}s")
     return _rag_system
@@ -313,11 +319,14 @@ async def status():
 
 @app.get("/warmup")
 async def warmup():
-    global _rag_system
+    return await _run_rag_work(_check_rag_warmup)
+
+
+def _check_rag_warmup():
     result = {"ok": True, "startup_complete": _startup_complete, "components": {}}
-    if _rag_system is None:
+    if _rag_system is None or not _rag_system.initialized:
         try:
-            _rag_system = _load_rag_system()
+            _load_rag_system()
             result["components"]["rag_loaded"] = True
         except Exception as e:
             result["ok"] = False
@@ -346,25 +355,9 @@ async def chat(query: Query):
     logger.info(f"📖 Comprehension: {query.comprehension_level.value}  Q-len: {len(query.question)}")
 
     try:
-        global _rag_system
-        if _rag_system is None:
-            logger.info("RAG system not ready, initialising now...")
-            _rag_system = _load_rag_system()
-
-        if not _rag_system.initialized:
-            logger.warning("RAG system exists but not initialised, initialising now...")
-            _rag_system.initialize()
-
-        result = _rag_system.answer_question(
-            query.question,
-            comprehension_level=query.comprehension_level.value
-        )
-
-        answer_text  = result.get("answer", "")
+        result = await _run_rag_work(_answer_chat, query)
+        answer_text = result.get("answer", "")
         sources_list = result.get("sources", [])
-        source_ids   = [s.get("url", "") for s in sources_list]
-
-        _log_question(query.question, source_ids)
 
         sources = [Source(**src) for src in sources_list]
         return Answer(answer=answer_text, timestamp=f"Last checked: {timestamp}", sources=sources)
@@ -376,6 +369,15 @@ async def chat(query: Query):
             "Sorry, I encountered an error. Please try your question again."
         )
         return Answer(answer=text, timestamp=f"Last checked: {timestamp}", sources=[])
+
+
+def _answer_chat(query: Query):
+    rag_system = _load_rag_system()
+    result = rag_system.answer_question(
+        query.question, comprehension_level=query.comprehension_level.value,
+    )
+    _log_question(query.question, [source.get("url", "") for source in result.get("sources", [])])
+    return result
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -2237,7 +2239,7 @@ async def _run_crawl_and_reindex_background(
         logger.info(f"✅ Crawl+reindex complete in {elapsed:.1f}s — {total_chunks} chunks total — reloading RAG...")
 
         # Step 3: hot-reload the running RAG system
-        _rag_system = await asyncio.to_thread(_initialize_rag_sync)
+        _rag_system = await _run_rag_work(_initialize_rag_sync)
         _startup_complete = True
 
         failed_urls = refresh_report["failed_urls"]
@@ -2297,7 +2299,7 @@ async def _run_reindex_only_background(source: str = "manual-reindex"):
         elapsed = (datetime.utcnow() - start).total_seconds()
         if proc.returncode == 0:
             logger.info(f"✅ Re-index complete in {elapsed:.1f}s — reloading RAG system...")
-            _rag_system = await asyncio.to_thread(_initialize_rag_sync)
+            _rag_system = await _run_rag_work(_initialize_rag_sync)
             _startup_complete = True
             _crawl_status["last_result"] = {
                 "success": True,

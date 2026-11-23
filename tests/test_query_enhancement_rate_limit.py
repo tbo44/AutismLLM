@@ -1,6 +1,9 @@
+import asyncio
 from datetime import datetime, timezone
 from functools import partial
+import json
 import logging
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -238,6 +241,124 @@ def test_chat_resumes_after_provider_retry_after(transport_client, monkeypatch):
         }]
         assert attempts == ["/v1/chat/completions"] * 5
         search.assert_called_once_with(search_query, n_results=8, authority_boost=True)
+
+
+@pytest.mark.parametrize("limited", [False, True], ids=["answer", "rate-limited"])
+def test_health_responds_while_chat_provider_is_stalled(transport_client, monkeypatch, limited):
+    from app import main
+
+    question = {"question": "How do I apply for PIP?", "comprehension_level": "clear"}
+    answer = "## Short Answer\nApply for PIP through GOV.UK."
+    source_url = "https://www.gov.uk/pip/how-to-claim"
+    search = Mock(return_value=[search_hit("How to claim PIP", source_url)])
+    unavailable = (
+        "The AI provider is temporarily unavailable due to a rate limit. "
+        "Please try again in a few minutes."
+    )
+
+    async def scenario():
+        entered_synthesis = asyncio.Event()
+        release_synthesis = Event()
+        loop = asyncio.get_running_loop()
+
+        def synthesize(request):
+            messages = json.loads(request.content)["messages"]
+            assert "LANGUAGE LEVEL — CLEAR" in messages[0]["content"]
+            loop.call_soon_threadsafe(entered_synthesis.set)
+            if not release_synthesis.wait(timeout=5):
+                pytest.fail("Synthesis was not released; it may be blocking the request loop")
+            if limited:
+                return httpx.Response(429, headers={"Retry-After": "45"}, json={
+                    "error": {"message": "Too many requests"},
+                })
+            return _successful_completion_response(answer)
+
+        responses = iter([
+            lambda _: _successful_completion_response('{"appropriate": true}'),
+            lambda _: _successful_completion_response("Personal Independence Payment application"),
+            synthesize,
+        ])
+
+        def respond(request):
+            reply = next(responses, None)
+            if reply is None:
+                pytest.fail("Unexpected extra provider call")
+            return reply(request)
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as provider:
+            llm_client = transport_client(provider, seconds="30")
+            chat_client(monkeypatch, llm_client, search)
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=main.app), base_url="http://test",
+            ) as api:
+                pending = asyncio.create_task(api.post("/chat", json=question))
+                chats = [pending]
+                try:
+                    await asyncio.wait_for(entered_synthesis.wait(), timeout=2)
+                    health = await asyncio.wait_for(api.get("/health"), timeout=2)
+                    assert health.status_code == 200
+                    assert health.json() == {"status": "ok"}
+                    assert not pending.done(), "Health responded only after the stalled chat finished"
+                    if limited:
+                        # A second chat enters the same event loop before the 429.
+                        # It must wait rather than start another provider request.
+                        queued = asyncio.create_task(api.post("/chat", json={
+                            "question": "What is an EHCP?",
+                        }))
+                        chats.append(queued)
+                        await asyncio.wait({queued}, timeout=0.05)
+                        assert not queued.done()
+                finally:
+                    release_synthesis.set()
+                    responses_from_api = await asyncio.gather(*chats, return_exceptions=True)
+
+                for response in responses_from_api:
+                    if isinstance(response, BaseException):
+                        raise response
+                    assert response.status_code == 200
+                    assert response.json()["answer"] == (unavailable if limited else answer)
+                    assert response.json()["sources"] == ([] if limited else [{
+                        "title": "How to claim PIP", "url": source_url, "publisher": "Gov.UK",
+                    }])
+                    assert response.json()["timestamp"].startswith("Last checked: ")
+                    assert "NHS 111" in response.json()["disclaimer"]
+                search.assert_called_once()
+                assert llm_client.is_rate_limited() is limited
+
+    asyncio.run(scenario())
+
+
+def test_background_warmup_keeps_cooldown_from_first_chat(transport_client, monkeypatch):
+    from app import main
+
+    respond = Mock(return_value=httpx.Response(
+        429, headers={"Retry-After": "45"}, json={"error": {"message": "Too many requests"}},
+    ))
+    with httpx.Client(transport=httpx.MockTransport(respond)) as provider:
+        llm_client = transport_client(provider, seconds="30")
+        api = chat_client(monkeypatch, llm_client, Mock(return_value=[]))
+        system = main._rag_system
+        system.vector_store.embedder = Mock()
+        system.initialized = False
+        system.initialize = Mock(side_effect=lambda: setattr(system, "initialized", True))
+        monkeypatch.setattr(main, "_startup_complete", False)
+        monkeypatch.setattr(main, "_rag_system", None)
+        monkeypatch.setattr("rag.rag_system.get_rag_system", lambda: system)
+
+        question = {"question": "How do I apply for PIP?"}
+        first = api.post("/chat", json=question)
+        assert first.status_code == 200
+        assert "temporarily unavailable due to a rate limit" in first.json()["answer"]
+
+        asyncio.run(main.initialize_rag_background())
+        assert main._startup_complete
+        system.initialize.assert_called_once_with()
+        system.vector_store.embedder.encode.assert_called_once_with(["warmup"])
+
+        second = api.post("/chat", json=question)
+        assert second.status_code == 200
+        assert second.json()["answer"] == first.json()["answer"]
+        respond.assert_called_once()
 
 
 def test_chat_returns_uk_crisis_guidance_during_provider_cooldown(transport_client, monkeypatch):
