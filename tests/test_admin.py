@@ -170,18 +170,21 @@ def test_admin_valid_token_via_header(admin_token):
     assert "Knowledge Base" in resp.text
 
 
-@pytest.mark.parametrize(("headers", "status"), [
-    ({}, 401),
-    ({"X-Admin-Token": "wrong-token"}, 403),
-    ({"Accept": "text/html"}, 303),
+@pytest.mark.parametrize(("headers", "dashboard_status", "refresh_status"), [
+    ({}, 401, 401),
+    ({"X-Admin-Token": "wrong-token"}, 403, 403),
+    ({"Accept": "text/html"}, 303, 401),
 ])
-def test_admin_provider_pause_is_not_read_without_auth(admin_token, monkeypatch, headers, status):
+@pytest.mark.parametrize("path", ["/admin", "/admin/provider-pause"])
+def test_admin_provider_pause_is_not_read_without_auth(
+    admin_token, monkeypatch, headers, dashboard_status, refresh_status, path,
+):
     llm_client = Mock()
     monkeypatch.setattr(main, "_rag_system", SimpleNamespace(llm_client=llm_client))
 
-    response = client.get("/admin", headers=headers, follow_redirects=False)
+    response = client.get(path, headers=headers, follow_redirects=False)
 
-    assert response.status_code == status
+    assert response.status_code == (dashboard_status if path == "/admin" else refresh_status)
     assert 'id="providerPause"' not in response.text
     llm_client.rate_limit_remaining_seconds.assert_not_called()
 
@@ -197,6 +200,17 @@ def test_admin_provider_pause_is_unavailable_before_client_loads(admin_token, mo
     assert "Status unavailable" in response.text
     assert "No active pause" not in response.text
     assert "Local to the serving process only" in response.text
+
+    for reader in ("_read_feedback_log", "_read_questions_stats", "_read_kb_health"):
+        monkeypatch.setattr(main, reader, Mock(side_effect=AssertionError("Refresh must not rebuild dashboard")))
+    response = client.get("/admin/provider-pause", headers={"X-Admin-Token": admin_token})
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "badge": "badge-none",
+        "label": "Status unavailable",
+        "detail": "The provider client is not ready in this process.",
+    }
     load_rag.assert_not_called()
 
 
@@ -211,9 +225,10 @@ def test_admin_provider_pause_shows_current_local_snapshot(admin_token, monkeypa
     monkeypatch.setattr(llm_module, "_build_openai_client", lambda: provider)
     llm_client = llm_module.UKAutismLLMClient()
     monkeypatch.setattr(main, "_rag_system", SimpleNamespace(llm_client=llm_client))
-    with closing(TestClient(app)) as admin:
+    with closing(TestClient(app, base_url="https://testserver")) as admin:
         admin.cookies.set(main._ADMIN_COOKIE_NAME, admin_token)
         assert "No active pause" in admin.get("/admin").text
+        assert admin.get("/admin/provider-pause").json()["label"] == "No active pause"
 
         llm_client._record_provider_429("test", httpx.Headers({
             "Retry-After": "45", "X-Provider-Detail": "private-provider-detail",
@@ -226,19 +241,46 @@ def test_admin_provider_pause_shows_current_local_snapshot(admin_token, monkeypa
             assert "Provider calls paused" in response.text
             assert "About 45 seconds remaining" in response.text
             assert "Local to the serving process only" in response.text
+            refreshed = admin.get("/admin/provider-pause")
+            assert refreshed.status_code == 200
+            assert refreshed.headers["cache-control"] == "no-store"
+            assert refreshed.json() == {
+                "badge": "badge-run",
+                "label": "Provider calls paused",
+                "detail": "About 45 seconds remaining.",
+            }
             for private_value in ("private-test-model", "private-test-key", "private-provider-detail"):
                 assert private_value not in response.text
+                assert private_value not in refreshed.text
 
             now = 144.75
-            assert "About 1 second remaining" in admin.get("/admin").text
+            assert admin.get("/admin/provider-pause").json()["detail"] == "About 1 second remaining."
 
             now = 145.0
-            response = admin.get("/admin")
-            assert "No active pause" in response.text
-            assert "Provider calls paused" not in response.text
+            assert admin.get("/admin/provider-pause").json() == {
+                "badge": "badge-ok",
+                "label": "No active pause",
+                "detail": "No local rate-limit pause is active.",
+            }
 
         assert not any(record.name == llm_module.__name__ for record in caplog.records)
         assert not provider.mock_calls
+
+
+def test_provider_pause_refresh_only_updates_its_panel(admin_token):
+    resp = client.get("/admin", headers={"X-Admin-Token": admin_token})
+    assert resp.status_code == 200
+    button = re.search(
+        r'<button id="providerPauseRefresh" type="button"[^>]*onclick="([^"]+)"', resp.text,
+    )
+    scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", resp.text, re.DOTALL)
+    assert button and scripts
+    result = subprocess.run(
+        ["node", str(Path(__file__).with_name("admin_provider_pause_runner.cjs"))],
+        input=json.dumps({"script": "\n".join(scripts), "click": button.group(1)}),
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_admin_rendered_javascript_is_valid(admin_token, tmp_path):

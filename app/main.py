@@ -1,7 +1,7 @@
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Header, Query as QueryParam, Cookie, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, StrictBool
 from typing import Literal
 from enum import Enum
@@ -900,6 +900,34 @@ def _fmt_uk_time(iso_str: str | None) -> str:
         return str(iso_str)
 
 
+def _provider_pause_seconds() -> float | None:
+    """Read the current client's snapshot without loading RAG or entering its queue."""
+    llm_client = getattr(_rag_system, "llm_client", None)
+    return llm_client.rate_limit_remaining_seconds() if llm_client is not None else None
+
+
+def _provider_pause_display(seconds: float | None) -> dict[str, str]:
+    if seconds is None:
+        return {
+            "badge": "badge-none",
+            "label": "Status unavailable",
+            "detail": "The provider client is not ready in this process.",
+        }
+    if seconds > 0:
+        remaining = math.ceil(seconds)
+        unit = "second" if remaining == 1 else "seconds"
+        return {
+            "badge": "badge-run",
+            "label": "Provider calls paused",
+            "detail": f"About {remaining:,} {unit} remaining.",
+        }
+    return {
+        "badge": "badge-ok",
+        "label": "No active pause",
+        "detail": "No local rate-limit pause is active.",
+    }
+
+
 def _render_admin_html(
     feedback: list[dict], stats: dict, kb: dict, *, provider_pause_seconds: float | None = None,
 ) -> str:
@@ -911,17 +939,7 @@ def _render_admin_html(
         Path(__file__).resolve().parent.parent / "static" / "admin-test-attempts.js"
     ).read_text(encoding="utf-8")
 
-    if provider_pause_seconds is None:
-        provider_pause_badge = '<span class="badge badge-none">Status unavailable</span>'
-        provider_pause_detail = "The provider client is not ready in this process."
-    elif provider_pause_seconds > 0:
-        provider_pause_badge = '<span class="badge badge-run">Provider calls paused</span>'
-        seconds = math.ceil(provider_pause_seconds)
-        unit = "second" if seconds == 1 else "seconds"
-        provider_pause_detail = f"About {seconds:,} {unit} remaining."
-    else:
-        provider_pause_badge = '<span class="badge badge-ok">No active pause</span>'
-        provider_pause_detail = "No local rate-limit pause is active."
+    provider_pause = _provider_pause_display(provider_pause_seconds)
 
     def _esc(s: str) -> str:
         return (
@@ -1112,7 +1130,7 @@ def _render_admin_html(
                         border-radius: 6px; padding: 0.55rem 1.1rem; font-size: 0.9rem;
                         font-weight: 600; }}
   button.reindex-btn:hover {{ background: #4a3185; }}
-  button.reindex-btn:disabled {{ background: #b9a9dd; cursor: not-allowed; }}
+  button.reindex-btn:disabled, button.reindex-btn[aria-disabled="true"] {{ background: #b9a9dd; cursor: not-allowed; }}
   button.expiring-btn {{ background: #356f8f; color: #fff; border: none; cursor: pointer;
                          border-radius: 6px; padding: 0.55rem 1.1rem; font-size: 0.9rem;
                          font-weight: 600; margin-left:0.45rem; }}
@@ -1154,8 +1172,11 @@ def _render_admin_html(
 
 <section id="providerPause" aria-labelledby="providerPauseHeading">
   <h2 id="providerPauseHeading">Provider pause</h2>
-  <p>{provider_pause_badge} {provider_pause_detail}</p>
-  <p>Local to the serving process only. Refresh this page for the latest status.</p>
+  <p aria-live="polite" aria-atomic="true"><span id="providerPauseBadge" class="badge {provider_pause['badge']}">{provider_pause['label']}</span>
+    <span id="providerPauseDetail">{provider_pause['detail']}</span></p>
+  <p>Local to the serving process only.</p>
+  <button id="providerPauseRefresh" type="button" class="reindex-btn" onclick="refreshProviderPause()">Refresh pause status</button>
+  <span id="providerPauseMessage" class="reindex-msg" role="status"></span>
 </section>
 
 {github_backup_html}
@@ -1323,6 +1344,40 @@ def _render_admin_html(
 
 <p class="footer">Maya Admin &mdash; Autism Hounslow &mdash; For internal use only</p>
 <script>
+async function refreshProviderPause() {{
+  var button = document.getElementById('providerPauseRefresh');
+  if (button.getAttribute('aria-disabled') === 'true') return;
+  var message = document.getElementById('providerPauseMessage');
+  button.setAttribute('aria-disabled', 'true');
+  message.textContent = 'Refreshing pause status…';
+  try {{
+    var response = await fetch('/admin/provider-pause', {{
+      credentials: 'same-origin',
+      cache: 'no-store',
+      signal: AbortSignal.timeout(10000)
+    }});
+    if (response.status === 401 || response.status === 403) {{
+      message.textContent = 'Sign in to Maya Admin, then try again. Showing the previous status.';
+      return;
+    }}
+    if (!response.ok) throw new Error('Pause status request failed');
+    var pause = await response.json();
+    if (!pause || !['badge-none', 'badge-run', 'badge-ok'].includes(pause.badge) ||
+        typeof pause.label !== 'string' || typeof pause.detail !== 'string') {{
+      throw new Error('Invalid pause status');
+    }}
+    var badge = document.getElementById('providerPauseBadge');
+    badge.className = 'badge ' + pause.badge;
+    badge.textContent = pause.label;
+    document.getElementById('providerPauseDetail').textContent = pause.detail;
+    message.textContent = 'Refreshed.';
+  }} catch (e) {{
+    message.textContent = 'Could not refresh pause status. Showing the previous status; try again.';
+  }} finally {{
+    button.removeAttribute('aria-disabled');
+  }}
+}}
+
 /* ── Knowledge Base live-polling ─────────────────────────────────────────── */
 var _crawlToken = '';
 var _pollTimer  = null;
@@ -2122,10 +2177,21 @@ async def admin_dashboard(
     feedback = _read_feedback_log(limit=50)
     stats = _read_questions_stats()
     kb = _read_kb_health()
-    llm_client = getattr(_rag_system, "llm_client", None)
-    pause_seconds = llm_client.rate_limit_remaining_seconds() if llm_client is not None else None
-    html = _render_admin_html(feedback, stats, kb, provider_pause_seconds=pause_seconds)
+    html = _render_admin_html(feedback, stats, kb, provider_pause_seconds=_provider_pause_seconds())
     return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/admin/provider-pause", response_class=JSONResponse)
+async def admin_provider_pause(
+    x_admin_token: str | None = Header(default=None),
+    token_cookie: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
+):
+    """Return only the serving process's pause snapshot for an in-place refresh."""
+    _check_admin_token(None, x_admin_token, token_cookie)
+    return JSONResponse(
+        _provider_pause_display(_provider_pause_seconds()),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
