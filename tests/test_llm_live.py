@@ -1,4 +1,4 @@
-"""Opt-in checks of real model access and generated answers, without a local index."""
+"""Opt-in model and answer checks; the pytest transport guard caps provider attempts."""
 
 from contextlib import closing
 
@@ -12,6 +12,7 @@ from tests.llm_test_helpers import chat_client
 
 
 pytestmark = pytest.mark.llm_live
+
 
 def _provider_failure(model, error):
     """Label SDK errors without printing credentials or raw provider responses."""

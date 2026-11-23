@@ -276,6 +276,7 @@ pytest tests/ -v
 |---|---|
 | `test_answers.py` | Provider-independent chat integration: topic answers and sources, structured prompts, reading-level instructions, safety and off-topic redirects |
 | `test_llm_live.py` | Opt-in live checks: configured model access, structured answers, reading levels, and essential advice in both levels |
+| `test_llm_live_budget.py` | Offline checks that the live attempt cap includes SDK retries and is shared across test cases |
 | `test_llm_answer_essentials.py` | Offline checks that complete paraphrases pass and fluent replies missing essential advice fail |
 | `test_llm_reading_comparison.py` | Offline checks of the live comparison's scoring, request limit, and provider failure reporting |
 | `test_retrieval_coverage.py` | Deterministic (no LLM): core questions must retrieve below threshold; known gaps tracked as xfail |
@@ -287,15 +288,23 @@ Routine chat tests use controlled completions, so they don't need a provider
 key or an available model. To check the configured provider and model, opt in:
 
 ```bash
-pytest -m llm_live tests/test_llm_live.py -v
+pytest -m llm_live tests/test_llm_live.py -v --llm-request-limit=21
 ```
 
-This sends real requests to the configured provider and may use quota. An
-unavailable model, denied access, or a rate limit fails with a provider-specific
-diagnostic, separate from answer-quality failures. The reading-level checks ask
-the same questions at both levels using fixed source text. Before comparing
-readability, they check that **both** replies keep essential advice about
-school plan reviews, disability benefit claims, or autism assessment referrals.
+This sends real requests to the configured provider and may use quota.
+`--llm-request-limit` is required and caps HTTP attempts across the whole run,
+including SDK retries and failed requests. The full suite normally needs 21
+attempts without retries (moderation, query rewriting, and generation for
+each of seven answers). If the cap is reached, the next request is blocked
+and the test fails with a budget message, not an answer-quality failure. Run
+these checks in a single pytest process so tests share one budget.
+
+An unavailable model, denied access, or a rate limit fails with a
+provider-specific diagnostic, separate from answer-quality failures. The
+reading-level checks ask the same questions at both levels using fixed source
+text. Before comparing readability, they check that **both** replies keep
+essential advice about school plan reviews, disability benefit claims, or
+autism assessment referrals.
 The content checks use wording variations and name the missing point and
 reading level on failure. They make no extra provider requests. Readability
 checks look for unexplained acronyms in Clear replies and compare sentence
