@@ -275,7 +275,8 @@ pytest tests/ -v
 | Suite | Covers |
 |---|---|
 | `test_answers.py` | Provider-independent chat integration: topic answers and sources, structured prompts, reading-level instructions, safety and off-topic redirects |
-| `test_llm_live.py` | Opt-in live checks: configured model access, structured answers, and Clear vs. Complex reading levels |
+| `test_llm_live.py` | Opt-in live checks: configured model access, structured answers, reading levels, and essential advice in both levels |
+| `test_llm_answer_essentials.py` | Offline checks that complete paraphrases pass and fluent replies missing essential advice fail |
 | `test_retrieval_coverage.py` | Deterministic (no LLM): core questions must retrieve below threshold; known gaps tracked as xfail |
 | `test_policy.py` | Safety guardrail patterns |
 | `test_admin.py` | Admin auth (401/403/cookie/header) and log parsing |
@@ -291,9 +292,15 @@ pytest -m llm_live tests/test_llm_live.py -v
 This sends real requests to the configured provider and may use quota. An
 unavailable model, denied access, or a rate limit fails with a provider-specific
 diagnostic, separate from answer-quality failures. The reading-level checks ask
-the same questions at both levels using fixed source text. They look for common
-unexplained acronyms in Clear answers and compare sentence length and use of
-long words. These are regression signals, not a formal reading-age score.
+the same questions at both levels using fixed source text. Before comparing
+readability, they check that **both** replies keep essential advice about
+school plan reviews, disability benefit claims, or autism assessment referrals.
+The content checks use wording variations and name the missing point and
+reading level on failure. They make no extra provider requests. Readability
+checks look for unexplained acronyms in Clear replies and compare sentence
+length and use of long words. These checks are regression signals, not a
+formal reading-age score or a full factual review; an unfamiliar paraphrase
+may need manual review against the fixed source.
 
 ---
 

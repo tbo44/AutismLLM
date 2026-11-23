@@ -11,3 +11,4 @@
 - [Test-email retry safety](test-email-retries.md) — durable ownership must never reclaim ambiguous sends; shared-file protection requires a shared persistent filesystem.
 - [Quota refresh approval](quota-refresh-approval.md) — setup remains deferred by user choice; eventual target is both workspace and published app.
 - [Isolated Python subprocesses](isolated-python-subprocesses.md) — preserve interpreter import paths when keeping workspace credentials out of child tests.
+- [Reading-level content checks](reading-level-content-checks.md) — choose essentials that change what the reader does or whether they qualify.

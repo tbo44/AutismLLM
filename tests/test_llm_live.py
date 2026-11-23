@@ -7,22 +7,11 @@ import openai
 import pytest
 
 from rag.llm_client import UKAutismLLMClient
-from tests.llm_test_helpers import chat_client, search_hit
+from tests.llm_answer_essentials import ANNUAL_REVIEW, READING_CASES, assert_essential_advice
+from tests.llm_test_helpers import chat_client
 
 
 pytestmark = pytest.mark.llm_live
-
-ANNUAL_REVIEW_QUESTION = "What is the EHCP annual review process for autism?"
-ANNUAL_REVIEW_SOURCE = search_hit(
-    "EHCP annual review",
-    "https://www.gov.uk/children-with-special-educational-needs",
-    text=(
-        "An Education, Health and Care plan (EHCP) is reviewed at least once a year. "
-        "The annual review checks whether the support still meets the child's needs. "
-        "The school invites parents to share how the child is getting on and what support "
-        "they need. The local authority decides whether to keep, amend or end the plan."
-    ),
-)
 
 # Common shorthand for these topics, including a few acceptable plain-English explanations.
 ACRONYM_EXPANSIONS = {
@@ -150,46 +139,15 @@ def _reading_profile(answer):
 
 
 def test_live_model_access_and_structured_answer(live_answer):
-    live_answer(ANNUAL_REVIEW_QUESTION, ANNUAL_REVIEW_SOURCE)
+    live_answer(ANNUAL_REVIEW.question, ANNUAL_REVIEW.hit)
 
 
-@pytest.mark.parametrize(("question", "hit"), [
-    pytest.param(ANNUAL_REVIEW_QUESTION, ANNUAL_REVIEW_SOURCE, id="school-plan-annual-review"),
-    pytest.param(
-        "How do I apply for DLA for my autistic child?",
-        search_hit(
-            "Disability Living Allowance for children",
-            "https://www.gov.uk/disability-living-allowance-children/how-to-claim",
-            text=(
-                "Disability Living Allowance (DLA) can help with the extra costs of looking after "
-                "a child who needs more care or has more difficulty walking than a child of the "
-                "same age. To apply, download the claim form or ask the Department for Work and "
-                "Pensions (DWP) to send you a copy. Fill it in with details of the child's "
-                "care or mobility needs and return it by post."
-            ),
-        ),
-        id="disability-benefit-claim",
-    ),
-    pytest.param(
-        "Can I ask my GP about an autism assessment for my child?",
-        search_hit(
-            "How to get an autism assessment",
-            "https://www.nhs.uk/conditions/autism/getting-diagnosed/how-to-get-diagnosed/",
-            publisher="NHS",
-            text=(
-                "A general practitioner (GP) can refer a child for an autism assessment. "
-                "Autism spectrum disorder (ASD) is another name for autism. Parents can "
-                "describe what they have noticed at home and share examples from school. "
-                "A specialist assessment team gathers information about the child's "
-                "development and how they communicate and interact with other people."
-            ),
-        ),
-        id="autism-assessment-referral",
-    ),
-])
-def test_live_clear_answers_are_simpler(live_answer, question, hit):
-    clear = live_answer(question, hit, "clear")
-    complex_answer = live_answer(question, hit, "complex")
+@pytest.mark.parametrize("case", READING_CASES, ids=lambda case: case.id)
+def test_live_clear_answers_are_simpler(live_answer, case):
+    clear = live_answer(case.question, case.hit, "clear")
+    complex_answer = live_answer(case.question, case.hit, "complex")
+
+    assert_essential_advice(case, clear=clear, complex_answer=complex_answer)
 
     unexplained = _unexplained_acronyms(clear)
     assert not unexplained, (
